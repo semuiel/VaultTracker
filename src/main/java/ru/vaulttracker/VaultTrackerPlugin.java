@@ -25,9 +25,10 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class VaultTrackerPlugin extends JavaPlugin implements Listener, TabExecutor {
     private Catalogue catalogue;
     private StorageEngine storage;
+    private TelegramBotService telegram;
     private final Set<BlockKey> scheduled = ConcurrentHashMap.newKeySet();
     private volatile boolean stopping;
-    private long reconcileTicks, debounceTicks;
+    private long debounceTicks;
     private int playerLimit;
 
     @Override public void onEnable() {
@@ -42,7 +43,6 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
                     getConfig().getInt("database.port", 3306), getConfig().getString("database.name", "vault_tracker"),
                     getConfig().getString("database.username", "vault_plugin"), password, id);
         }
-        reconcileTicks = Math.max(5, getConfig().getLong("reconcile-seconds", 30)) * 20;
         debounceTicks = Math.max(1, Math.min(20, getConfig().getLong("update-delay-ticks", 2)));
         playerLimit = Math.max(1, getConfig().getInt("max-vaults-per-player", 100));
         storage = new StorageEngine(getDataFolder().toPath().resolve("cache-"+id), database, getLogger());
@@ -53,10 +53,15 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
         Objects.requireNonNull(getCommand("topitem")).setExecutor(this);
         Objects.requireNonNull(getCommand("topitem")).setTabCompleter(this);
         storage.start(catalogue::restore);
-        getServer().getGlobalRegionScheduler().runAtFixedRate(this, task -> {
-            if (!storage.ready() || stopping) return;
-            for (Snapshot v : catalogue.all()) schedule(v.sign());
-        }, 20, reconcileTicks);
+        try {
+            TelegramConfig telegramConfig=TelegramConfig.load(getDataFolder().toPath());
+            if(telegramConfig.enabled()) {
+                telegram=new TelegramBotService(telegramConfig,catalogue,storage,getLogger());
+                telegram.start();
+            } else getLogger().info("Telegram-бот выключен в telegram.yml.");
+        } catch(Exception e) {
+            getLogger().severe("Telegram-бот не запущен: "+e.getMessage()+". Учёт хранилищ продолжает работать.");
+        }
         getLogger().info("VaultTracker " + getPluginMeta().getVersion() + ": каталог ресурсов. /vtrack help");
     }
     private static BlockKey key(Block b) { return new BlockKey(b.getWorld().getUID(), b.getX(), b.getY(), b.getZ()); }
@@ -315,6 +320,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
     @Override public void onDisable() {
         stopping=true;
         getServer().getGlobalRegionScheduler().cancelTasks(this);
+        if (telegram != null) telegram.close();
         if (storage != null) storage.close();
     }
 }

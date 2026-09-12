@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "ru.vaulttracker"
-version = "0.2.5"
+version = "0.3.0"
 
 repositories {
     mavenCentral()
@@ -16,6 +16,7 @@ dependencies {
     implementation("org.mariadb.jdbc:mariadb-java-client:3.5.7")
     implementation("com.h2database:h2:2.3.232")
     implementation("com.google.code.gson:gson:2.11.0")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
     testImplementation(platform("org.junit:junit-bom:5.11.4"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
@@ -30,6 +31,9 @@ tasks.shadowJar {
     archiveClassifier.set("")
     mergeServiceFiles()
     exclude("META-INF/*.SF", "META-INF/*.RSA", "META-INF/*.DSA")
+    relocate("okhttp3", "ru.vaulttracker.libs.okhttp3")
+    relocate("okio", "ru.vaulttracker.libs.okio")
+    relocate("kotlin", "ru.vaulttracker.libs.kotlin")
 }
 tasks.jar { archiveClassifier.set("plain") }
 tasks.build { dependsOn(tasks.shadowJar) }

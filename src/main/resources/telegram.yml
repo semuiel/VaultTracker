@@ -1,0 +1,25 @@
+# Telegram-бот запускается внутри VaultTracker.
+enabled: false
+token: "ВСТАВЬТЕ_НОВЫЙ_ТОКЕН_BOTFATHER"
+
+# Пустой список разрешает доступ всем. Для закрытого каталога укажите ID после команды /id.
+allowedChatIds: []
+resultLimit: 20
+pollTimeoutSeconds: 30
+
+advanced:
+  botApiUrl: "https://api.telegram.org"
+  proxy:
+    # Поддерживаются: none, socks5, http
+    type: "none"
+    host: ""
+    port: 1080
+    username: ""
+    password: ""
+  connectionRetry:
+    # Значение меньше 1 означает бесконечное число попыток.
+    maxAttempts: 10
+    initialDelay: 1000
+    maxDelay: 300000
+
+version: 1
