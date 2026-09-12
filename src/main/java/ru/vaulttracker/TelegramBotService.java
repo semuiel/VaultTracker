@@ -2,13 +2,16 @@ package ru.vaulttracker;
 
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.*;
 import java.util.logging.Logger;
 
 final class TelegramBotService implements AutoCloseable {
     private final TelegramConfig config; private final TelegramApi api; private final TelegramCommands commands; private final Logger log;
     private final AtomicBoolean stopping=new AtomicBoolean(); private final Thread worker;
+    private final ScheduledExecutorService deletionScheduler=Executors.newSingleThreadScheduledExecutor(
+            runnable->Thread.ofVirtual().name("VaultTracker-telegram-delete").unstarted(runnable));
     TelegramBotService(TelegramConfig config,Catalogue catalogue,StorageEngine storage,Logger log) {
-        this.config=config; this.api=new TelegramApi(config); this.commands=new TelegramCommands(catalogue,storage,config.resultLimit()); this.log=log;
+        this.config=config; this.api=new TelegramApi(config); this.commands=new TelegramCommands(catalogue,storage,config.pageSize()); this.log=log;
         worker=Thread.ofVirtual().name("VaultTracker-telegram").unstarted(this::run);
     }
     void start() { worker.start(); }
@@ -19,11 +22,12 @@ final class TelegramBotService implements AutoCloseable {
                 if(!initialized) {
                     String username=api.verify(); api.registerCommands(); initialized=true; failures=0;
                     log.info("Telegram-бот @"+username+" запущен внутри VaultTracker.");
-                    if(config.allowedChatIds().isEmpty()) log.warning("allowedChatIds пуст: Telegram-каталог доступен всем пользователям бота.");
+                    if(config.chats().isEmpty() && config.allowedChatIds().isEmpty()) log.warning("chats и allowedChatIds пусты: Telegram-каталог доступен всем пользователям бота.");
+                    else if(!config.chats().isEmpty()) log.info("Telegram-бот ограничен чатами и темами из telegram.yml: "+config.chats().size()+".");
                 }
                 List<TelegramApi.Incoming> updates=api.updates(offset);
                 for(var update:updates) {
-                    if(update.text()!=null && update.chatId()!=0) process(update);
+                    if(update.chatId()!=0 && (update.text()!=null || update.callback())) process(update);
                     offset=Math.max(offset,update.updateId()+1);
                 }
                 if(!updates.isEmpty()) TelegramApi.saveOffset(config.offsetFile(),offset);
@@ -42,12 +46,31 @@ final class TelegramBotService implements AutoCloseable {
         return Math.min(config.retry().maxDelay(),config.retry().initialDelay()*multiplier);
     }
     private void process(TelegramApi.Incoming update) throws Exception {
+        if(update.callback()) {
+            if(!config.allowed(update.chatId(),update.topicId())) {
+                api.answerCallback(update.callbackId(),"Доступ закрыт для этой темы.",true); return;
+            }
+            var result=commands.callback(update.userId(),update.callbackData());
+            api.answerCallback(update.callbackId(),result.notice(),result.alert());
+            if(result.view()!=null) api.edit(update.chatId(),update.messageId(),result.view());
+            return;
+        }
         boolean id=TelegramCommands.command(update.text()).equals("/id");
-        if(!id && !config.allowed(update.chatId())) { api.send(update.chatId(),"Доступ закрыт.\nID этого чата: "+update.chatId()); return; }
-        api.send(update.chatId(),commands.handle(update.chatId(),update.text()));
+        if(!id && !config.allowed(update.chatId(),update.topicId())) {
+            sendTemporary(update.chatId(),update.topicId(),new TelegramCommands.View("Доступ закрыт.\nID этого чата: "+update.chatId()+"\nID этой темы: "+update.topicId())); return;
+        }
+        sendTemporary(update.chatId(),update.topicId(),commands.handle(update.userId(),update.chatId(),update.topicId(),update.text(),config.admin(update.userId())));
+    }
+    private void sendTemporary(long chatId,int topicId,TelegramCommands.View view) throws Exception {
+        int messageId=api.send(chatId,topicId,view);
+        deletionScheduler.schedule(()-> {
+            if(stopping.get()) return;
+            try { api.delete(chatId,messageId); }
+            catch(Exception e) { log.fine("Не удалось удалить временное сообщение Telegram: "+api.safe(e)); }
+        },config.messageLifetimeSeconds(),TimeUnit.SECONDS);
     }
     @Override public void close() {
-        stopping.set(true); worker.interrupt(); api.close();
+        stopping.set(true); worker.interrupt(); deletionScheduler.shutdownNow(); api.close();
         try { worker.join(5000); } catch(InterruptedException e) { Thread.currentThread().interrupt(); }
     }
 }

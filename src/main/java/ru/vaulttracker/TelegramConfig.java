@@ -6,14 +6,15 @@ import java.net.URI;
 import java.nio.file.*;
 import java.util.*;
 
-record TelegramConfig(boolean enabled, String token, Set<Long> allowedChatIds, int resultLimit,
-                      int pollTimeoutSeconds, String botApiUrl, Proxy proxy, Retry retry, Path offsetFile) {
+record TelegramConfig(boolean enabled, String token, Set<Long> allowedChatIds, Set<Long> adminUserIds, List<Chat> chats, int pageSize,
+                      int pollTimeoutSeconds, int messageLifetimeSeconds, String botApiUrl, Proxy proxy, Retry retry, Path offsetFile) {
     enum ProxyType { NONE, SOCKS5, HTTP }
     record Proxy(ProxyType type,String host,int port,String username,String password) {
         boolean enabled() { return type != ProxyType.NONE; }
         boolean authenticated() { return enabled() && !username.isBlank(); }
     }
     record Retry(int maxAttempts,long initialDelay,long maxDelay) {}
+    record Chat(boolean isDefault,long chatId,int topicId) {}
 
     static TelegramConfig load(Path dataFolder) throws IOException {
         Files.createDirectories(dataFolder);
@@ -30,6 +31,27 @@ record TelegramConfig(boolean enabled, String token, Set<Long> allowedChatIds, i
         Set<Long> allowed=new LinkedHashSet<>();
         for(Object value:list(y,"allowedChatIds","allowed-chat-ids")) try { allowed.add(Long.parseLong(value.toString())); }
         catch(NumberFormatException e) { throw new IllegalArgumentException("Некорректный allowedChatIds: "+value); }
+        Set<Long> admins=new LinkedHashSet<>();
+        for(Object value:y.getList("adminUserIds",List.of())) try {
+            long userId=Long.parseLong(value.toString());
+            if(userId<=0) throw new NumberFormatException();
+            admins.add(userId);
+        } catch(NumberFormatException e) { throw new IllegalArgumentException("Некорректный adminUserIds: "+value); }
+        List<Chat> chats=new ArrayList<>(); int defaults=0;
+        for(Map<?,?> value:y.getMapList("chats")) {
+            boolean isDefault=Boolean.parseBoolean(String.valueOf(value.containsKey("isDefault") ? value.get("isDefault") : false));
+            long chatId=number(value.get("chatId"),"chats.chatId").longValue();
+            long rawTopicId=value.containsKey("topicId") ? number(value.get("topicId"),"chats.topicId").longValue() : 0;
+            if(chatId==0) throw new IllegalArgumentException("chats.chatId не может быть равен 0");
+            if(rawTopicId<0 || rawTopicId>Integer.MAX_VALUE) throw new IllegalArgumentException("Некорректный chats.topicId: "+rawTopicId);
+            int topicId=(int)rawTopicId;
+            if(isDefault) defaults++;
+            Chat chat=new Chat(isDefault,chatId,topicId);
+            if(chats.stream().anyMatch(existing->existing.chatId()==chatId && existing.topicId()==topicId))
+                throw new IllegalArgumentException("Одинаковые chatId и topicId указаны в chats дважды");
+            chats.add(chat);
+        }
+        if(defaults>1) throw new IllegalArgumentException("В chats только одна тема может иметь isDefault: true");
         String api=string(y,"advanced.botApiUrl","advanced.bot-api-url","https://api.telegram.org").replaceAll("/+$","");
         URI uri;
         try { uri=URI.create(api); } catch(IllegalArgumentException e) { throw new IllegalArgumentException("Некорректный advanced.botApiUrl"); }
@@ -45,12 +67,13 @@ record TelegramConfig(boolean enabled, String token, Set<Long> allowedChatIds, i
         if(type!=ProxyType.NONE && (!host.matches("[A-Za-z0-9.:-]+") || port<1 || port>65535))
             throw new IllegalArgumentException("Проверьте host и port прокси в telegram.yml");
         if(username.isBlank()!=password.isBlank()) throw new IllegalArgumentException("Укажите одновременно username и password прокси");
-        int limit=bounded(integer(y,"resultLimit","result-limit",20),1,50,"resultLimit");
+        int pageSize=bounded(y.getInt("pageSize",8),4,15,"pageSize");
         int poll=bounded(integer(y,"pollTimeoutSeconds","poll-timeout-seconds",30),5,50,"pollTimeoutSeconds");
+        int lifetime=bounded(y.getInt("messageLifetimeSeconds",300),30,86400,"messageLifetimeSeconds");
         int attempts=integer(y,"advanced.connectionRetry.maxAttempts","advanced.connection-retry.max-attempts",10);
         long initial=boundedLong(longValue(y,"advanced.connectionRetry.initialDelay","advanced.connection-retry.initial-delay",1000),100,300000,"initialDelay");
         long maximum=boundedLong(longValue(y,"advanced.connectionRetry.maxDelay","advanced.connection-retry.max-delay",300000),initial,1800000,"maxDelay");
-        return new TelegramConfig(enabled,token,Set.copyOf(allowed),limit,poll,api,
+        return new TelegramConfig(enabled,token,Set.copyOf(allowed),Set.copyOf(admins),List.copyOf(chats),pageSize,poll,lifetime,api,
                 new Proxy(type,host,port,username,password),new Retry(attempts,initial,maximum),dataFolder.resolve("telegram.offset"));
     }
     private static String secret(String configured,String environment) {
@@ -68,11 +91,20 @@ record TelegramConfig(boolean enabled, String token, Set<Long> allowedChatIds, i
     private static long longValue(YamlConfiguration y,String key,String legacy,long fallback) {
         return y.contains(key) ? y.getLong(key,fallback) : y.getLong(legacy,fallback);
     }
+    private static Number number(Object value,String name) {
+        if(value instanceof Number number) return number;
+        try { return Long.parseLong(String.valueOf(value)); }
+        catch(NumberFormatException e) { throw new IllegalArgumentException("Некорректный "+name+": "+value); }
+    }
     private static int bounded(int value,int min,int max,String name) {
         if(value<min || value>max) throw new IllegalArgumentException(name+" должно быть от "+min+" до "+max); return value;
     }
     private static long boundedLong(long value,long min,long max,String name) {
         if(value<min || value>max) throw new IllegalArgumentException(name+" должно быть от "+min+" до "+max); return value;
     }
-    boolean allowed(long chatId) { return allowedChatIds.isEmpty() || allowedChatIds.contains(chatId); }
+    boolean allowed(long chatId,int topicId) {
+        if(!chats.isEmpty()) return chats.stream().anyMatch(chat->chat.chatId()==chatId && chat.topicId()==topicId);
+        return allowedChatIds.isEmpty() || allowedChatIds.contains(chatId);
+    }
+    boolean admin(long userId) { return adminUserIds.contains(userId); }
 }

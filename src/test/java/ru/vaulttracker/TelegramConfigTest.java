@@ -17,6 +17,13 @@ class TelegramConfigTest {
                 enabled: true
                 token: "123456:abcdefghijklmnopqrstuvwxyz_ABCDE"
                 allowedChatIds: [42, -100123]
+                adminUserIds: [777]
+                pageSize: 6
+                messageLifetimeSeconds: 300
+                chats:
+                  - isDefault: true
+                    chatId: -1001000000001
+                    topicId: 12345
                 advanced:
                   botApiUrl: "https://api.telegram.org"
                   proxy:
@@ -31,7 +38,12 @@ class TelegramConfigTest {
                     maxDelay: 5000
                 """);
         TelegramConfig config=TelegramConfig.load(directory);
-        assertTrue(config.enabled()); assertTrue(config.allowed(42)); assertFalse(config.allowed(7));
+        assertTrue(config.enabled());
+        assertTrue(config.allowed(-1001000000001L,12345));
+        assertFalse(config.allowed(-1001000000001L,12346));
+        assertFalse(config.allowed(42,0));
+        assertTrue(config.admin(777)); assertFalse(config.admin(778)); assertEquals(6,config.pageSize());
+        assertEquals(300,config.messageLifetimeSeconds());
         assertEquals(TelegramConfig.ProxyType.SOCKS5,config.proxy().type()); assertTrue(config.proxy().authenticated());
         assertEquals(0,config.retry().maxAttempts()); assertEquals(5000,config.retry().maxDelay());
     }

@@ -4,8 +4,24 @@ token: "ВСТАВЬТЕ_НОВЫЙ_ТОКЕН_BOTFATHER"
 
 # Пустой список разрешает доступ всем. Для закрытого каталога укажите ID после команды /id.
 allowedChatIds: []
-resultLimit: 20
+
+# Telegram ID пользователей, которым доступны /items и /status.
+# Свой ID можно узнать командой /id.
+adminUserIds: []
+
+# Если список chats заполнен, бот работает только в указанных чатах и темах.
+# topicId: 0 означает чат без тем. isDefault резервирует основную тему для уведомлений.
+chats: []
+# chats:
+#   - isDefault: true
+#     chatId: -1000000000000
+#     topicId: 12345
+
+pageSize: 8
 pollTimeoutSeconds: 30
+
+# Ответы бота удаляются через 5 минут.
+messageLifetimeSeconds: 300
 
 advanced:
   botApiUrl: "https://api.telegram.org"
@@ -22,4 +38,5 @@ advanced:
     initialDelay: 1000
     maxDelay: 300000
 
-version: 1
+# Версия формата. Не меняйте вручную.
+version: 3
