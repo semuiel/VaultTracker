@@ -1,0 +1,16 @@
+# У тестового и основного серверов должны быть разные server-id.
+# Не меняйте id у существующего каталога: от него зависит файл cache и раздел базы.
+server-id: test
+# Включите после указания пароля. Затем полностью перезапустите сервер.
+database:
+  enabled: false
+  host: 127.0.0.1
+  port: 3306
+  name: vault_tracker
+  username: vault_plugin
+  password: ''
+# Вместо пароля в файле можно задать переменную окружения VAULT_DB_PASSWORD.
+# Повторная сверка только загруженных сундуков, в секундах.
+reconcile-seconds: 30
+update-delay-ticks: 2
+max-vaults-per-player: 100

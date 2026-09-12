@@ -1,0 +1,26 @@
+name: VaultTracker
+version: 0.2.5
+main: ru.vaulttracker.VaultTrackerPlugin
+api-version: '1.21.11'
+folia-supported: true
+description: Chest resource catalogue with durable MariaDB synchronization
+commands:
+  topitem:
+    description: Find players with a resource
+    usage: /topitem diamond
+  vaulttracker:
+    description: Chest catalogue commands
+    aliases: [vtrack]
+permissions:
+  vaulttracker.register:
+    default: true
+    description: Register a chest by placing a vault sign
+  vaulttracker.search:
+    default: true
+    description: Search published resource totals
+  vaulttracker.admin:
+    default: op
+    description: View storage status and request reconciliation
+
+
+
