@@ -48,19 +48,23 @@ final class TelegramBotService implements AutoCloseable {
     private void process(TelegramApi.Incoming update) throws Exception {
         if(update.callback()) {
             if(!config.allowed(update.chatId(),update.topicId())) {
-                api.answerCallback(update.callbackId(),"Доступ закрыт для этой темы.",true); return;
+                api.answerCallback(update.callbackId(),"",false); return;
             }
             var result=commands.callback(update.userId(),update.callbackData());
             api.answerCallback(update.callbackId(),result.notice(),result.alert());
             if(result.view()!=null) api.edit(update.chatId(),update.messageId(),result.view());
             return;
         }
-        boolean id=TelegramCommands.command(update.text()).equals("/id");
-        if(!id && !config.allowed(update.chatId(),update.topicId())) {
-            sendTemporary(update.chatId(),update.topicId(),new TelegramCommands.View("Доступ закрыт.\nID этого чата: "+update.chatId()+"\nID этой темы: "+update.topicId())); return;
+        if(!config.allowed(update.chatId(),update.topicId())) {
+            if(isCommand(update.text()) && update.messageId()>0) {
+                try { api.delete(update.chatId(),update.messageId()); }
+                catch(Exception e) { log.fine("Не удалось удалить команду из запрещённой темы: "+api.safe(e)); }
+            }
+            return;
         }
         sendTemporary(update.chatId(),update.topicId(),commands.handle(update.userId(),update.chatId(),update.topicId(),update.text(),config.admin(update.userId())));
     }
+    private static boolean isCommand(String text) { return text!=null && text.trim().startsWith("/"); }
     private void sendTemporary(long chatId,int topicId,TelegramCommands.View view) throws Exception {
         int messageId=api.send(chatId,topicId,view);
         deletionScheduler.schedule(()-> {
