@@ -26,10 +26,11 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
     private Catalogue catalogue;
     private StorageEngine storage;
     private TelegramBotService telegram;
+    private final Object telegramLock=new Object();
     private final Set<BlockKey> scheduled = ConcurrentHashMap.newKeySet();
     private volatile boolean stopping;
-    private long debounceTicks;
-    private int playerLimit;
+    private volatile long debounceTicks;
+    private volatile int playerLimit;
 
     @Override public void onEnable() {
         saveDefaultConfig();
@@ -43,8 +44,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
                     getConfig().getInt("database.port", 3306), getConfig().getString("database.name", "vault_tracker"),
                     getConfig().getString("database.username", "vault_plugin"), password, id);
         }
-        debounceTicks = Math.max(1, Math.min(20, getConfig().getLong("update-delay-ticks", 2)));
-        playerLimit = Math.max(1, getConfig().getInt("max-vaults-per-player", 100));
+        applyRuntimeConfig();
         storage = new StorageEngine(getDataFolder().toPath().resolve("cache-"+id), database, getLogger());
         catalogue = new Catalogue(storage::accept);
         getServer().getPluginManager().registerEvents(this,this);
@@ -53,16 +53,37 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
         Objects.requireNonNull(getCommand("topitem")).setExecutor(this);
         Objects.requireNonNull(getCommand("topitem")).setTabCompleter(this);
         storage.start(catalogue::restore);
+        synchronized(telegramLock) { replaceTelegram(); }
+        getLogger().info("VaultTracker " + getPluginMeta().getVersion() + ": каталог ресурсов. /vtrack help");
+    }
+    private void applyRuntimeConfig() {
+        debounceTicks=Math.max(1,Math.min(20,getConfig().getLong("update-delay-ticks",2)));
+        playerLimit=Math.max(1,getConfig().getInt("max-vaults-per-player",100));
+    }
+    private String replaceTelegram() {
+        if(telegram!=null) { telegram.close(); telegram=null; }
         try {
             TelegramConfig telegramConfig=TelegramConfig.load(getDataFolder().toPath());
-            if(telegramConfig.enabled()) {
-                telegram=new TelegramBotService(telegramConfig,catalogue,storage,getLogger());
-                telegram.start();
-            } else getLogger().info("Telegram-бот выключен в telegram.yml.");
+            if(!telegramConfig.enabled()) { getLogger().info("Telegram-бот выключен в telegram.yml."); return "Telegram-бот выключен."; }
+            telegram=new TelegramBotService(telegramConfig,catalogue,storage,getLogger()); telegram.start();
+            return "Настройки применены, Telegram-бот перезапущен.";
         } catch(Exception e) {
             getLogger().severe("Telegram-бот не запущен: "+e.getMessage()+". Учёт хранилищ продолжает работать.");
+            return "Настройки плагина применены, но Telegram-бот не запущен: "+e.getMessage();
         }
-        getLogger().info("VaultTracker " + getPluginMeta().getVersion() + ": каталог ресурсов. /vtrack help");
+    }
+    private void reloadPlugin(CommandSender sender) {
+        reloadConfig(); applyRuntimeConfig();
+        tell(sender,"Перечитываю настройки и перезапускаю Telegram-бот...");
+        Thread.ofVirtual().name("VaultTracker-reload").start(()-> {
+            String result;
+            synchronized(telegramLock) {
+                if(stopping) return;
+                result=replaceTelegram();
+                if(stopping && telegram!=null) { telegram.close(); telegram=null; return; }
+            }
+            if(!stopping) getServer().getGlobalRegionScheduler().run(this,task->tell(sender,result));
+        });
     }
     private static BlockKey key(Block b) { return new BlockKey(b.getWorld().getUID(), b.getX(), b.getY(), b.getZ()); }
     private static Location location(BlockKey p, World w) { return new Location(w,p.x(),p.y(),p.z()); }
@@ -265,6 +286,9 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
         } else if (action.equals("rescan")) {
             if (!sender.hasPermission("vaulttracker.admin")) { tell(sender,"Нет права vaulttracker.admin."); return true; }
             catalogue.all().forEach(v -> schedule(v.sign())); tell(sender,"Запущена сверка загруженных хранилищ.");
+        } else if (action.equals("reload")) {
+            if (!sender.hasPermission("vaulttracker.admin")) { tell(sender,"Нет права vaulttracker.admin."); return true; }
+            reloadPlugin(sender);
         } else if (action.equals("find") && args.length==2) {
             if (!sender.hasPermission("vaulttracker.search")) { tell(sender,"Нет права vaulttracker.search."); return true; }
             if (!storage.ready()) { tell(sender,"Каталог загружается. Повторите поиск чуть позже."); return true; }
@@ -282,7 +306,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
         } else {
             tell(sender,"Напишите [vault] на первой строке таблички на хранилище: появится ваш ник.");
             tell(sender,"/vtrack mine — ваши хранилища; /topitem diamond или /vtrack find DIAMOND — у кого есть алмазы. Поиск доступен постоянно.");
-            if (sender.hasPermission("vaulttracker.admin")) tell(sender,"/vtrack status | /vtrack rescan — управление каталогом.");
+            if (sender.hasPermission("vaulttracker.admin")) tell(sender,"/vtrack status | /vtrack rescan | /vtrack reload — управление каталогом.");
         }
         return true;
     }
@@ -310,8 +334,8 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
             }
             return options.stream().filter(s -> s.toLowerCase(Locale.ROOT).startsWith(prefix)).limit(40).toList();
         }
-        if (args.length==1) return List.of("help","mine","find","status","rescan").stream()
-                .filter(s -> (!s.equals("status") && !s.equals("rescan")) || sender.hasPermission("vaulttracker.admin"))
+        if (args.length==1) return List.of("help","mine","find","status","rescan","reload").stream()
+                .filter(s -> (!s.equals("status") && !s.equals("rescan") && !s.equals("reload")) || sender.hasPermission("vaulttracker.admin"))
                 .filter(s -> !s.equals("find") || sender.hasPermission("vaulttracker.search"))
                 .filter(s->s.startsWith(args[0].toLowerCase(Locale.ROOT))).toList();
         if (args.length==2 && args[0].equalsIgnoreCase("find")) return Arrays.stream(Material.values()).filter(Material::isItem).map(Enum::name).filter(s->s.startsWith(args[1].toUpperCase(Locale.ROOT))).limit(40).toList();
@@ -320,7 +344,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
     @Override public void onDisable() {
         stopping=true;
         getServer().getGlobalRegionScheduler().cancelTasks(this);
-        if (telegram != null) telegram.close();
+        synchronized(telegramLock) { if(telegram!=null) { telegram.close(); telegram=null; } }
         if (storage != null) storage.close();
     }
 }

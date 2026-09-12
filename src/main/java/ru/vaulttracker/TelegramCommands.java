@@ -43,9 +43,9 @@ final class TelegramCommands {
             if(!storage.ready()) return loading();
             return begin(userId,Kind.ITEMS,"",1);
         }
-        if(!command.equals("/topitem")) return new View("Доступная команда: /topitem\nПример: /topitem diamond");
+        if(!command.equals("/topitem") && !command.equals("/item")) return new View("Доступные команды: /item и /topitem\nПример: /item алмаз");
         if(!storage.ready()) return loading();
-        return topitem(userId,arguments(text));
+        return topitem(userId,remainder(text));
     }
 
     Callback callback(long userId,String data) {
@@ -63,27 +63,32 @@ final class TelegramCommands {
         return new Callback(render(parts[1],session,page),"",false);
     }
 
-    private View topitem(long userId,List<String> args) {
-        boolean explicit=args.size()>1 && args.getFirst().equalsIgnoreCase("player");
-        if(explicit) args=new ArrayList<>(args.subList(1,args.size()));
-        if(args.isEmpty() || args.size()>2) return new View(topHelp());
-        String first=args.getFirst();
-        String material=RussianItems.normalize(first);
-        if(!explicit && args.size()==1 && validItem.test(material)) return begin(userId,Kind.TOP,material,1);
+    private View topitem(long userId,String query) {
+        if(query.isBlank()) return new View(topHelp());
+        boolean explicit=query.regionMatches(true,0,"player ",0,7);
+        if(explicit) query=query.substring(7).trim();
+        String material=!explicit ? resolveItem(query) : null;
+        if(material!=null) return begin(userId,Kind.TOP,material,1);
+        String[] parts=query.split("\\s+",2);
+        String first=parts[0]; String tail=parts.length==2 ? parts[1].trim() : "";
         if(!first.matches("[A-Za-z0-9_.-]{1,32}")) return new View("Некорректный ник или название предмета.");
         List<Catalogue.OwnerItems> owners=catalogue.ownerItems(first);
         if(owners.isEmpty()) return new View("Игрок «"+first+"» не найден в каталоге зарегистрированных хранилищ.");
         if(owners.size()>1) return new View("В каталоге несколько UUID с этим ником. Администратору сервера нужно проверить записи владельцев.");
-        if(args.size()==2 && !args.get(1).matches("[+-]?[0-9]+")) {
-            material=RussianItems.normalize(args.get(1));
-            if(!validItem.test(material)) return new View("Неизвестный предмет. Пример: /topitem "+first+" diamond");
+        if(!tail.isEmpty() && !tail.matches("[+-]?[0-9]+")) {
+            material=resolveItem(tail);
+            if(material==null) return new View("Неизвестный предмет. Пример: /item "+first+" алмаз");
             var owner=owners.getFirst();
             return new View(owner.name()+" — "+RussianItems.name(material)+": "+ItemAmount.format(material,owner.items().getOrDefault(material,0L)));
         }
         int page=1;
-        if(args.size()==2) try { page=Integer.parseInt(args.get(1)); }
+        if(!tail.isEmpty()) try { page=Integer.parseInt(tail); }
         catch(NumberFormatException e) { return new View("Номер страницы слишком большой."); }
         return begin(userId,Kind.PLAYER,first,page);
+    }
+
+    private String resolveItem(String query) {
+        return RussianItems.candidates(query).stream().filter(validItem).findFirst().orElse(null);
     }
 
     private View begin(long userId,Kind kind,String argument,int page) {
@@ -162,9 +167,9 @@ final class TelegramCommands {
         if(page<pages) result.add(new Button("Вперёд ▶","vt:"+token+":"+(page+1)));
         return List.copyOf(result);
     }
-    private static List<String> arguments(String text) {
-        String[] words=text.split("\\s+");
-        return words.length<=1 ? List.of() : new ArrayList<>(Arrays.asList(words).subList(1,words.length));
+    private static String remainder(String text) {
+        String[] words=text.split("\\s+",2);
+        return words.length<2 ? "" : words[1].trim();
     }
     static String command(String text) {
         if(text==null || text.isBlank()) return "";
@@ -174,7 +179,7 @@ final class TelegramCommands {
     private static View loading() { return new View("Каталог загружается. Повторите поиск чуть позже."); }
     private static View adminOnly() { return new View("Команда доступна только администратору Telegram-бота."); }
     private static String topHelp() {
-        return "/topitem предмет — топ игроков\n/topitem Ник — все ресурсы игрока\n/topitem Ник предмет — количество предмета";
+        return "/item предмет — топ игроков\n/item Ник — все ресурсы игрока\n/item Ник предмет — количество предмета\n\nМожно использовать русские названия и команду /topitem.";
     }
     private static String help(boolean admin) {
         String text="Каталог ресурсов VaultTracker.\n\n"+topHelp();

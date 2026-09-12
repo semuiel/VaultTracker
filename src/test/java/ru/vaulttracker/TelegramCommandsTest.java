@@ -40,6 +40,10 @@ class TelegramCommandsTest {
             assertTrue(player.text().contains("Ресурсы Alex")); assertFalse(player.buttons().isEmpty());
             var quantity=commands.handle(42,10,20,"/topitem Alex diamond",false);
             assertEquals("Alex — Алмаз: 2000 шт. (1 шалкер + 272 шт.)",quantity.text());
+            assertTrue(commands.handle(42,10,20,"/item алмаз",false).text().contains("Alex — 2000 шт."));
+            assertTrue(commands.handle(42,10,20,"/item железный слиток",false).text().contains("Alex — 50 шт."));
+            assertEquals("Alex — Алмаз: 2000 шт. (1 шалкер + 272 шт.)",
+                    commands.handle(42,10,20,"/item Alex алмаз",false).text());
         }
     }
 

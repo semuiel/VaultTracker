@@ -52,7 +52,7 @@ final class TelegramApi implements AutoCloseable {
     String verify() throws IOException { return call("getMe",new JsonObject()).getAsJsonObject("result").get("username").getAsString(); }
     void registerCommands() throws IOException {
         JsonArray commands=new JsonArray();
-        commands.add(command("topitem","Найти владельцев ресурса"));
+        commands.add(command("item","Поиск ресурсов и игроков"));
         JsonObject body=new JsonObject(); body.add("commands",commands); call("setMyCommands",body);
     }
     private static JsonObject command(String name,String description) {
