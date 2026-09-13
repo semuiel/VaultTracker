@@ -24,6 +24,52 @@ class GuardServiceTest {
     void offline() {guard.presence(owner,"Alex",false);clock.addAndGet(120_001);}
     List<GuardService.Event> events() throws Exception {return guard.history(99,0,20).get();}
 
+    @Test void personalDayDoesNotDelayAdminAlertsAndAppliesToFutureChanges() throws Exception {
+        guard.link(owner,"Alex",code(42)).get();guard.offlineSeconds(42,86400L).get();
+        guard.restore(List.of(snapshot(10,1)));offline();guard.accept(snapshot(9,2));
+        var first=guard.deliveries().get();assertEquals(List.of(99L),first.stream().map(GuardService.Delivery::recipient).toList());
+        for(var d:first) guard.delivered(d.id(),true).get();
+        clock.addAndGet(86400_000);guard.accept(snapshot(8,3));
+        assertEquals(Set.of(42L,99L),new HashSet<>(guard.deliveries().get().stream().map(GuardService.Delivery::recipient).toList()));
+    }
+    @Test void shorterPersonalTimeDoesNotSendAdminsEarlyOrLeakBetweenChannels() throws Exception {
+        guard.link(owner,"Alex",code(99)).get();guard.offlineSeconds(99,0L).get();
+        guard.restore(List.of(snapshot(10,1)));guard.presence(owner,"Alex",false);guard.accept(snapshot(9,2));
+        assertEquals(1,guard.deliveries().get().size());guard.toggleOwn(99).get();
+        assertTrue(guard.deliveries().get().isEmpty()); // admin preference cannot revive owner-only delivery
+        guard.toggleOwn(99).get();guard.offlineSeconds(99,86400L).get();clock.addAndGet(120001);
+        guard.accept(snapshot(8,3));assertEquals(1,guard.deliveries().get().size());guard.toggleAdmin(99).get();
+        assertTrue(guard.deliveries().get().isEmpty()); // owner preference cannot revive admin-only delivery
+    }
+    @Test void personalTimePersistsAndResetFollowsServerSetting() throws Exception {
+        guard.link(owner,"Alex",code(42)).get();assertNull(guard.offlineSeconds(42).get());
+        guard.offlineSeconds(42,86400L).get();guard.close();guard=open();
+        assertEquals(86400L,guard.offlineSeconds(42).get());
+        guard.configure(new GuardConfig(true,900000),Set.of(99L));assertEquals(86400L,guard.offlineSeconds(42).get());
+        guard.offlineSeconds(42,null).get();assertNull(guard.offlineSeconds(42).get());assertEquals(900,guard.defaultOfflineSeconds());
+        assertThrows(ExecutionException.class,()->guard.offlineSeconds(43,10L).get());
+        assertThrows(ExecutionException.class,()->guard.offlineSeconds(42,-1L).get());
+        assertThrows(ExecutionException.class,()->guard.offlineSeconds(42,31536001L).get());
+        guard.offlineSeconds(42,31536000L).get();assertEquals(31536000L,guard.offlineSeconds(42).get());
+    }
+    @Test void worldNamesAppearInEventsAndLegacyTextAndSurviveRestart() throws Exception {
+        guard.world(sign.world(),"world_nether");guard.restore(List.of(snapshot(10,1)));offline();guard.accept(snapshot(9,2));
+        assertEquals("Мир: world_nether\nКоординаты: 1 64 1",events().getFirst().location());
+        assertTrue(guard.deliveries().get().getFirst().text().contains("Мир: world_nether\nКоординаты:"));
+        String legacy="Мир "+sign.world()+"; блок -3779 64 -305";
+        assertEquals("Мир: world_nether\nКоординаты: -3779 64 -305",guard.readableLocation(legacy));
+        guard.close();guard=open();assertTrue(guard.readableLocation(legacy).contains("world_nether"));
+    }
+    @Test void upgradingLegacyAccountTablePreservesExistingLink() throws Exception {
+        guard.link(owner,"Alex",code(42)).get();guard.toggleOwn(42).get();guard.close();
+        try(var db=java.sql.DriverManager.getConnection("jdbc:h2:"+folder.resolve("guard").toAbsolutePath(),"sa","");var s=db.createStatement()) {
+            s.execute("ALTER TABLE accounts DROP COLUMN offline_seconds");
+            s.execute("ALTER TABLE outbox DROP COLUMN own_channel");s.execute("ALTER TABLE outbox DROP COLUMN admin_channel");
+        }
+        guard=open();assertEquals(owner,guard.account(42).get().uuid());assertFalse(guard.account(42).get().notifications());
+        assertNull(guard.offlineSeconds(42).get());guard.offlineSeconds(42,86400L).get();assertEquals(86400L,guard.offlineSeconds(42).get());
+    }
+
     @Test void bindingIsSingleUseAndCannotReplaceEitherAccount() throws Exception {
         String token=code(42);assertTrue(guard.link(owner,"Alex",token).get().contains("привязан к Telegram"));
         assertEquals(owner,guard.account(42).get().uuid());

@@ -64,6 +64,7 @@ final class TelegramBotService implements AutoCloseable {
     private void process(TelegramApi.Incoming update) throws Exception {
         if(update.callback()) {
             if(update.privateChat()) {
+                if(guardMenu!=null) guardMenu.cancelInput(update.userId());
                 TelegramCommands.Callback result;
                 if(guardMenu!=null && update.callbackData().equals("vg:search")) {
                     result=new TelegramCommands.Callback(privateMenu.handle(update.userId(),update.chatId(),0,"/search",config.admin(update.userId())),"",false);
@@ -89,6 +90,7 @@ final class TelegramBotService implements AutoCloseable {
         }
         if(!update.privateChat() && !isCommand(update.text())) return;
         if(isCommand(update.text()) && !acceptsCommand(update.text(),username,update.privateChat())) return;
+        if(update.privateChat() && guardMenu!=null && isCommand(update.text())) guardMenu.cancelInput(update.userId());
         if(TelegramCommands.command(update.text()).equals("/id")) {
             log.info("Telegram /id — данные для telegram.yml (отправитель: "+update.userId()+"):\n"
                     +"chats:\n"
@@ -105,7 +107,9 @@ final class TelegramBotService implements AutoCloseable {
             return;
         }
         if(update.privateChat()) {
-            var view=privateMenu.handle(update.userId(),update.chatId(),update.topicId(),update.text(),config.admin(update.userId()));
+            TelegramCommands.View view=null;
+            if(guardMenu!=null && !isCommand(update.text())) view=guardMenu.input(update.userId(),update.text());
+            if(view==null) view=privateMenu.handle(update.userId(),update.chatId(),update.topicId(),update.text(),config.admin(update.userId()));
             if(view!=null) api.send(update.chatId(),update.topicId(),view);
             if(isCommand(update.text()) && update.messageId()>0) {
                 try { api.delete(update.chatId(),update.messageId()); }

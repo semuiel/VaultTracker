@@ -25,6 +25,39 @@ class TelegramGuardMenuTest {
     @AfterEach void close() {guard.close();}
     String button(TelegramCommands.View view,String contains) {return view.buttons().stream().filter(b->b.text().contains(contains)).findFirst().orElseThrow().data();}
     TelegramCommands.View click(long user,TelegramCommands.View view,String contains) throws Exception {return menu.callback(user,button(view,contains)).view();}
+    @Test void personalSettingsSupportPresetsCustomInputAndDefaultWithoutCrossUserAccess() throws Exception {
+        guard.link(UUID.randomUUID(),"Alex",guard.generate(42).get().split("/vtrack link ")[1].substring(0,32)).get();
+        var settings=click(42,menu.home(42),"Настройки");String day=button(settings,"1 дн.");
+        assertTrue(menu.callback(43,day).alert());assertNull(guard.offlineSeconds(42).get());
+        settings=menu.callback(42,day).view();assertTrue(settings.text().contains("1 дн. (личное)"));assertEquals(86400L,guard.offlineSeconds(42).get());
+        click(42,settings,"Своё время");assertNull(menu.input(43,"300"));
+        assertTrue(menu.input(42,"-1").text().contains("Введите целое"));assertEquals(86400L,guard.offlineSeconds(42).get());
+        settings=menu.input(42,"7200");assertTrue(settings.text().contains("2 ч. (личное)"));
+        settings=click(42,settings,"Как на сервере");assertNull(guard.offlineSeconds(42).get());
+        click(42,settings,"Своё время");menu.cancelInput(42);assertNull(menu.input(42,"900"));
+    }
+    @Test void customTimeInputOnlyCapturesPersonalChatAndCancelEndsIt() throws Exception {
+        guard.link(UUID.randomUUID(),"Alex",guard.generate(42).get().split("/vtrack link ")[1].substring(0,32)).get();
+        TelegramConfig config=mock(TelegramConfig.class);when(config.pageSize()).thenReturn(8);
+        var process=TelegramBotService.class.getDeclaredMethod("process",TelegramApi.Incoming.class);process.setAccessible(true);
+        try(var apis=mockConstruction(TelegramApi.class);
+            var service=new TelegramBotService(config,catalogue,storage,Logger.getAnonymousLogger(),guard)) {
+            var field=TelegramBotService.class.getDeclaredField("guardMenu");field.setAccessible(true);
+            var actual=(TelegramGuardMenu)field.get(service);var api=apis.constructed().getFirst();
+            var settings=actual.callback(42,button(actual.home(42),"Настройки")).view();
+            String custom=button(settings,"Своё время");
+            process.invoke(service,new TelegramApi.Incoming(1,42,0,42,1,null,"cb",custom,true));
+            clearInvocations(api);
+            process.invoke(service,new TelegramApi.Incoming(2,-100,20,42,2,"86400",null,null,false));verifyNoInteractions(api);
+            process.invoke(service,new TelegramApi.Incoming(3,42,0,42,3,"86400",null,null,true));
+            verify(api).send(eq(42L),eq(0),any());assertEquals(86400L,guard.offlineSeconds(42).get());
+            process.invoke(service,new TelegramApi.Incoming(4,42,0,42,1,null,"cb2",custom,true));
+            process.invoke(service,new TelegramApi.Incoming(5,42,0,42,4,"/cancel",null,null,true));
+            clearInvocations(api);
+            process.invoke(service,new TelegramApi.Incoming(6,42,0,42,5,"900",null,null,true));
+            verifyNoInteractions(api);assertEquals(86400L,guard.offlineSeconds(42).get());
+        }
+    }
     @Test void bindingAndAccountButtonsWorkAndCannotBeUsedByAnotherUser() throws Exception {
         var home=menu.home(42);assertFalse(home.text().contains("Уведомления администратора"));
         String bind=button(home,"Привязать");assertTrue(menu.callback(43,bind).alert());

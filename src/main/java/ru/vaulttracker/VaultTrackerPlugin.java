@@ -50,6 +50,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
         applyRuntimeConfig();
         try {guard=new GuardService(getDataFolder().toPath().resolve("guard-data"),GuardConfig.load(getDataFolder().toPath()),getLogger());}
         catch(Exception e) {throw new IllegalStateException("Не удалось открыть guard.yml / guard-data. Сохраните файлы и проверьте доступ к диску.",e);}
+        for(World world:getServer().getWorlds()) guard.world(world.getUID(),world.getName());
         for(Player player:getServer().getOnlinePlayers()) guard.presence(player.getUniqueId(),player.getName(),true);
         storage = new StorageEngine(getDataFolder().toPath().resolve("cache-"+id), database, getLogger());
         catalogue = new Catalogue(snapshot-> {storage.accept(snapshot);guard.accept(snapshot);});
@@ -277,6 +278,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
         if (!storage.ready()) return;
         for (Snapshot v : catalogue.inChunk(new BlockKey.ChunkKey(e.getWorld().getUID(),e.getChunk().getX(),e.getChunk().getZ()))) schedule(v.sign());
     }
+    @EventHandler(priority=EventPriority.MONITOR) public void worldLoad(WorldLoadEvent e) {guard.world(e.getWorld().getUID(),e.getWorld().getName());}
     @EventHandler(priority=EventPriority.MONITOR, ignoreCancelled=true) public void chunkUnload(ChunkUnloadEvent e) {
         for (Snapshot v : catalogue.inChunk(new BlockKey.ChunkKey(e.getWorld().getUID(),e.getChunk().getX(),e.getChunk().getZ()))) refresh(v.sign(),e.getWorld());
     }
