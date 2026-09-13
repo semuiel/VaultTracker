@@ -37,6 +37,7 @@ final class TelegramGuardMenu {
             case "custom" -> view=prompt(user,"time","Отправьте число секунд от 0 до 31536000. Например, 172800 — двое суток.");
             case "adminHome" -> view=adminHome(user);
             case "admin" -> {guard.toggleAdmin(user).get();view=adminHome(user);}
+            case "banMenu" -> view=banMenu(user);
             case "history" -> view=history(user,a.page(),false);
             case "ownHistory" -> view=history(user,a.page(),true);
             case "event" -> view=detail(user,Long.parseLong(a.value()),a.page(),false);
@@ -83,7 +84,14 @@ final class TelegramGuardMenu {
         guard.requireAdmin(user);boolean on=guard.adminAlerts(user).get();
         return new TelegramCommands.View("🛠 Настройки администратора\nУведомления администратора: "+(on ? "включены" : "выключены"),List.of(
                 b(user,(on ? "🔔 Отключить" : "🔕 Включить")+" уведомления администратора","admin","",0,0),
-                b(user,"⏳ Временный бан · 5 минут","browse:ban","",0,1),b(user,"🚪 Кикнуть игрока","browse:kick","",0,2),homeButton(3)));
+                b(user,"⏳ Временный бан · 5 минут","banMenu","",0,1),b(user,"🚪 Кикнуть игрока","browse:kick","",0,2),homeButton(3)));
+    }
+    private TelegramCommands.View banMenu(long user) {
+        guard.requireAdmin(user);
+        return new TelegramCommands.View("⏳ Временный бан · 5 минут\nКаких игроков показать?",List.of(
+                b(user,"🟢 Игроки онлайн","browse:banOnline","",0,0),
+                b(user,"👥 Все игроки","browse:banAll","",0,1),
+                b(user,"🛠 Назад в настройки администратора","adminHome","",0,2),homeButton(3)));
     }
     private TelegramCommands.View superHome(long user) {
         guard.requireSuper(user);
@@ -177,11 +185,16 @@ final class TelegramGuardMenu {
     private TelegramCommands.View players(long user,String mode,int page) throws Exception {
         guard.requireAdmin(user);if(Set.of("online","all","banned").contains(mode)) guard.requireSuper(user);
         if(moderation==null) return withHome(new TelegramCommands.View("Управление сервером недоступно."));
-        var people=moderation.players(user,mode.equals("kick") ? "online" : mode.equals("ban") ? "all" : mode).get();
+        String source=switch(mode) {case "kick","banOnline" -> "online";case "banAll" -> "all";default -> mode;};
+        String operation=Set.of("banOnline","banAll").contains(mode) ? "ban" : mode;
+        var people=moderation.players(user,source).get();
         List<TelegramCommands.Button> buttons=new ArrayList<>();
-        for(int i=page*6;i<Math.min(people.size(),page*6+6);i++) {var p=people.get(i);buttons.add(b(user,(p.online() ? "🟢 " : "👤 ")+p.name(),mode.equals("ban") || mode.equals("kick") ? "confirm:"+mode : "person",p.uuid().toString(),0,i-page*6));}
+        for(int i=page*6;i<Math.min(people.size(),page*6+6);i++) {var p=people.get(i);buttons.add(b(user,(p.online() ? "🟢 " : "👤 ")+p.name(),Set.of("ban","kick").contains(operation) ? "confirm:"+operation : "person",p.uuid().toString(),0,i-page*6));}
         if(page>0) buttons.add(b(user,"◀ Назад","browse:"+mode,"",page-1,6));if((page+1)*6<people.size()) buttons.add(b(user,"Вперёд ▶","browse:"+mode,"",page+1,6));
-        buttons.add(homeButton(7));return new TelegramCommands.View("Игроки • страница "+(page+1)+" • всего "+people.size(),List.copyOf(buttons));
+        if(Set.of("banOnline","banAll").contains(mode)) buttons.add(b(user,"↩ Выбор списка","banMenu","",0,7));
+        buttons.add(homeButton(8));
+        String title=mode.equals("banOnline") ? "Игроки онлайн" : mode.equals("banAll") ? "Все игроки" : "Игроки";
+        return new TelegramCommands.View(title+" • страница "+(page+1)+" • всего "+people.size(),List.copyOf(buttons));
     }
     private TelegramCommands.View person(long user,UUID uuid) throws Exception {
         guard.requireSuper(user);var p=moderation.info(user,uuid).get();String id=uuid.toString();

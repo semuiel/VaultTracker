@@ -60,9 +60,18 @@ class CabinetRolesTest {
         when(moderation.players(99,"all")).thenReturn(CompletableFuture.completedFuture(List.of(person)));
         when(moderation.info(99,other)).thenReturn(CompletableFuture.completedFuture(person));
         when(moderation.act(99,"ban",other)).thenReturn(CompletableFuture.completedFuture("Бан на 5 минут"));
-        var players=click(99,click(99,menu.home(99),"Настройки администратора"),"Временный бан");var confirm=click(99,players,"Target");
+        var choice=click(99,click(99,menu.home(99),"Настройки администратора"),"Временный бан");
+        assertNotNull(button(choice,"Игроки онлайн"));assertNotNull(button(choice,"Все игроки"));
+        var players=click(99,choice,"Все игроки");var confirm=click(99,players,"Target");
         verify(moderation,never()).act(anyLong(),anyString(),any());String yes=button(confirm,"Подтвердить");
         assertTrue(menu.callback(42,yes).alert());menu.callback(99,yes);menu.callback(99,yes);verify(moderation,times(1)).act(99,"ban",other);
+    }
+    @Test void regularAdminCanChooseOnlinePlayersForTemporaryBan() throws Exception {
+        var person=new TelegramModeration.Person(other,"OnlineTarget",true,"");
+        when(moderation.players(99,"online")).thenReturn(CompletableFuture.completedFuture(List.of(person)));
+        var choice=click(99,click(99,menu.home(99),"Настройки администратора"),"Временный бан");
+        var players=click(99,choice,"Игроки онлайн");assertTrue(players.text().contains("Игроки онлайн"));assertNotNull(button(players,"OnlineTarget"));
+        verify(moderation).players(99,"online");
     }
     @Test void cancelledOrRevokedConfirmationCannotModerate() throws Exception {
         var person=new TelegramModeration.Person(other,"Target",true,"");
