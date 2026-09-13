@@ -43,7 +43,7 @@ final class TelegramCommands {
             if(!storage.ready()) return loading();
             return begin(userId,Kind.ITEMS,"",1);
         }
-        if(!command.equals("/topitem") && !command.equals("/item")) return new View("Доступные команды: /item и /topitem\nПример: /item алмаз");
+        if(!command.equals("/topitem") && !command.equals("/item") && !command.equals("/itemtop")) return new View("Доступные команды: /item, /topitem и /itemtop\nПример: /item алмаз");
         if(!storage.ready()) return loading();
         return topitem(userId,remainder(text));
     }
@@ -67,6 +67,8 @@ final class TelegramCommands {
         if(query.isBlank()) return new View(topHelp());
         boolean explicit=query.regionMatches(true,0,"player ",0,7);
         if(explicit) query=query.substring(7).trim();
+        ResourceGroups.Group group=!explicit ? ResourceGroups.resolve(query) : null;
+        if(group!=null) return begin(userId,Kind.TOP,ResourceGroups.query(group),1);
         String material=!explicit ? resolveItem(query) : null;
         if(material!=null) return begin(userId,Kind.TOP,material,1);
         String[] parts=query.split("\\s+",2);
@@ -76,6 +78,11 @@ final class TelegramCommands {
         if(owners.isEmpty()) return new View("Игрок «"+first+"» не найден в каталоге зарегистрированных хранилищ.");
         if(owners.size()>1) return new View("В каталоге несколько UUID с этим ником. Администратору сервера нужно проверить записи владельцев.");
         if(!tail.isEmpty() && !tail.matches("[+-]?[0-9]+")) {
+            group=ResourceGroups.resolve(tail);
+            if(group!=null) {
+                long amount=group.materials().stream().mapToLong(item->owners.getFirst().items().getOrDefault(item,0L)).sum();
+                return new View(owners.getFirst().name()+" — "+group.title()+": "+ItemAmount.format(group.displayMaterial(),amount));
+            }
             material=resolveItem(tail);
             if(material==null) return new View("Неизвестный предмет. Пример: /item "+first+" алмаз");
             var owner=owners.getFirst();
@@ -126,18 +133,21 @@ final class TelegramCommands {
     }
 
     private View topPage(String token,String material,int requested) {
-        var rows=catalogue.findTotals(material,Integer.MAX_VALUE);
-        if(rows.isEmpty()) return new View(RussianItems.name(material)+" — не найдено в зарегистрированных хранилищах.");
+        ResourceGroups.Group group=ResourceGroups.fromQuery(material);
+        var rows=group==null ? catalogue.findTotals(material,Integer.MAX_VALUE) : catalogue.findTotals(group.materials(),Integer.MAX_VALUE);
+        if(rows.isEmpty()) return new View(group==null ? RussianItems.name(material) : group.title()+" — не найдено в зарегистрированных хранилищах.");
         int pages=pages(rows.size()); int page=clamp(requested,pages);
-        StringBuilder text=new StringBuilder("🏆 ").append(RussianItems.name(material)).append(" • топ владельцев • ")
+        String title=group==null ? RussianItems.name(material) : group.title();
+        String displayMaterial=group==null ? material : group.displayMaterial();
+        StringBuilder text=new StringBuilder("🏆 ").append(title).append(" • топ владельцев • ")
                 .append(page).append('/').append(pages).append("\n\n");
         int first=(page-1)*pageSize;
         for(int i=first;i<Math.min(first+pageSize,rows.size());i++) {
             var row=rows.get(i);
             text.append(i+1).append(". ").append(row.name()).append(" — ")
-                    .append(ItemAmount.format(material,row.amount())).append('\n');
+                    .append(ItemAmount.format(displayMaterial,row.amount())).append('\n');
         }
-        if(!catalogue.ownerItems(material).isEmpty()) text.append("\nИгрок с таким ником: /topitem player ").append(material);
+        if(group==null && !catalogue.ownerItems(material).isEmpty()) text.append("\nИгрок с таким ником: /topitem player ").append(material);
         return new View(text.toString().stripTrailing(),buttons(token,page,pages));
     }
 

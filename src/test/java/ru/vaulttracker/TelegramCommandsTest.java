@@ -11,13 +11,15 @@ class TelegramCommandsTest {
     private final Catalogue catalogue=new Catalogue(v -> {});
     private final StorageEngine storage=mock(StorageEngine.class);
     private final TelegramCommands commands=new TelegramCommands(catalogue,storage,1,
-            id->Set.of("DIAMOND","IRON_INGOT").contains(id));
+            id->Set.of("DIAMOND","IRON_INGOT","DIAMOND_ORE","DEEPSLATE_DIAMOND_ORE",
+                    "EMERALD_ORE","DEEPSLATE_EMERALD_ORE").contains(id));
 
     @BeforeEach void prepare() {
         when(storage.ready()).thenReturn(true);
         UUID world=UUID.randomUUID();
         catalogue.register(new BlockKey(world,1,2,3),UUID.randomUUID(),"Alex",List.of(new BlockKey(world,1,2,4)),
-                Map.of("DIAMOND",2000L,"IRON_INGOT",50L),1,100);
+                Map.of("DIAMOND",2000L,"IRON_INGOT",50L,"DIAMOND_ORE",4L,"DEEPSLATE_DIAMOND_ORE",6L,
+                        "EMERALD_ORE",2L,"DEEPSLATE_EMERALD_ORE",3L),1,100);
         catalogue.register(new BlockKey(world,5,2,3),UUID.randomUUID(),"Bob",List.of(new BlockKey(world,5,2,4)),
                 Map.of("DIAMOND",10L),1,100);
     }
@@ -44,6 +46,9 @@ class TelegramCommandsTest {
             assertTrue(commands.handle(42,10,20,"/item железный слиток",false).text().contains("Alex — 50 шт."));
             assertEquals("Alex — Алмаз: 2000 шт. (1 шалкер + 272 шт.)",
                     commands.handle(42,10,20,"/item Alex алмаз",false).text());
+            assertTrue(commands.handle(42,10,20,"/itemtop АР",false).text().contains("Alex — 10 шт."));
+            assertEquals("Alex — Изумрудная руда (обычная + глубинная): 5 шт.",
+                    commands.handle(42,10,20,"/itemtop Alex ИР",false).text());
         }
     }
 
