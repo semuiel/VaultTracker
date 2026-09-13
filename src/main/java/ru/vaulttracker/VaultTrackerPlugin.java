@@ -233,7 +233,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
         for (int cx=(p.x()-2)>>4; cx<=(p.x()+2)>>4; cx++) for (int cz=(p.z()-2)>>4; cz<=(p.z()+2)>>4; cz++)
             for (Snapshot v : catalogue.inChunk(new BlockKey.ChunkKey(p.world(),cx,cz)))
                 if (near(v.sign(),p) || v.chests().stream().anyMatch(c -> near(c,p))) {
-                    if(actor!=null) guard.attribute(v.sign(),actor.getName());
+                    if(actor!=null) guard.attribute(v.sign(),actor.getUniqueId(),actor.getName());
                     schedule(v.sign());
                 }
     }
@@ -275,8 +275,8 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
     }
     @EventHandler(priority=EventPriority.MONITOR, ignoreCancelled=true) public void broken(BlockBreakEvent e) {
         BlockKey p=key(e.getBlock());Snapshot marker=catalogue.get(p);BlockKey ownerSign=catalogue.claimedBy(p);
-        if(marker!=null) guard.attribute(marker.sign(),e.getPlayer().getName());
-        if(ownerSign!=null) guard.attribute(ownerSign,e.getPlayer().getName());
+        if(marker!=null) guard.attribute(marker.sign(),e.getPlayer().getUniqueId(),e.getPlayer().getName());
+        if(ownerSign!=null) guard.attribute(ownerSign,e.getPlayer().getUniqueId(),e.getPlayer().getName());
         destroyed(e.getBlock());
     }
     @EventHandler(priority=EventPriority.MONITOR, ignoreCancelled=true) public void explode(EntityExplodeEvent e) { e.blockList().forEach(this::destroyed); }

@@ -26,7 +26,7 @@ final class GuardService implements AutoCloseable {
     private final Map<UUID,Long> personalAbsence=new ConcurrentHashMap<>();
     private final Map<UUID,String> worlds=new ConcurrentHashMap<>();
     private final Map<BlockKey,Actor> actors=new ConcurrentHashMap<>();
-    private record Actor(String name,long expires) {}
+    private record Actor(UUID uuid,String name,long expires) {}
     private final Map<BlockKey,Snapshot> baseline=new ConcurrentHashMap<>();
     private final Map<String,Code> codes=new HashMap<>();
     private final SecureRandom random=new SecureRandom();
@@ -130,8 +130,12 @@ final class GuardService implements AutoCloseable {
         return null;
     });}
     void restore(Collection<Snapshot> snapshots) {for(var v:snapshots) if(v.active()) baseline.put(v.sign(),v);}
+    void attribute(BlockKey sign,UUID playerId,String playerName) {
+        if(playerId!=null && playerName!=null && !playerName.isBlank()) actors.put(sign,new Actor(playerId,playerName,clock.getAsLong()+30_000));
+    }
+    /** Kept for compatibility with old callers that cannot identify the player. */
     void attribute(BlockKey sign,String playerName) {
-        if(playerName!=null && !playerName.isBlank()) actors.put(sign,new Actor(playerName,clock.getAsLong()+30_000));
+        if(playerName!=null && !playerName.isBlank()) actors.put(sign,new Actor(null,playerName,clock.getAsLong()+30_000));
     }
     void presence(UUID uuid,String name,boolean online) {
         long time=online ? -1 : clock.getAsLong(); presence.put(uuid,time);
@@ -142,10 +146,13 @@ final class GuardService implements AutoCloseable {
     }
     void accept(Snapshot snapshot) {
         Actor attributed=actors.remove(snapshot.sign());
-        String actor=attributed!=null && attributed.expires()>=clock.getAsLong() ? attributed.name() : null;
+        Actor actorInfo=attributed!=null && attributed.expires()>=clock.getAsLong() ? attributed : null;
+        String actor=actorInfo==null ? null : actorInfo.name();
         Snapshot old=snapshot.active() ? baseline.put(snapshot.sign(),snapshot) : baseline.remove(snapshot.sign());
         if(old==null || !old.generation().equals(snapshot.generation()) || !old.owner().equals(snapshot.owner())) return;
         if(snapshot.active() && old.items().equals(snapshot.items())) return;
+        // The owner working with their own storage is expected activity, not an incident.
+        if(actorInfo!=null && snapshot.owner().equals(actorInfo.uuid())) return;
         long now=clock.getAsLong(), departed=presence.getOrDefault(snapshot.owner(),started);
         GuardConfig settings=config;
         if(!settings.enabled()) return;

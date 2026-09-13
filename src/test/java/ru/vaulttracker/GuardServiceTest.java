@@ -40,6 +40,13 @@ class GuardServiceTest {
         guard.attribute(sign,"OldActor");clock.addAndGet(30_001);guard.accept(snapshot(8,3));
         assertTrue(guard.deliveries().get().getFirst().text().contains("Кто изменил: не определено"));
     }
+    @Test void ownerWorkingInOwnStorageCreatesNoGuardEventButAnotherPlayerStillDoes() throws Exception {
+        UUID other=UUID.randomUUID();guard.link(owner,"Alex",code(42)).get();guard.restore(List.of(snapshot(10,1)));offline();
+        guard.attribute(sign,owner,"Alex");guard.accept(snapshot(9,2));
+        assertTrue(events().isEmpty());assertTrue(guard.deliveries().get().isEmpty());
+        guard.attribute(sign,other,"Griefer");guard.accept(snapshot(8,3));
+        assertEquals(1,events().size());assertEquals("Griefer",events().getFirst().actor());
+    }
 
     @Test void personalDayDoesNotDelayAdminAlertsAndAppliesToFutureChanges() throws Exception {
         guard.link(owner,"Alex",code(42)).get();guard.offlineSeconds(42,86400L).get();
