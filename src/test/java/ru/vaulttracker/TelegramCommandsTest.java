@@ -62,4 +62,12 @@ class TelegramCommandsTest {
         assertTrue(parts.stream().allMatch(part->part.length()<=40));
         assertEquals(input.replace("\n",""),String.join("",parts).replace("\n",""));
     }
+
+    @Test void keepsItemQueriesButMarksServiceCommandsForDeletion() {
+        assertTrue(TelegramBotService.keepCommand("/item алмаз"));
+        assertTrue(TelegramBotService.keepCommand("/topitem Alex"));
+        assertTrue(TelegramBotService.keepCommand("/itemtop AR"));
+        assertFalse(TelegramBotService.keepCommand("/status"));
+        assertFalse(TelegramBotService.keepCommand("/id"));
+    }
 }

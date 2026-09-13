@@ -1,5 +1,5 @@
 name: VaultTracker
-version: 0.4.3
+version: 0.4.4
 main: ru.vaulttracker.VaultTrackerPlugin
 api-version: '1.21.11'
 folia-supported: true
@@ -8,6 +8,7 @@ commands:
   topitem:
     description: Find players with a resource
     usage: /topitem diamond
+    aliases: [itemtop]
   vaulttracker:
     description: Chest catalogue commands
     aliases: [vtrack]

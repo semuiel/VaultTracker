@@ -63,8 +63,16 @@ final class TelegramBotService implements AutoCloseable {
             return;
         }
         sendTemporary(update.chatId(),update.topicId(),commands.handle(update.userId(),update.chatId(),update.topicId(),update.text(),config.admin(update.userId())));
+        if(isCommand(update.text()) && !keepCommand(update.text()) && update.messageId()>0) {
+            try { api.delete(update.chatId(),update.messageId()); }
+            catch(Exception e) { log.fine("Не удалось удалить служебную команду Telegram: "+api.safe(e)); }
+        }
     }
     private static boolean isCommand(String text) { return text!=null && text.trim().startsWith("/"); }
+    static boolean keepCommand(String text) {
+        String command=TelegramCommands.command(text);
+        return command.equals("/item") || command.equals("/topitem") || command.equals("/itemtop");
+    }
     private void sendTemporary(long chatId,int topicId,TelegramCommands.View view) throws Exception {
         int messageId=api.send(chatId,topicId,view);
         deletionScheduler.schedule(()-> {
