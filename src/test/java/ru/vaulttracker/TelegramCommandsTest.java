@@ -68,11 +68,36 @@ class TelegramCommandsTest {
         assertEquals(input.replace("\n",""),String.join("",parts).replace("\n",""));
     }
 
-    @Test void keepsItemQueriesButMarksServiceCommandsForDeletion() {
-        assertTrue(TelegramBotService.keepCommand("/item алмаз"));
-        assertTrue(TelegramBotService.keepCommand("/topitem Alex"));
-        assertTrue(TelegramBotService.keepCommand("/itemtop AR"));
-        assertFalse(TelegramBotService.keepCommand("/status"));
-        assertFalse(TelegramBotService.keepCommand("/id"));
+    @Test void deletesCommandMessagesWithArgumentsAfterSendingReply() throws Exception {
+        TelegramConfig config=mock(TelegramConfig.class);
+        when(config.allowed(10,20)).thenReturn(true);
+        when(config.pageSize()).thenReturn(8);
+        when(config.messageLifetimeSeconds()).thenReturn(300);
+        when(storage.ready()).thenReturn(false);
+        var process=TelegramBotService.class.getDeclaredMethod("process",TelegramApi.Incoming.class);
+        process.setAccessible(true);
+        try(var apis=mockConstruction(TelegramApi.class);
+            var service=new TelegramBotService(config,catalogue,storage,java.util.logging.Logger.getAnonymousLogger())) {
+            var api=apis.constructed().getFirst();
+            when(api.send(eq(10L),eq(20),any())).thenReturn(900);
+            int messageId=100;
+            for(String text:List.of("/item", "/item алмаз", "/item Alex алмаз", "/item глубинная алмазная руда",
+                    "/topitem Alex", "/itemtop АР", "/item@VaultBot алмаз", "/status", "/id")) {
+                process.invoke(service,new TelegramApi.Incoming(1,10,20,42,messageId,text,null,null));
+                var order=inOrder(api);
+                order.verify(api).send(eq(10L),eq(20),any());
+                order.verify(api).delete(10,messageId);
+                verify(api,never()).delete(10,900);
+                clearInvocations(api);
+                messageId++;
+            }
+            process.invoke(service,new TelegramApi.Incoming(1,10,20,42,800,"обычное сообщение",null,null));
+            verify(api,never()).delete(anyLong(),anyInt());
+            when(config.allowed(10,20)).thenReturn(false);
+            clearInvocations(api);
+            process.invoke(service,new TelegramApi.Incoming(1,10,20,42,801,"/item алмаз",null,null));
+            verify(api).delete(10,801);
+            verify(api,never()).send(anyLong(),anyInt(),any());
+        }
     }
 }
