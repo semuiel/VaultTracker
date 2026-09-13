@@ -115,13 +115,17 @@ final class TelegramApi implements AutoCloseable {
     }
     void edit(long chatId,int messageId,TelegramCommands.View view) throws IOException {
         JsonObject body=messageBody(chatId,view); body.addProperty("message_id",messageId);
-        call("editMessageText",body);
+        try {call("editMessageText",body);} catch(IOException e) {if(!benignCallbackError(e)) throw e;}
     }
     void answerCallback(String callbackId,String text,boolean alert) throws IOException {
         JsonObject body=new JsonObject(); body.addProperty("callback_query_id",callbackId);
         if(text!=null && !text.isBlank()) body.addProperty("text",text);
         if(alert) body.addProperty("show_alert",true);
-        call("answerCallbackQuery",body);
+        try {call("answerCallbackQuery",body);} catch(IOException e) {if(!benignCallbackError(e)) throw e;}
+    }
+    static boolean benignCallbackError(Throwable error) {
+        String text=String.valueOf(error.getMessage()).toLowerCase(java.util.Locale.ROOT);
+        return text.contains("message is not modified") || text.contains("query is too old") || text.contains("query id is invalid");
     }
     void delete(long chatId,int messageId) throws IOException {
         JsonObject body=new JsonObject(); body.addProperty("chat_id",chatId); body.addProperty("message_id",messageId);

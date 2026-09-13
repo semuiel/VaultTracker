@@ -79,7 +79,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
             TelegramConfig telegramConfig=TelegramConfig.load(getDataFolder().toPath());
             guard.configure(GuardConfig.load(getDataFolder().toPath()),telegramConfig.adminUserIds());
             if(!telegramConfig.enabled()) { getLogger().info("Telegram-бот выключен в telegram.yml."); return "Telegram-бот выключен."; }
-            telegram=new TelegramBotService(telegramConfig,catalogue,storage,getLogger(),guard); telegram.start();
+            telegram=new TelegramBotService(telegramConfig,catalogue,storage,getLogger(),guard,new TelegramModeration(this,guard)); telegram.start();
             return "Настройки применены, Telegram-бот перезапущен.";
         } catch(Exception e) {
             getLogger().severe("Telegram-бот не запущен: "+e.getMessage()+". Учёт хранилищ продолжает работать.");

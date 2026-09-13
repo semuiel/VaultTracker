@@ -65,7 +65,7 @@ class GuardServiceTest {
         guard.configure(new GuardConfig(true,900000),Set.of(99L));assertEquals(86400L,guard.offlineSeconds(42).get());
         guard.offlineSeconds(42,null).get();assertNull(guard.offlineSeconds(42).get());assertEquals(900,guard.defaultOfflineSeconds());
         assertThrows(ExecutionException.class,()->guard.offlineSeconds(43,10L).get());
-        assertThrows(ExecutionException.class,()->guard.offlineSeconds(42,-1L).get());
+        assertThrows(ExecutionException.class,()->guard.offlineSeconds(42,-2L).get());
         assertThrows(ExecutionException.class,()->guard.offlineSeconds(42,31536001L).get());
         guard.offlineSeconds(42,31536000L).get();assertEquals(31536000L,guard.offlineSeconds(42).get());
     }

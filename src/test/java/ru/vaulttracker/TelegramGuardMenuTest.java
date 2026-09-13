@@ -64,7 +64,7 @@ class TelegramGuardMenuTest {
         var challenge=menu.callback(42,bind).view();String code=challenge.text().split("/vtrack link ")[1].substring(0,32);
         UUID uuid=UUID.randomUUID();guard.link(uuid,"Alex",code).get();
         var account=menu.callback(42,"vg:home").view();assertTrue(account.text().contains("Персонаж: Alex"));
-        String toggle=button(account,"Отключить мои");assertTrue(menu.callback(43,toggle).alert());assertTrue(guard.account(42).get().notifications());
+        String toggle=button(click(42,account,"Настройки"),"Отключить мои");assertTrue(menu.callback(43,toggle).alert());assertTrue(guard.account(42).get().notifications());
         assertTrue(menu.callback(42,toggle).view().text().contains("Ваши уведомления: выключены"));
         assertTrue(menu.callback(42,toggle).alert());
     }
@@ -81,7 +81,7 @@ class TelegramGuardMenuTest {
         }
     }
     @Test void adminWithoutCharacterCanToggleAndReadPaginatedHistory() throws Exception {
-        var home=menu.home(99);assertTrue(home.text().contains("Уведомления администратора: включены"));
+        var home=click(99,menu.home(99),"Настройки администратора");assertTrue(home.text().contains("Уведомления администратора: включены"));
         assertTrue(click(99,home,"Отключить уведомления администратора").text().contains("Уведомления администратора: выключены"));
         var snapshot=CatalogueTest.fixture(1,20);guard.restore(List.of(snapshot));clock.incrementAndGet();
         for(int i=1;i<=9;i++) guard.accept(CatalogueTest.fixture(i+1,20-i));

@@ -23,13 +23,18 @@ final class TelegramBotService implements AutoCloseable {
         this(config,catalogue,storage,log,null);
     }
     TelegramBotService(TelegramConfig config,Catalogue catalogue,StorageEngine storage,Logger log,GuardService guard) {
+        this(config,catalogue,storage,log,guard,null);
+    }
+    TelegramBotService(TelegramConfig config,Catalogue catalogue,StorageEngine storage,Logger log,GuardService guard,TelegramModeration moderation) {
         this.config=config; this.api=new TelegramApi(config); this.commands=new TelegramCommands(catalogue,storage,config.pageSize()); this.log=log;
         this.privateMenu=new TelegramPrivateMenu(catalogue,storage,commands,config.pageSize());
-        this.guard=guard;this.guardMenu=guard==null ? null : new TelegramGuardMenu(guard,commands);
+        this.guard=guard;this.guardMenu=guard==null ? null : new TelegramGuardMenu(guard,commands,moderation);
         privateMenu.guard(guard);
+        commands.adminAccess(this::isAdmin);
         worker=Thread.ofVirtual().name("VaultTracker-telegram").unstarted(this::run);
     }
     void start() { worker.start(); }
+    private boolean isAdmin(long user) {return guard==null ? config.admin(user) : guard.admin(user);}
     private void run() {
         int failures=0; long offset=TelegramApi.loadOffset(config.offsetFile()); boolean initialized=false;
         while(!stopping.get()) {
@@ -43,18 +48,28 @@ final class TelegramBotService implements AutoCloseable {
                 }
                 List<TelegramApi.Incoming> updates=api.updates(offset);
                 for(var update:updates) {
-                    if(update.chatId()!=0 && (update.text()!=null || update.callback())) process(update);
+                    // Persist consumption before effects: a failed reply must never replay a moderation action.
                     offset=Math.max(offset,update.updateId()+1);
+                    TelegramApi.saveOffset(config.offsetFile(),offset);
+                    consume(update);
                 }
                 if(!updates.isEmpty()) TelegramApi.saveOffset(config.offsetFile(),offset);
                 failures=0;
-            } catch(InterruptedException e) { Thread.currentThread().interrupt(); break; }
-            catch(Exception e) {
+            } catch(Exception e) {
+                if(stopping.get() || Thread.currentThread().isInterrupted()) break;
                 failures++; log.warning("Telegram недоступен: "+api.safe(e)+"; повтор подключения запланирован.");
                 int maximum=config.retry().maxAttempts();
                 if(maximum>0 && failures>=maximum) { log.severe("Telegram-бот остановлен после "+failures+" неудачных попыток. Перезапустите сервер после исправления telegram.yml."); break; }
                 try { Thread.sleep(delay(failures)); } catch(InterruptedException interrupted) { Thread.currentThread().interrupt(); break; }
             }
+        }
+    }
+    void consume(TelegramApi.Incoming update) {
+        try {if(update.chatId()!=0 && (update.text()!=null || update.callback())) process(update);}
+        catch(InterruptedException e) {Thread.currentThread().interrupt();}
+        catch(Exception e) {
+            if(TelegramApi.benignCallbackError(e)) log.fine("Устаревший ответ Telegram пропущен.");
+            else log.warning("Не удалось обработать сообщение Telegram; бот продолжает работу: "+api.safe(e));
         }
     }
     private long delay(int failures) {
@@ -67,7 +82,7 @@ final class TelegramBotService implements AutoCloseable {
                 if(guardMenu!=null) guardMenu.cancelInput(update.userId());
                 TelegramCommands.Callback result;
                 if(guardMenu!=null && update.callbackData().equals("vg:search")) {
-                    result=new TelegramCommands.Callback(privateMenu.handle(update.userId(),update.chatId(),0,"/search",config.admin(update.userId())),"",false);
+                    result=new TelegramCommands.Callback(privateMenu.handle(update.userId(),update.chatId(),0,"/search",isAdmin(update.userId())),"",false);
                 } else if(guardMenu!=null && update.callbackData().startsWith("vg:")) {
                     privateMenu.leave(update.userId(),update.chatId(),update.topicId());
                     try {result=guardMenu.callback(update.userId(),update.callbackData());}
@@ -109,7 +124,10 @@ final class TelegramBotService implements AutoCloseable {
         if(update.privateChat()) {
             TelegramCommands.View view=null;
             if(guardMenu!=null && !isCommand(update.text())) view=guardMenu.input(update.userId(),update.text());
-            if(view==null) view=privateMenu.handle(update.userId(),update.chatId(),update.topicId(),update.text(),config.admin(update.userId()));
+            if(view==null && guardMenu!=null && Set.of("/start","/menu","/cancel").contains(TelegramCommands.command(update.text()))) {
+                privateMenu.leave(update.userId(),update.chatId(),update.topicId());view=guardMenu.home(update.userId());
+            }
+            if(view==null) view=privateMenu.handle(update.userId(),update.chatId(),update.topicId(),update.text(),isAdmin(update.userId()));
             if(view!=null) api.send(update.chatId(),update.topicId(),view);
             if(isCommand(update.text()) && update.messageId()>0) {
                 try { api.delete(update.chatId(),update.messageId()); }
@@ -124,7 +142,7 @@ final class TelegramBotService implements AutoCloseable {
             }
             return;
         }
-        sendTemporary(update.chatId(),update.topicId(),commands.handle(update.userId(),update.chatId(),update.topicId(),update.text(),config.admin(update.userId())));
+        sendTemporary(update.chatId(),update.topicId(),commands.handle(update.userId(),update.chatId(),update.topicId(),update.text(),isAdmin(update.userId())));
         if(isCommand(update.text()) && update.messageId()>0) {
             try { api.delete(update.chatId(),update.messageId()); }
             catch(Exception e) { log.fine("Не удалось удалить команду Telegram: "+api.safe(e)); }

@@ -22,6 +22,8 @@ final class TelegramCommands {
     private final int pageSize;
     private final Predicate<String> validItem;
     private final Map<String,Session> sessions=new ConcurrentHashMap<>();
+    private java.util.function.LongPredicate adminAccess=id->true;
+    void adminAccess(java.util.function.LongPredicate predicate) {adminAccess=predicate;}
 
     TelegramCommands(Catalogue catalogue,StorageEngine storage,int pageSize) {
         this(catalogue,storage,pageSize,id -> {
@@ -58,6 +60,7 @@ final class TelegramCommands {
             sessions.remove(parts[1]); return new Callback(null,"Кнопки устарели. Выполните /topitem ещё раз.",true);
         }
         if(session.userId()!=userId) return new Callback(null,"Эти кнопки принадлежат автору запроса.",true);
+        if(session.kind()==Kind.ITEMS && !adminAccess.test(userId)) return new Callback(null,"Нет прав администратора.",true);
         int page;
         try { page=Integer.parseInt(parts[2]); }
         catch(NumberFormatException e) { return new Callback(null,"Некорректная страница.",true); }
