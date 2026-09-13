@@ -24,6 +24,7 @@ class SignEditTest {
         VaultTrackerPlugin plugin = mock(VaultTrackerPlugin.class, CALLS_REAL_METHODS);
         var field = VaultTrackerPlugin.class.getDeclaredField("catalogue");
         field.setAccessible(true); field.set(plugin, catalogue);
+        var guard=VaultTrackerPlugin.class.getDeclaredField("guard");guard.setAccessible(true);guard.set(plugin,mock(GuardService.class));
         // Avoid scheduling world work in this event-policy test.
         var stopping = VaultTrackerPlugin.class.getDeclaredField("stopping");
         stopping.setAccessible(true); stopping.set(plugin, true);
@@ -110,11 +111,13 @@ class SignEditTest {
     @Test void breakingSignStillRemovesRegistration() throws Exception {
         var plugin=plugin();var event=mock(BlockBreakEvent.class);
         Block block=edit("",owner).getBlock();
+        Player breaker=mock(Player.class);when(breaker.getName()).thenReturn("Griefer");when(event.getPlayer()).thenReturn(breaker);
         when(event.getBlock()).thenReturn(block);plugin.broken(event);
         assertNull(catalogue.get(sign));assertEquals(1,published.size());assertFalse(published.getFirst().active());
     }
     @Test void breakingContainerStillRemovesRegistration() throws Exception {
         var plugin=plugin();var event=mock(BlockBreakEvent.class);Block block=edit("",owner).getBlock();
+        Player breaker=mock(Player.class);when(breaker.getName()).thenReturn("Griefer");when(event.getPlayer()).thenReturn(breaker);
         when(block.getZ()).thenReturn(1);when(event.getBlock()).thenReturn(block);plugin.broken(event);
         assertNull(catalogue.get(sign));assertEquals(1,published.size());assertFalse(published.getFirst().active());
     }

@@ -24,6 +24,23 @@ class GuardServiceTest {
     void offline() {guard.presence(owner,"Alex",false);clock.addAndGet(120_001);}
     List<GuardService.Event> events() throws Exception {return guard.history(99,0,20).get();}
 
+    @Test void actorAppearsOnlyInAdminDeliveryAndHistory() throws Exception {
+        guard.link(owner,"Alex",code(42)).get();guard.restore(List.of(snapshot(10,1)));offline();
+        guard.attribute(sign,"Griefer");guard.accept(snapshot(9,2));
+        var deliveries=guard.deliveries().get();
+        String ownerText=deliveries.stream().filter(d->d.recipient()==42).findFirst().orElseThrow().text();
+        String adminText=deliveries.stream().filter(d->d.recipient()==99).findFirst().orElseThrow().text();
+        assertFalse(ownerText.contains("Кто изменил"));assertTrue(adminText.contains("Кто изменил: Griefer"));
+        assertEquals("Griefer",events().getFirst().actor());assertTrue(GuardService.eventText(events().getFirst(),0,8).contains("Кто изменил: Griefer"));
+    }
+    @Test void automatedOrExpiredAttributionIsReportedAsUnknownToAdmins() throws Exception {
+        guard.restore(List.of(snapshot(10,1)));offline();guard.accept(snapshot(9,2));
+        assertTrue(guard.deliveries().get().getFirst().text().contains("Кто изменил: не определено"));
+        for(var d:guard.deliveries().get()) guard.delivered(d.id(),true).get();
+        guard.attribute(sign,"OldActor");clock.addAndGet(30_001);guard.accept(snapshot(8,3));
+        assertTrue(guard.deliveries().get().getFirst().text().contains("Кто изменил: не определено"));
+    }
+
     @Test void personalDayDoesNotDelayAdminAlertsAndAppliesToFutureChanges() throws Exception {
         guard.link(owner,"Alex",code(42)).get();guard.offlineSeconds(42,86400L).get();
         guard.restore(List.of(snapshot(10,1)));offline();guard.accept(snapshot(9,2));

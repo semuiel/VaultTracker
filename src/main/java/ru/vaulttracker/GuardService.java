@@ -14,7 +14,7 @@ final class GuardService implements AutoCloseable {
     static final long RETENTION=30L*24*60*60*1000, CODE_TTL=10*60*1000L;
     static final long MAX_OFFLINE_SECONDS=31_536_000;
     record Account(UUID uuid,String name,boolean notifications) {}
-    record Event(long id,long time,String name,String location,Map<String,Long> changes,boolean removed) {}
+    record Event(long id,long time,String name,String location,Map<String,Long> changes,boolean removed,String actor) {}
     record Delivery(long id,long recipient,String text) {}
     private record Code(long user,long expires) {}
     private final ScheduledExecutorService disk=Executors.newSingleThreadScheduledExecutor(r->new Thread(r,"VaultTracker-guard-disk"));
@@ -25,6 +25,8 @@ final class GuardService implements AutoCloseable {
     private final Map<UUID,Long> presence=new ConcurrentHashMap<>(); // -1 online, otherwise exit timestamp
     private final Map<UUID,Long> personalAbsence=new ConcurrentHashMap<>();
     private final Map<UUID,String> worlds=new ConcurrentHashMap<>();
+    private final Map<BlockKey,Actor> actors=new ConcurrentHashMap<>();
+    private record Actor(String name,long expires) {}
     private final Map<BlockKey,Snapshot> baseline=new ConcurrentHashMap<>();
     private final Map<String,Code> codes=new HashMap<>();
     private final SecureRandom random=new SecureRandom();
@@ -92,6 +94,9 @@ final class GuardService implements AutoCloseable {
         return null;
     });}
     void restore(Collection<Snapshot> snapshots) {for(var v:snapshots) if(v.active()) baseline.put(v.sign(),v);}
+    void attribute(BlockKey sign,String playerName) {
+        if(playerName!=null && !playerName.isBlank()) actors.put(sign,new Actor(playerName,clock.getAsLong()+30_000));
+    }
     void presence(UUID uuid,String name,boolean online) {
         long time=online ? -1 : clock.getAsLong(); presence.put(uuid,time);
         enqueue(()-> {
@@ -100,6 +105,8 @@ final class GuardService implements AutoCloseable {
         });
     }
     void accept(Snapshot snapshot) {
+        Actor attributed=actors.remove(snapshot.sign());
+        String actor=attributed!=null && attributed.expires()>=clock.getAsLong() ? attributed.name() : null;
         Snapshot old=snapshot.active() ? baseline.put(snapshot.sign(),snapshot) : baseline.remove(snapshot.sign());
         if(old==null || !old.generation().equals(snapshot.generation()) || !old.owner().equals(snapshot.owner())) return;
         if(snapshot.active() && old.items().equals(snapshot.items())) return;
@@ -108,9 +115,9 @@ final class GuardService implements AutoCloseable {
         if(!settings.enabled() || departed<0) return;
         boolean ownEligible=now-departed>=personalAbsence.getOrDefault(snapshot.owner(),settings.absenceMillis());
         boolean adminEligible=now-departed>=settings.absenceMillis();
-        if(ownEligible || adminEligible) enqueue(()->observe(old,snapshot,now,ownEligible,adminEligible));
+        if(ownEligible || adminEligible) enqueue(()->observe(old,snapshot,now,ownEligible,adminEligible,actor));
     }
-    private void observe(Snapshot old,Snapshot current,long now,boolean ownEligible,boolean adminEligible) throws Exception {
+    private void observe(Snapshot old,Snapshot current,long now,boolean ownEligible,boolean adminEligible,String actor) throws Exception {
         Map<String,Long> changes=new TreeMap<>();
         if(current.active()) {
             Set<String> keys=new HashSet<>(old.items().keySet()); keys.addAll(current.items().keySet());
@@ -121,7 +128,7 @@ final class GuardService implements AutoCloseable {
         }
         BlockKey p=old.chests().getFirst();
         String location=readableLocation("Мир "+p.world()+"; блок "+p.x()+" "+p.y()+" "+p.z());
-        Event event=new Event(0,now,old.playerName(),location,changes,!current.active());
+        Event event=new Event(0,now,old.playerName(),location,changes,!current.active(),actor);
         db.setAutoCommit(false);
         try {
             long id;
@@ -136,8 +143,13 @@ final class GuardService implements AutoCloseable {
             }
             Set<Long> adminRecipients=new HashSet<>();
             if(adminEligible) for(long admin:admins) if(adminAlertsNow(admin)) {recipients.add(admin);adminRecipients.add(admin);}
-            String message="🛡 Изменение хранилища во время отсутствия владельца\n"+eventText(event,0,12)+"\nСобытие #"+id+". Подробности доступны администратору в истории.";
-            for(long recipient:recipients) execute("INSERT INTO outbox(event_id,tg,owner_uuid,body,due,created,own_channel,admin_channel) VALUES(?,?,?,?,?,?,?,?)",id,recipient,old.owner().toString(),message,now,now,Objects.equals(ownerRecipient,recipient),adminRecipients.contains(recipient));
+            String base="🛡 Изменение хранилища во время отсутствия владельца\n"+eventText(event,0,12,false);
+            for(long recipient:recipients) {
+                boolean adminChannel=adminRecipients.contains(recipient);
+                String message=base+(adminChannel ? "\nКто изменил: "+(actor==null ? "не определено (механизм, взрыв или другое обстоятельство)" : actor) : "")
+                        +"\nСобытие #"+id+". Подробности доступны администратору в истории.";
+                execute("INSERT INTO outbox(event_id,tg,owner_uuid,body,due,created,own_channel,admin_channel) VALUES(?,?,?,?,?,?,?,?)",id,recipient,old.owner().toString(),message,now,now,Objects.equals(ownerRecipient,recipient),adminChannel);
+            }
             db.commit();
         } catch(Exception e) {db.rollback();throw e;} finally {db.setAutoCommit(true);}
         prune();
@@ -182,7 +194,7 @@ final class GuardService implements AutoCloseable {
         prune(); List<Event> result=new ArrayList<>();
         try(var s=db.prepareStatement("SELECT id,payload FROM events WHERE happened>=? ORDER BY id DESC LIMIT ? OFFSET ?")) {
             s.setLong(1,clock.getAsLong()-RETENTION);s.setInt(2,size);s.setLong(3,(long)Math.max(0,page)*size);
-            try(var rs=s.executeQuery()) {while(rs.next()) {Event e=gson.fromJson(rs.getString(2),Event.class);result.add(new Event(rs.getLong(1),e.time(),e.name(),readableLocation(e.location()),e.changes(),e.removed()));}}
+            try(var rs=s.executeQuery()) {while(rs.next()) {Event e=gson.fromJson(rs.getString(2),Event.class);result.add(new Event(rs.getLong(1),e.time(),e.name(),readableLocation(e.location()),e.changes(),e.removed(),e.actor()));}}
         }
         return result;
     });}
@@ -190,7 +202,7 @@ final class GuardService implements AutoCloseable {
         if(!admin(user)) throw new SecurityException("Нет доступа");
         try(var s=db.prepareStatement("SELECT payload FROM events WHERE id=? AND happened>=?")) {
             s.setLong(1,id);s.setLong(2,clock.getAsLong()-RETENTION);
-            try(var rs=s.executeQuery()) {if(!rs.next()) return null;Event e=gson.fromJson(rs.getString(1),Event.class);return new Event(id,e.time(),e.name(),readableLocation(e.location()),e.changes(),e.removed());}
+            try(var rs=s.executeQuery()) {if(!rs.next()) return null;Event e=gson.fromJson(rs.getString(1),Event.class);return new Event(id,e.time(),e.name(),readableLocation(e.location()),e.changes(),e.removed(),e.actor());}
         }
     });}
     CompletableFuture<List<Delivery>> deliveries() {return submit(()-> {
@@ -218,15 +230,23 @@ final class GuardService implements AutoCloseable {
         execute("DELETE FROM events WHERE happened<?",now-RETENTION);lastPrune=now;
     }
     static String eventText(Event event,int offset,int limit) {
+        return eventText(event,offset,limit,true);
+    }
+    static String eventText(Event event,int offset,int limit,boolean showActor) {
         StringBuilder text=new StringBuilder(event.name()).append(" • ")
                 .append(java.time.Instant.ofEpochMilli(event.time()).atZone(java.time.ZoneId.systemDefault()).format(java.time.format.DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm:ss z")))
                 .append('\n').append(event.location()).append('\n');
-        if(event.removed()) return text.append("Хранилище снято с учёта: табличка/контейнер удалены или регистрация отменена. Это не подтверждение кражи вещей.").toString();
+        if(event.removed()) {
+            text.append("Хранилище снято с учёта: табличка/контейнер удалены или регистрация отменена. Это не подтверждение кражи вещей.");
+            if(showActor) text.append("\nКто изменил: ").append(event.actor()==null ? "не определено" : event.actor());
+            return text.toString();
+        }
         var rows=event.changes().entrySet().stream().sorted(Map.Entry.comparingByKey()).toList();
         for(int i=offset;i<Math.min(rows.size(),offset+limit);i++) {
             var r=rows.get(i);text.append(TelegramItemIcons.label(r.getKey())).append(": ").append(r.getValue()>0 ? "+" : "").append(r.getValue()).append(" шт.\n");
         }
         if(rows.size()>offset+limit) text.append("Ещё позиций: ").append(rows.size()-offset-limit).append('\n');
+        if(showActor) text.append("Кто изменил: ").append(event.actor()==null ? "не определено" : event.actor()).append('\n');
         return text.toString().stripTrailing();
     }
     private void execute(String sql,Object... args) throws SQLException {
