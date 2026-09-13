@@ -1,0 +1,92 @@
+package ru.vaulttracker;
+
+import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.io.TempDir;
+import org.bukkit.Material;
+import java.nio.file.Path;
+import java.util.*;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Logger;
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
+
+class TelegramGuardMenuTest {
+    @TempDir Path folder;
+    GuardService guard;
+    Catalogue catalogue=new Catalogue(v->{});
+    StorageEngine storage=mock(StorageEngine.class);
+    TelegramGuardMenu menu;
+    AtomicLong clock=new AtomicLong(2_000_000);
+    @BeforeEach void prepare() throws Exception {
+        guard=new GuardService(folder.resolve("guard"),new GuardConfig(true,0),Logger.getAnonymousLogger(),clock::get);
+        guard.configure(new GuardConfig(true,0),Set.of(99L));when(storage.ready()).thenReturn(true);
+        menu=new TelegramGuardMenu(guard,new TelegramCommands(catalogue,storage,1,id->true));
+    }
+    @AfterEach void close() {guard.close();}
+    String button(TelegramCommands.View view,String contains) {return view.buttons().stream().filter(b->b.text().contains(contains)).findFirst().orElseThrow().data();}
+    TelegramCommands.View click(long user,TelegramCommands.View view,String contains) throws Exception {return menu.callback(user,button(view,contains)).view();}
+    @Test void bindingAndAccountButtonsWorkAndCannotBeUsedByAnotherUser() throws Exception {
+        var home=menu.home(42);assertFalse(home.text().contains("Уведомления администратора"));
+        String bind=button(home,"Привязать");assertTrue(menu.callback(43,bind).alert());
+        var challenge=menu.callback(42,bind).view();String code=challenge.text().split("/vtrack link ")[1].substring(0,32);
+        UUID uuid=UUID.randomUUID();guard.link(uuid,"Alex",code).get();
+        var account=menu.callback(42,"vg:home").view();assertTrue(account.text().contains("Персонаж: Alex"));
+        String toggle=button(account,"Отключить мои");assertTrue(menu.callback(43,toggle).alert());assertTrue(guard.account(42).get().notifications());
+        assertTrue(menu.callback(42,toggle).view().text().contains("Ваши уведомления: выключены"));
+        assertTrue(menu.callback(42,toggle).alert());
+    }
+    @Test void resourcesUseUuidWhenNamesCollideAndPagesRemainBoundToRequester() throws Exception {
+        UUID owner=UUID.randomUUID(),world=UUID.randomUUID();
+        guard.link(owner,"Alex",guard.generate(42).get().split("/vtrack link ")[1].substring(0,32)).get();
+        catalogue.register(new BlockKey(world,1,1,1),owner,"Alex",List.of(new BlockKey(world,1,1,2)),Map.of("DIAMOND",5L,"IRON_INGOT",2L),1,100);
+        catalogue.register(new BlockKey(world,2,1,1),UUID.randomUUID(),"Alex",List.of(new BlockKey(world,2,1,2)),Map.of("DIAMOND",999L),1,100);
+        Material material=mock(Material.class);when(material.getMaxStackSize()).thenReturn(64);
+        try(var materials=mockStatic(Material.class)) {
+            materials.when(()->Material.getMaterial(anyString())).thenReturn(material);
+            var result=click(42,menu.home(42),"Мои ресурсы");assertTrue(result.text().contains("5 шт."));assertFalse(result.text().contains("999"));
+            assertTrue(result.buttons().stream().anyMatch(b->b.data().startsWith("vt:")));
+        }
+    }
+    @Test void adminWithoutCharacterCanToggleAndReadPaginatedHistory() throws Exception {
+        var home=menu.home(99);assertTrue(home.text().contains("Уведомления администратора: включены"));
+        assertTrue(click(99,home,"Отключить уведомления администратора").text().contains("Уведомления администратора: выключены"));
+        var snapshot=CatalogueTest.fixture(1,20);guard.restore(List.of(snapshot));clock.incrementAndGet();
+        for(int i=1;i<=9;i++) guard.accept(CatalogueTest.fixture(i+1,20-i));
+        var history=click(99,menu.home(99),"События");assertTrue(history.buttons().stream().anyMatch(b->b.text().contains("Вперёд")));
+        var detail=click(99,history,"#9");assertTrue(detail.text().contains("-1 шт."));
+        guard.configure(new GuardConfig(true,0),Set.of());
+        assertThrows(Exception.class,()->click(99,detail,"История"));
+    }
+    @Test void notificationsSendPrivatelyAndFailuresRemainQueued() throws Exception {
+        TelegramConfig config=mock(TelegramConfig.class);when(config.pageSize()).thenReturn(8);
+        var snapshot=CatalogueTest.fixture(1,20);guard.restore(List.of(snapshot));guard.accept(CatalogueTest.fixture(2,19));
+        var notify=TelegramBotService.class.getDeclaredMethod("notifyGuard");notify.setAccessible(true);
+        try(var apis=mockConstruction(TelegramApi.class);
+            var service=new TelegramBotService(config,catalogue,storage,Logger.getAnonymousLogger(),guard)) {
+            var api=apis.constructed().getFirst();
+            when(api.send(eq(99L),eq(0),any())).thenThrow(new java.io.IOException("unavailable"));
+            notify.invoke(service);verify(api).send(eq(99L),eq(0),any());assertTrue(guard.deliveries().get().isEmpty());
+            clock.addAndGet(300_000);when(api.send(eq(99L),eq(0),any())).thenReturn(123);
+            notify.invoke(service);verify(api,times(2)).send(eq(99L),eq(0),any());assertTrue(guard.deliveries().get().isEmpty());
+            assertEquals(1,guard.history(99,0,10).get().size());
+        }
+    }
+    @Test void privateGuardMenuRoutesWithoutCapturingGroupOrNormalText() throws Exception {
+        TelegramConfig config=mock(TelegramConfig.class);when(config.pageSize()).thenReturn(8);
+        var process=TelegramBotService.class.getDeclaredMethod("process",TelegramApi.Incoming.class);process.setAccessible(true);
+        try(var apis=mockConstruction(TelegramApi.class);
+            var service=new TelegramBotService(config,catalogue,storage,Logger.getAnonymousLogger(),guard)) {
+            var api=apis.constructed().getFirst();
+            process.invoke(service,new TelegramApi.Incoming(1,42,0,42,1,null,"cb","vg:home",true));
+            var view=org.mockito.ArgumentCaptor.forClass(TelegramCommands.View.class);
+            verify(api).edit(eq(42L),eq(1),view.capture());assertTrue(view.getValue().text().contains("Личный кабинет"));
+            clearInvocations(api);
+            process.invoke(service,new TelegramApi.Incoming(2,42,0,42,2,"обычный текст",null,null,true));
+            process.invoke(service,new TelegramApi.Incoming(3,-100,20,42,3,"обычный текст",null,null,false));
+            process.invoke(service,new TelegramApi.Incoming(4,-100,20,42,4,"/list",null,null,false));
+            verifyNoInteractions(api);
+            process.invoke(service,new TelegramApi.Incoming(5,-100,20,42,5,null,"cb2","vg:home",false));
+            verify(api).answerCallback("cb2","",false);verify(api,never()).edit(anyLong(),anyInt(),any());
+        }
+    }
+}

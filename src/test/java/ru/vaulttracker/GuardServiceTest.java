@@ -1,0 +1,111 @@
+package ru.vaulttracker;
+
+import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.io.TempDir;
+import java.nio.file.*;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Logger;
+import static org.junit.jupiter.api.Assertions.*;
+
+class GuardServiceTest {
+    @TempDir Path folder;
+    final AtomicLong clock=new AtomicLong(2_000_000);
+    final UUID owner=UUID.randomUUID();
+    final BlockKey sign=new BlockKey(UUID.randomUUID(),1,64,1);
+    final UUID generation=UUID.randomUUID();
+    GuardService guard;
+    @BeforeEach void start() throws Exception {guard=open();guard.configure(new GuardConfig(true,120_000),Set.of(99L));}
+    GuardService open() throws Exception {return new GuardService(folder.resolve("guard"),new GuardConfig(true,120_000),Logger.getAnonymousLogger(),clock::get);}
+    @AfterEach void close() {guard.close();}
+    String code(long tg) throws Exception {return guard.generate(tg).get().split("/vtrack link ")[1].substring(0,32);}
+    Snapshot snapshot(long count,long revision) {return new Snapshot(sign,generation,owner,"Alex",List.of(sign),count==0 ? Map.of() : Map.of("DIAMOND",count),true,clock.get(),revision);}
+    void offline() {guard.presence(owner,"Alex",false);clock.addAndGet(120_001);}
+    List<GuardService.Event> events() throws Exception {return guard.history(99,0,20).get();}
+
+    @Test void bindingIsSingleUseAndCannotReplaceEitherAccount() throws Exception {
+        String token=code(42);assertTrue(guard.link(owner,"Alex",token).get().contains("привязан к Telegram"));
+        assertEquals(owner,guard.account(42).get().uuid());
+        assertTrue(guard.link(UUID.randomUUID(),"Other",token).get().contains("неверный"));
+        String second=code(43);assertTrue(guard.link(owner,"Alex",second).get().contains("уже привязан"));
+        assertNull(guard.account(43).get());
+    }
+    @Test void codesExpireAndRegenerationInvalidatesEarlierCode() throws Exception {
+        String old=code(42),current=code(42);
+        assertTrue(guard.link(owner,"Alex",old).get().contains("неверный"));
+        clock.addAndGet(GuardService.CODE_TTL);
+        assertTrue(guard.link(owner,"Alex",current).get().contains("истёк"));
+    }
+    @Test void simultaneousLinkRequestsConsumeCodeOnlyOnce() throws Exception {
+        String token=code(42);var one=guard.link(owner,"Alex",token);var two=guard.link(UUID.randomUUID(),"Other",token);
+        assertTrue(one.get().contains("привязан к Telegram"));assertTrue(two.get().contains("неверный"));
+    }
+    @Test void ignoresRegistrationOnlineChangesGracePeriodAndUnchangedSnapshots() throws Exception {
+        guard.accept(snapshot(10,1));guard.presence(owner,"Alex",true);clock.addAndGet(500_000);
+        guard.accept(snapshot(9,2));guard.presence(owner,"Alex",false);clock.addAndGet(119_999);
+        guard.accept(snapshot(8,3));clock.addAndGet(2);guard.accept(snapshot(8,4));
+        assertTrue(events().isEmpty());
+        guard.accept(snapshot(7,5));assertEquals(-1L,events().getFirst().changes().get("DIAMOND"));
+    }
+    @Test void offlineChangesNotifyOwnerAndAdminsAndDoNotDuplicateUnchangedUpdates() throws Exception {
+        guard.link(owner,"Alex",code(42)).get();guard.restore(List.of(snapshot(10,1)));offline();
+        guard.accept(snapshot(7,2));guard.accept(snapshot(7,3));
+        assertEquals(1,events().size());assertEquals(-3L,events().getFirst().changes().get("DIAMOND"));
+        var deliveries=guard.deliveries().get();assertEquals(Set.of(42L,99L),new HashSet<>(deliveries.stream().map(GuardService.Delivery::recipient).toList()));
+        guard.presence(owner,"Alex",true);guard.accept(snapshot(2,4));assertEquals(1,events().size());
+    }
+    @Test void ownerAdminGetsOneMessageAndTogglesAreIndependent() throws Exception {
+        guard.link(owner,"Alex",code(99)).get();guard.restore(List.of(snapshot(10,1)));offline();
+        guard.accept(snapshot(9,2));assertEquals(1,guard.deliveries().get().size());
+        guard.toggleOwn(99).get();assertEquals(1,guard.deliveries().get().size());
+        guard.toggleAdmin(99).get();assertTrue(guard.deliveries().get().isEmpty());
+        guard.accept(snapshot(8,3));assertTrue(guard.deliveries().get().isEmpty());assertEquals(2,events().size());
+    }
+    @Test void notificationOptOutAndRemovedAdminApplyToQueuedMessages() throws Exception {
+        guard.link(owner,"Alex",code(42)).get();guard.restore(List.of(snapshot(10,1)));offline();guard.accept(snapshot(9,2));
+        assertEquals(2,guard.deliveries().get().size());guard.toggleOwn(42).get();
+        guard.configure(new GuardConfig(true,120_000),Set.of());assertTrue(guard.deliveries().get().isEmpty());
+        assertThrows(ExecutionException.class,()->guard.history(99,0,5).get());
+        assertThrows(ExecutionException.class,()->guard.toggleAdmin(42).get());
+    }
+    @Test void linksPreferencesEventsOfflineTimeAndOutboxSurviveRestart() throws Exception {
+        guard.link(owner,"Alex",code(42)).get();guard.toggleAdmin(99).get();guard.restore(List.of(snapshot(10,1)));offline();
+        guard.accept(snapshot(9,2));assertEquals(1,guard.deliveries().get().size());guard.close();
+        guard=open();guard.configure(new GuardConfig(true,120_000),Set.of(99L));guard.restore(List.of(snapshot(9,2)));
+        assertEquals(owner,guard.account(42).get().uuid());assertFalse(guard.adminAlerts(99).get());assertEquals(1,events().size());
+        assertEquals(1,guard.deliveries().get().size());guard.accept(snapshot(8,3));assertEquals(2,events().size());
+    }
+    @Test void restoredBaselineDoesNotCreateAnEventAndUnknownPresenceUsesStartupGrace() throws Exception {
+        guard.restore(List.of(snapshot(10,1)));guard.accept(snapshot(9,2));assertTrue(events().isEmpty());
+        clock.addAndGet(120_001);guard.accept(snapshot(8,3));assertEquals(1,events().size());
+    }
+    @Test void removalIsDistinctFromTheftAndReregistrationIsNotAnAlert() throws Exception {
+        guard.restore(List.of(snapshot(10,1)));offline();
+        guard.accept(new Snapshot(sign,generation,owner,"Alex",List.of(sign),Map.of(),false,clock.get(),2));
+        var e=events().getFirst();assertTrue(e.removed());assertTrue(e.changes().isEmpty());assertTrue(GuardService.eventText(e,0,8).contains("не подтверждение кражи"));
+        guard.accept(new Snapshot(sign,UUID.randomUUID(),owner,"Alex",List.of(sign),Map.of("DIAMOND",9L),true,clock.get(),3));assertEquals(1,events().size());
+    }
+    @Test void disabledGuardKeepsBaselineWithoutRecordingChanges() throws Exception {
+        guard.restore(List.of(snapshot(10,1)));offline();guard.configure(new GuardConfig(false,120_000),Set.of(99L));
+        guard.accept(snapshot(7,2));assertTrue(events().isEmpty());guard.configure(new GuardConfig(true,120_000),Set.of(99L));
+        guard.accept(snapshot(6,3));assertEquals(-1L,events().getFirst().changes().get("DIAMOND"));
+    }
+    @Test void retryAcknowledgementAndThirtyDayRetention() throws Exception {
+        guard.restore(List.of(snapshot(10,1)));offline();guard.accept(snapshot(9,2));
+        var delivery=guard.deliveries().get().getFirst();guard.delivered(delivery.id(),false).get();assertTrue(guard.deliveries().get().isEmpty());
+        clock.addAndGet(300_000);assertEquals(1,guard.deliveries().get().size());guard.delivered(delivery.id(),true).get();assertTrue(guard.deliveries().get().isEmpty());
+        long id=events().getFirst().id();clock.addAndGet(GuardService.RETENTION+1);assertTrue(events().isEmpty());assertNull(guard.event(99,id).get());
+    }
+    @Test void joinUpdatesNameButNotUuidOrPreferences() throws Exception {
+        guard.link(owner,"Alex",code(42)).get();guard.toggleOwn(42).get();guard.presence(owner,"NewName",true);
+        var a=guard.account(42).get();assertEquals(owner,a.uuid());assertEquals("NewName",a.name());assertFalse(a.notifications());
+    }
+    @Test void newConfigCreatedWithoutTouchingTelegramAndExistingGuardPreserved() throws Exception {
+        Path telegram=folder.resolve("telegram.yml");Files.writeString(telegram,"keep-existing-settings");
+        assertEquals(120_000,GuardConfig.load(folder).absenceMillis());assertEquals("keep-existing-settings",Files.readString(telegram));
+        Files.writeString(folder.resolve("guard.yml"),"enabled: false\noffline-seconds: 25\n");
+        assertEquals(new GuardConfig(false,25_000),GuardConfig.load(folder));
+        Files.writeString(folder.resolve("guard.yml"),"offline-seconds: -1\n");assertThrows(IllegalArgumentException.class,()->GuardConfig.load(folder));
+    }
+}

@@ -18,6 +18,7 @@ final class TelegramPrivateMenu {
         String filter="";
         int page=1;
         long touched;
+        long user;
         String token;
         TelegramCommands.View result;
         final List<Action> actions=new ArrayList<>();
@@ -29,6 +30,9 @@ final class TelegramPrivateMenu {
     private final Predicate<String> validItem;
     private final LongSupplier clock;
     private final Map<Key,State> states=new HashMap<>();
+    private GuardService guard;
+    void guard(GuardService guard) {this.guard=guard;}
+    void leave(long user,long chat,int topic) {states.remove(new Key(user,chat,topic));}
 
     TelegramPrivateMenu(Catalogue catalogue,StorageEngine storage,TelegramCommands commands,int pageSize) {
         this(catalogue,storage,commands,pageSize,id -> {
@@ -48,7 +52,7 @@ final class TelegramPrivateMenu {
         String text=input==null ? "" : input.trim();
         String command=TelegramCommands.command(text);
         if(text.startsWith("/")) {
-            State state=new State(); states.put(key,state);
+            State state=new State(); state.user=userId;states.put(key,state);
             if(Set.of("/start","/menu","/help","/cancel").contains(command)) {
                 String notice=command.equals("/cancel") ? "Поиск отменён." : "";
                 if(command.equals("/help")) notice="Выберите поиск кнопками или используйте /item предмет, /item Ник.\n/cancel — отменить ввод.";
@@ -153,6 +157,12 @@ final class TelegramPrivateMenu {
             case HOME -> {
                 text="VaultTracker — поиск ресурсов\nНажмите «Поиск», чтобы выбрать игрока или предмет.";
                 add(state,buttons,"🔎 Поиск",0,ActionKind.SEARCH,"");
+                if(guard!=null) {
+                    String label="👤 Личный кабинет / привязка";
+                    try {var account=guard.account(state.user).join();if(account!=null) label="👤 "+account.name();}
+                    catch(java.util.concurrent.CompletionException ignored) {}
+                    buttons.add(new TelegramCommands.Button(label,"vg:home",1));
+                }
             }
             case SEARCH -> {
                 text="Что ищем?\nИгрок — посмотреть его ресурсы.\nПредмет — посмотреть топ владельцев.";

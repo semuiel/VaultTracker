@@ -13,7 +13,7 @@ final class TelegramCommands {
         View(String text) { this(text,List.of()); }
     }
     record Callback(View view,String notice,boolean alert) {}
-    private enum Kind { PLAYER, TOP, ITEMS }
+    private enum Kind { PLAYER, OWNER, TOP, ITEMS }
     private record Session(long userId,Kind kind,String argument,long createdAt) {}
 
     private static final long SESSION_TTL_MS=30*60*1000L;
@@ -107,9 +107,14 @@ final class TelegramCommands {
         return render(token,session,page);
     }
 
+    View ownResources(long userId,UUID owner) {
+        if(!storage.ready()) return loading();
+        return begin(userId,Kind.OWNER,owner.toString(),1);
+    }
     private View render(String token,Session session,int requested) {
         return switch(session.kind()) {
             case PLAYER -> playerPage(token,session.argument(),requested);
+            case OWNER -> ownerPage(token,catalogue.ownerItems(UUID.fromString(session.argument())),requested);
             case TOP -> topPage(token,session.argument(),requested);
             case ITEMS -> allItemsPage(token,requested);
         };
@@ -119,6 +124,9 @@ final class TelegramCommands {
         List<Catalogue.OwnerItems> owners=catalogue.ownerItems(nickname);
         if(owners.size()!=1) return new View("Данные игрока изменились. Выполните /topitem "+nickname+" ещё раз.");
         var owner=owners.getFirst();
+        return ownerPage(token,owner,requested);
+    }
+    private View ownerPage(String token,Catalogue.OwnerItems owner,int requested) {
         var rows=owner.items().entrySet().stream().sorted(Map.Entry.<String,Long>comparingByValue().reversed()
                 .thenComparing(Map.Entry.comparingByKey())).toList();
         int pages=pages(rows.size()); int page=clamp(requested,pages);

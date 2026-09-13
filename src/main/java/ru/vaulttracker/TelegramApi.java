@@ -172,6 +172,7 @@ final class TelegramApi implements AutoCloseable {
         return message;
     }
     @Override public void close() {
+        client.dispatcher().cancelAll();
         client.dispatcher().executorService().shutdownNow(); client.connectionPool().evictAll();
         if(socksAuthenticator!=null && java.net.Authenticator.getDefault()==socksAuthenticator)
             java.net.Authenticator.setDefault(previousAuthenticator);

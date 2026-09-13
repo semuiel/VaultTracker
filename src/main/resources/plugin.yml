@@ -1,5 +1,5 @@
 name: VaultTracker
-version: 0.5.2
+version: 0.6.0
 main: ru.vaulttracker.VaultTrackerPlugin
 api-version: '1.21.11'
 folia-supported: true
@@ -13,6 +13,9 @@ commands:
     description: Chest catalogue commands
     aliases: [vtrack]
 permissions:
+  vaulttracker.link:
+    default: true
+    description: Link own Minecraft character to Telegram using a one-time code
   vaulttracker.register:
     default: true
     description: Register a chest by placing a vault sign

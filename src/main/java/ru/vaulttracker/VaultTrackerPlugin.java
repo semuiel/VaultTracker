@@ -14,6 +14,7 @@ import org.bukkit.event.block.*;
 import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.inventory.*;
 import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import io.papermc.paper.block.TileStateInventoryHolder;
 import org.bukkit.event.world.*;
@@ -26,6 +27,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
     private Catalogue catalogue;
     private StorageEngine storage;
     private TelegramBotService telegram;
+    private GuardService guard;
     private final Object telegramLock=new Object();
     private final Set<BlockKey> scheduled = ConcurrentHashMap.newKeySet();
     private volatile boolean stopping;
@@ -46,14 +48,17 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
                     getConfig().getString("database.username", "vault_plugin"), password, id);
         }
         applyRuntimeConfig();
+        try {guard=new GuardService(getDataFolder().toPath().resolve("guard-data"),GuardConfig.load(getDataFolder().toPath()),getLogger());}
+        catch(Exception e) {throw new IllegalStateException("Не удалось открыть guard.yml / guard-data. Сохраните файлы и проверьте доступ к диску.",e);}
+        for(Player player:getServer().getOnlinePlayers()) guard.presence(player.getUniqueId(),player.getName(),true);
         storage = new StorageEngine(getDataFolder().toPath().resolve("cache-"+id), database, getLogger());
-        catalogue = new Catalogue(storage::accept);
+        catalogue = new Catalogue(snapshot-> {storage.accept(snapshot);guard.accept(snapshot);});
         getServer().getPluginManager().registerEvents(this,this);
         Objects.requireNonNull(getCommand("vaulttracker")).setExecutor(this);
         Objects.requireNonNull(getCommand("vaulttracker")).setTabCompleter(this);
         Objects.requireNonNull(getCommand("topitem")).setExecutor(this);
         Objects.requireNonNull(getCommand("topitem")).setTabCompleter(this);
-        storage.start(catalogue::restore);
+        storage.start(snapshots-> {catalogue.restore(snapshots);guard.restore(snapshots);});
         synchronized(telegramLock) { replaceTelegram(); }
         getLogger().info("VaultTracker " + getPluginMeta().getVersion() + ": каталог ресурсов. /vtrack help");
     }
@@ -71,8 +76,9 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
         if(telegram!=null) { telegram.close(); telegram=null; }
         try {
             TelegramConfig telegramConfig=TelegramConfig.load(getDataFolder().toPath());
+            guard.configure(GuardConfig.load(getDataFolder().toPath()),telegramConfig.adminUserIds());
             if(!telegramConfig.enabled()) { getLogger().info("Telegram-бот выключен в telegram.yml."); return "Telegram-бот выключен."; }
-            telegram=new TelegramBotService(telegramConfig,catalogue,storage,getLogger()); telegram.start();
+            telegram=new TelegramBotService(telegramConfig,catalogue,storage,getLogger(),guard); telegram.start();
             return "Настройки применены, Telegram-бот перезапущен.";
         } catch(Exception e) {
             getLogger().severe("Telegram-бот не запущен: "+e.getMessage()+". Учёт хранилищ продолжает работать.");
@@ -280,14 +286,26 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
     @EventHandler(priority=EventPriority.MONITOR, ignoreCancelled=true) public void chunkUnload(ChunkUnloadEvent e) {
         for (Snapshot v : catalogue.inChunk(new BlockKey.ChunkKey(e.getWorld().getUID(),e.getChunk().getX(),e.getChunk().getZ()))) refresh(v.sign(),e.getWorld());
     }
-    @EventHandler(priority=EventPriority.MONITOR) public void join(PlayerJoinEvent e) { if (storage.ready()) catalogue.rename(e.getPlayer().getUniqueId(),e.getPlayer().getName()); }
+    @EventHandler(priority=EventPriority.MONITOR) public void join(PlayerJoinEvent e) {
+        guard.presence(e.getPlayer().getUniqueId(),e.getPlayer().getName(),true);
+        if (storage.ready()) catalogue.rename(e.getPlayer().getUniqueId(),e.getPlayer().getName());
+    }
+    @EventHandler(priority=EventPriority.MONITOR) public void quit(PlayerQuitEvent e) {guard.presence(e.getPlayer().getUniqueId(),e.getPlayer().getName(),false);}
     private static void tell(CommandSender sender,String message) { sender.sendMessage(Component.text("[VaultTracker] " + message)); }
     @Override public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         if (command.getName().equalsIgnoreCase("topitem") || command.getName().equalsIgnoreCase("itemtop")) {
             return new TopItemCommand(catalogue,storage::ready).execute(sender,args);
         }
         String action=args.length==0 ? "help" : args[0].toLowerCase(Locale.ROOT);
-        if (action.equals("status")) {
+        if(action.equals("link")) {
+            if(!(sender instanceof Player player)) {tell(sender,"Привязка выполняется только игроком в Minecraft.");return true;}
+            if(!player.hasPermission("vaulttracker.link")) {tell(sender,"Нет права vaulttracker.link.");return true;}
+            if(args.length!=2 || !args[1].matches("[0-9a-f]{32}")) {tell(sender,"Получите готовую команду в личном кабинете Telegram-бота.");return true;}
+            guard.link(player.getUniqueId(),player.getName(),args[1]).whenComplete((message,error)-> {
+                if(stopping) return;
+                player.getScheduler().run(this,task->tell(player,error==null ? message : "Не удалось сохранить привязку. Сообщите администратору."),null);
+            });
+        } else if (action.equals("status")) {
             if (!sender.hasPermission("vaulttracker.admin")) { tell(sender,"Нет права vaulttracker.admin."); return true; }
             tell(sender,storage.status()); tell(sender,"Хранилищ: " + catalogue.size());
         } else if (action.equals("rescan")) {
@@ -313,6 +331,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
         } else {
             tell(sender,"Напишите [vault] на первой строке таблички на хранилище: появится ваш ник.");
             tell(sender,"/vtrack mine — ваши хранилища; /topitem diamond или /vtrack find DIAMOND — у кого есть алмазы. Поиск доступен постоянно.");
+            tell(sender,"/vtrack link <код> — привязать персонажа к Telegram. Получите код кнопкой в личном чате бота.");
             if (sender.hasPermission("vaulttracker.admin")) tell(sender,"/vtrack status | /vtrack rescan | /vtrack reload — управление каталогом.");
         }
         return true;
@@ -341,7 +360,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
             }
             return options.stream().filter(s -> s.toLowerCase(Locale.ROOT).startsWith(prefix)).limit(40).toList();
         }
-        if (args.length==1) return List.of("help","mine","find","status","rescan","reload").stream()
+        if (args.length==1) return List.of("help","mine","find","link","status","rescan","reload").stream()
                 .filter(s -> (!s.equals("status") && !s.equals("rescan") && !s.equals("reload")) || sender.hasPermission("vaulttracker.admin"))
                 .filter(s -> !s.equals("find") || sender.hasPermission("vaulttracker.search"))
                 .filter(s->s.startsWith(args[0].toLowerCase(Locale.ROOT))).toList();
@@ -353,6 +372,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
         getServer().getGlobalRegionScheduler().cancelTasks(this);
         synchronized(telegramLock) { if(telegram!=null) { telegram.close(); telegram=null; } }
         if (storage != null) storage.close();
+        if (guard != null) guard.close();
     }
 }
 

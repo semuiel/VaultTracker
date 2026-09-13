@@ -98,6 +98,13 @@ public final class Catalogue {
     }
     public synchronized int size() { return vaults.size(); }
     public record OwnerItems(UUID owner, String name, Map<String, Long> items) {}
+    public synchronized OwnerItems ownerItems(UUID owner) {
+        Map<String,Long> items=new HashMap<>();String name=owner.toString();
+        for(Snapshot v:vaults.values()) if(v.owner().equals(owner)) {
+            name=v.playerName();v.items().forEach((item,amount)->items.merge(item,amount,Long::sum));
+        }
+        return new OwnerItems(owner,name,Map.copyOf(items));
+    }
     public synchronized List<OwnerItems> ownerItems(String nickname) {
         Map<UUID, String> matches = new HashMap<>();
         for (Snapshot v : vaults.values()) if (v.playerName().equalsIgnoreCase(nickname)) matches.put(v.owner(),v.playerName());
