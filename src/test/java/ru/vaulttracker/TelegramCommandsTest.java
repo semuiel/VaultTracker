@@ -59,6 +59,37 @@ class TelegramCommandsTest {
         assertTrue(commands.handle(77,42,12345,"/unknown",false).text().contains("/topitem"));
     }
 
+    @Test void routesOnlyKnownCommandsWithOwnUsername() {
+        for(String text:List.of("/item алмаз","/item@VaultBot алмаз","/ITEM@vaultbot алмаз","/id@VaultBot","/help","/items"))
+            assertTrue(TelegramBotService.acceptsCommand(text,"VaultBot",false),text);
+        for(String text:List.of("/list","/list@VaultBot","/item@OtherBot алмаз","/id@TGBridge","/status@TGBridge","/itemfoo","/item@","/menu","обычный текст"))
+            assertFalse(TelegramBotService.acceptsCommand(text,"VaultBot",false),text);
+        assertTrue(TelegramBotService.acceptsCommand("/menu@VaultBot","VaultBot",true));
+        assertFalse(TelegramBotService.acceptsCommand("/menu@OtherBot","VaultBot",true));
+        assertFalse(TelegramBotService.acceptsCommand("/id@VaultBot",null,true));
+    }
+
+    @Test void ignoresForeignCommandsWithoutReplyDeletionOrIdLogging() throws Exception {
+        TelegramConfig config=mock(TelegramConfig.class);
+        var logger=mock(java.util.logging.Logger.class);
+        var process=TelegramBotService.class.getDeclaredMethod("process",TelegramApi.Incoming.class);
+        process.setAccessible(true);
+        try(var apis=mockConstruction(TelegramApi.class);
+            var service=new TelegramBotService(config,catalogue,storage,logger)) {
+            var api=apis.constructed().getFirst();
+            var username=TelegramBotService.class.getDeclaredField("username");
+            username.setAccessible(true); username.set(service,"VaultBot");
+            for(boolean allowed:List.of(true,false)) {
+                when(config.allowed(10,20)).thenReturn(allowed);
+                for(boolean privateChat:List.of(true,false)) {
+                    for(String text:List.of("/list","/list@TGBridge","/item@TGBridge алмаз","/id@TGBridge","/help@OtherBot","/unknown"))
+                        process.invoke(service,new TelegramApi.Incoming(1,10,20,42,100,text,null,null,privateChat));
+                }
+            }
+            verifyNoInteractions(api,logger);
+        }
+    }
+
     @Test void splitsTelegramMessagesWithoutLosingText() {
         String input="line one\n"+"x".repeat(80)+"\nlast";
         var parts=TelegramApi.split(input,40);
@@ -74,6 +105,8 @@ class TelegramCommandsTest {
         try(var apis=mockConstruction(TelegramApi.class);
             var service=new TelegramBotService(config,catalogue,storage,logger)) {
             var api=apis.constructed().getFirst();
+            var username=TelegramBotService.class.getDeclaredField("username");
+            username.setAccessible(true); username.set(service,"VaultBot");
             for(boolean allowed:List.of(true,false)) {
                 for(int topic:List.of(20,0)) {
                     when(config.allowed(-1001234567890L,topic)).thenReturn(allowed);
@@ -105,6 +138,8 @@ class TelegramCommandsTest {
         try(var apis=mockConstruction(TelegramApi.class);
             var service=new TelegramBotService(config,catalogue,storage,java.util.logging.Logger.getAnonymousLogger())) {
             var api=apis.constructed().getFirst();
+            var username=TelegramBotService.class.getDeclaredField("username");
+            username.setAccessible(true); username.set(service,"VaultBot");
             process.invoke(service,new TelegramApi.Incoming(1,42,0,42,1,"обычное сообщение",null,null,true));
             verifyNoInteractions(api);
             process.invoke(service,new TelegramApi.Incoming(2,42,0,42,2,"/start",null,null,true));
@@ -123,6 +158,8 @@ class TelegramCommandsTest {
             clearInvocations(api);
             when(config.allowed(-100,20)).thenReturn(true);
             process.invoke(service,new TelegramApi.Incoming(5,-100,20,42,4,"Alex",null,null,false));
+            verifyNoInteractions(api);
+            process.invoke(service,new TelegramApi.Incoming(5,42,0,42,4,"/list",null,null,true));
             verifyNoInteractions(api);
             process.invoke(service,new TelegramApi.Incoming(6,42,0,42,5,"NoSuchPlayer",null,null,true));
             verify(api).send(eq(42L),eq(0),sent.capture());
@@ -147,6 +184,8 @@ class TelegramCommandsTest {
         try(var apis=mockConstruction(TelegramApi.class);
             var service=new TelegramBotService(config,catalogue,storage,java.util.logging.Logger.getAnonymousLogger())) {
             var api=apis.constructed().getFirst();
+            var username=TelegramBotService.class.getDeclaredField("username");
+            username.setAccessible(true); username.set(service,"VaultBot");
             for(boolean allowed:List.of(true,false)) {
                 when(config.allowed(10,20)).thenReturn(allowed);
                 for(String text:Arrays.asList(".", "ы", "а", "просто пишу", "Пример /item алмаз", "", "   ", null)) {
@@ -172,6 +211,8 @@ class TelegramCommandsTest {
         try(var apis=mockConstruction(TelegramApi.class);
             var service=new TelegramBotService(config,catalogue,storage,java.util.logging.Logger.getAnonymousLogger())) {
             var api=apis.constructed().getFirst();
+            var username=TelegramBotService.class.getDeclaredField("username");
+            username.setAccessible(true); username.set(service,"VaultBot");
             when(api.send(eq(10L),eq(20),any())).thenReturn(900);
             int messageId=100;
             for(String text:List.of("/item", "/item алмаз", "/item Alex алмаз", "/item глубинная алмазная руда",

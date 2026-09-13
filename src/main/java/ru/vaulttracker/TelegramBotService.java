@@ -1,6 +1,7 @@
 package ru.vaulttracker;
 
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.*;
 import java.util.logging.Logger;
@@ -8,6 +9,9 @@ import java.util.logging.Logger;
 final class TelegramBotService implements AutoCloseable {
     private final TelegramConfig config; private final TelegramApi api; private final TelegramCommands commands; private final Logger log;
     private final TelegramPrivateMenu privateMenu;
+    private String username;
+    private static final Set<String> COMMANDS=Set.of("/start","/help","/id","/status","/items","/item","/topitem","/itemtop");
+    private static final Set<String> PRIVATE_COMMANDS=Set.of("/menu","/search","/cancel");
     private final AtomicBoolean stopping=new AtomicBoolean(); private final Thread worker;
     private final ScheduledExecutorService deletionScheduler=Executors.newSingleThreadScheduledExecutor(
             runnable->Thread.ofVirtual().name("VaultTracker-telegram-delete").unstarted(runnable));
@@ -22,7 +26,7 @@ final class TelegramBotService implements AutoCloseable {
         while(!stopping.get()) {
             try {
                 if(!initialized) {
-                    String username=api.verify(); api.registerCommands(); initialized=true; failures=0;
+                    username=api.verify(); api.registerCommands(); initialized=true; failures=0;
                     log.info("Telegram-бот @"+username+" запущен внутри VaultTracker.");
                     if(config.chats().isEmpty() && config.allowedChatIds().isEmpty()) log.warning("chats и allowedChatIds пусты: Telegram-каталог доступен всем пользователям бота.");
                     else if(!config.chats().isEmpty()) log.info("Telegram-бот ограничен чатами и темами из telegram.yml: "+config.chats().size()+".");
@@ -64,6 +68,7 @@ final class TelegramBotService implements AutoCloseable {
             return;
         }
         if(!update.privateChat() && !isCommand(update.text())) return;
+        if(isCommand(update.text()) && !acceptsCommand(update.text(),username,update.privateChat())) return;
         if(TelegramCommands.command(update.text()).equals("/id")) {
             log.info("Telegram /id — данные для telegram.yml (отправитель: "+update.userId()+"):\n"
                     +"chats:\n"
@@ -102,6 +107,14 @@ final class TelegramBotService implements AutoCloseable {
         }
     }
     private static boolean isCommand(String text) { return text!=null && text.trim().startsWith("/"); }
+    static boolean acceptsCommand(String text,String username,boolean privateChat) {
+        if(!isCommand(text)) return false;
+        String token=text.trim().split("\\s+",2)[0];
+        int mention=token.indexOf('@');
+        if(mention>=0 && (username==null || !token.substring(mention+1).equalsIgnoreCase(username))) return false;
+        String command=TelegramCommands.command(text.trim());
+        return COMMANDS.contains(command) || (privateChat && PRIVATE_COMMANDS.contains(command));
+    }
     private void sendTemporary(long chatId,int topicId,TelegramCommands.View view) throws Exception {
         int messageId=api.send(chatId,topicId,view);
         deletionScheduler.schedule(()-> {
