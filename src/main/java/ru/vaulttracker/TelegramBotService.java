@@ -55,6 +55,21 @@ final class TelegramBotService implements AutoCloseable {
             if(result.view()!=null) api.edit(update.chatId(),update.messageId(),result.view());
             return;
         }
+        if(TelegramCommands.command(update.text()).equals("/id")) {
+            log.info("Telegram /id — данные для telegram.yml (отправитель: "+update.userId()+"):\n"
+                    +"chats:\n"
+                    +"  - isDefault: true\n"
+                    +"    chatId: "+update.chatId()+"\n"
+                    +"    topicId: "+update.topicId()+"\n"
+                    +"adminUserIds:\n"
+                    +"  - "+update.userId()+"\n"
+                    +"Скопируйте нужные значения в telegram.yml и выполните /vtrack reload. Настройки автоматически не изменяются.");
+            if(update.messageId()>0) {
+                try { api.delete(update.chatId(),update.messageId()); }
+                catch(Exception e) { log.fine("Не удалось удалить команду /id из Telegram: "+api.safe(e)); }
+            }
+            return;
+        }
         if(!config.allowed(update.chatId(),update.topicId())) {
             if(isCommand(update.text()) && update.messageId()>0) {
                 try { api.delete(update.chatId(),update.messageId()); }

@@ -34,7 +34,6 @@ final class TelegramCommands {
     View handle(long userId,long chatId,int topicId,String input,boolean admin) {
         String text=input==null ? "" : input.trim();
         String command=command(text);
-        if(command.equals("/id")) return new View("ID пользователя: "+userId+"\nID этого чата: "+chatId+"\nID этой темы: "+topicId);
         if(text.isEmpty() || command.equals("/start") || command.equals("/help")) return new View(help(admin));
         if(command.equals("/status")) return admin
                 ? new View(storage.status()+"; хранилищ: "+catalogue.size()) : adminOnly();
@@ -193,6 +192,6 @@ final class TelegramCommands {
     }
     private static String help(boolean admin) {
         String text="Каталог ресурсов VaultTracker.\n\n"+topHelp();
-        return admin ? text+"\n\nАдминистратор: /items, /status, /id" : text;
+        return admin ? text+"\n\nАдминистратор: /items, /status\n/id — вывести данные настройки в консоль сервера." : text;
     }
 }

@@ -52,12 +52,10 @@ class TelegramCommandsTest {
         }
     }
 
-    @Test void restrictsAdministrativeCommandsAndShowsUserId() {
+    @Test void restrictsAdministrativeCommands() {
         when(storage.status()).thenReturn("Локальный каталог: работает");
         assertTrue(commands.handle(77,42,12345,"/status",false).text().contains("только администратору"));
         assertTrue(commands.handle(77,42,12345,"/status",true).text().contains("Локальный каталог: работает"));
-        assertEquals("ID пользователя: 77\nID этого чата: 42\nID этой темы: 12345",
-                commands.handle(77,42,12345,"/id",false).text());
         assertTrue(commands.handle(77,42,12345,"/unknown",false).text().contains("/topitem"));
     }
 
@@ -66,6 +64,37 @@ class TelegramCommandsTest {
         var parts=TelegramApi.split(input,40);
         assertTrue(parts.stream().allMatch(part->part.length()<=40));
         assertEquals(input.replace("\n",""),String.join("",parts).replace("\n",""));
+    }
+
+    @Test void idLogsCopyableConfigurationWithoutReplyInAllowedAndBlockedTopics() throws Exception {
+        TelegramConfig config=mock(TelegramConfig.class);
+        var logger=mock(java.util.logging.Logger.class);
+        var process=TelegramBotService.class.getDeclaredMethod("process",TelegramApi.Incoming.class);
+        process.setAccessible(true);
+        try(var apis=mockConstruction(TelegramApi.class);
+            var service=new TelegramBotService(config,catalogue,storage,logger)) {
+            var api=apis.constructed().getFirst();
+            for(boolean allowed:List.of(true,false)) {
+                for(int topic:List.of(20,0)) {
+                    when(config.allowed(-1001234567890L,topic)).thenReturn(allowed);
+                    for(String text:List.of("/id", "/id@VaultBot")) {
+                        process.invoke(service,new TelegramApi.Incoming(1,-1001234567890L,topic,42,100,text,null,null));
+                        var logged=org.mockito.ArgumentCaptor.forClass(String.class);
+                        verify(logger).info(logged.capture());
+                        String message=logged.getValue();
+                        assertTrue(message.contains("chats:\n  - isDefault: true\n    chatId: -1001234567890\n    topicId: "+topic));
+                        assertTrue(message.contains("adminUserIds:\n  - 42"));
+                        verify(api).delete(-1001234567890L,100);
+                        verifyNoMoreInteractions(api);
+                        clearInvocations(api,logger);
+                    }
+                }
+            }
+            doThrow(new java.io.IOException("No deletion permission")).when(api).delete(-1001234567890L,100);
+            process.invoke(service,new TelegramApi.Incoming(1,-1001234567890L,20,42,100,"/id",null,null));
+            verify(logger).info(contains("chatId: -1001234567890"));
+            verify(api,never()).send(anyLong(),anyInt(),any());
+        }
     }
 
     @Test void deletesCommandMessagesWithArgumentsAfterSendingReply() throws Exception {
@@ -82,7 +111,7 @@ class TelegramCommandsTest {
             when(api.send(eq(10L),eq(20),any())).thenReturn(900);
             int messageId=100;
             for(String text:List.of("/item", "/item алмаз", "/item Alex алмаз", "/item глубинная алмазная руда",
-                    "/topitem Alex", "/itemtop АР", "/item@VaultBot алмаз", "/status", "/id")) {
+                    "/topitem Alex", "/itemtop АР", "/item@VaultBot алмаз", "/status")) {
                 process.invoke(service,new TelegramApi.Incoming(1,10,20,42,messageId,text,null,null));
                 var order=inOrder(api);
                 order.verify(api).send(eq(10L),eq(20),any());
