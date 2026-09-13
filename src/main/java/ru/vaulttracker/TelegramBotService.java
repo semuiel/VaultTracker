@@ -55,6 +55,7 @@ final class TelegramBotService implements AutoCloseable {
             if(result.view()!=null) api.edit(update.chatId(),update.messageId(),result.view());
             return;
         }
+        if(!isCommand(update.text())) return;
         if(TelegramCommands.command(update.text()).equals("/id")) {
             log.info("Telegram /id — данные для telegram.yml (отправитель: "+update.userId()+"):\n"
                     +"chats:\n"

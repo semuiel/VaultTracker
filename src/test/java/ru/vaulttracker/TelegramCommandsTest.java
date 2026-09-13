@@ -97,6 +97,27 @@ class TelegramCommandsTest {
         }
     }
 
+    @Test void ignoresConversationButStillHandlesButtonsWithoutMessageText() throws Exception {
+        TelegramConfig config=mock(TelegramConfig.class);
+        var process=TelegramBotService.class.getDeclaredMethod("process",TelegramApi.Incoming.class);
+        process.setAccessible(true);
+        try(var apis=mockConstruction(TelegramApi.class);
+            var service=new TelegramBotService(config,catalogue,storage,java.util.logging.Logger.getAnonymousLogger())) {
+            var api=apis.constructed().getFirst();
+            for(boolean allowed:List.of(true,false)) {
+                when(config.allowed(10,20)).thenReturn(allowed);
+                for(String text:Arrays.asList(".", "ы", "а", "просто пишу", "Пример /item алмаз", "", "   ", null)) {
+                    process.invoke(service,new TelegramApi.Incoming(1,10,20,42,800,text,null,null));
+                }
+                verifyNoInteractions(api);
+            }
+            when(config.allowed(10,20)).thenReturn(true);
+            process.invoke(service,new TelegramApi.Incoming(1,10,20,42,900,null,"callback-1","vt:expired:2"));
+            verify(api).answerCallback(eq("callback-1"),anyString(),eq(true));
+            verifyNoMoreInteractions(api);
+        }
+    }
+
     @Test void deletesCommandMessagesWithArgumentsAfterSendingReply() throws Exception {
         TelegramConfig config=mock(TelegramConfig.class);
         when(config.allowed(10,20)).thenReturn(true);
@@ -121,7 +142,7 @@ class TelegramCommandsTest {
                 messageId++;
             }
             process.invoke(service,new TelegramApi.Incoming(1,10,20,42,800,"обычное сообщение",null,null));
-            verify(api,never()).delete(anyLong(),anyInt());
+            verifyNoInteractions(api);
             when(config.allowed(10,20)).thenReturn(false);
             clearInvocations(api);
             process.invoke(service,new TelegramApi.Incoming(1,10,20,42,801,"/item алмаз",null,null));
