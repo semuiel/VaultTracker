@@ -27,6 +27,13 @@ final class TopItemCommand {
         boolean explicit = args.length > 1 && args[0].equalsIgnoreCase("player");
         if (explicit) args=Arrays.copyOfRange(args,1,args.length);
         if (args.length < 1 || args.length > 2) { help(sender); return true; }
+        ResourceGroups.Group group=ResourceGroups.resolve(args[0]);
+        if (!explicit && args.length==1 && group!=null) {
+            say(sender,group.title()+" — топ владельцев, последние известные остатки:");
+            var found=catalogue.findTotals(group.materials(),20);
+            if (found.isEmpty()) say(sender,"Не найдено."); else for(var row:found) say(sender,row.name()+" — "+ItemAmount.format(group.displayMaterial(),row.amount()));
+            return true;
+        }
         String material=RussianItems.normalize(args[0]);
         if (!explicit && args.length==1 && validItem.test(material)) {
             say(sender,RussianItems.name(material)+" — топ владельцев, последние известные остатки:");
@@ -41,6 +48,12 @@ final class TopItemCommand {
         if (matches.size()>1) { say(sender,"В каталоге несколько UUID с этим ником. Администратору нужно проверить записи владельцев."); return true; }
         var owner=matches.getFirst();
         if (args.length==2 && !args[1].matches("[+-]?[0-9]+")) {
+            group=ResourceGroups.resolve(args[1]);
+            if(group!=null) {
+                long amount=group.materials().stream().mapToLong(item->owner.items().getOrDefault(item,0L)).sum();
+                say(sender,owner.name()+" — "+group.title()+": "+ItemAmount.format(group.displayMaterial(),amount));
+                return true;
+            }
             material=RussianItems.normalize(args[1]);
             if (!validItem.test(material)) { say(sender,"Неизвестный предмет. Пример: /topitem "+args[0]+" diamond"); return true; }
             say(sender,owner.name()+" — "+RussianItems.name(material)+": "+ItemAmount.format(material,owner.items().getOrDefault(material,0L)));

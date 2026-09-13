@@ -276,7 +276,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
     @EventHandler(priority=EventPriority.MONITOR) public void join(PlayerJoinEvent e) { if (storage.ready()) catalogue.rename(e.getPlayer().getUniqueId(),e.getPlayer().getName()); }
     private static void tell(CommandSender sender,String message) { sender.sendMessage(Component.text("[VaultTracker] " + message)); }
     @Override public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
-        if (command.getName().equalsIgnoreCase("topitem")) {
+        if (command.getName().equalsIgnoreCase("topitem") || command.getName().equalsIgnoreCase("itemtop")) {
             return new TopItemCommand(catalogue,storage::ready).execute(sender,args);
         }
         String action=args.length==0 ? "help" : args[0].toLowerCase(Locale.ROOT);

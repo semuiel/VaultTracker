@@ -127,4 +127,14 @@ public final class Catalogue {
         return amounts.entrySet().stream().sorted(Map.Entry.<UUID, Long>comparingByValue().reversed())
                 .limit(limit).map(e -> new OwnerAmount(names.get(e.getKey()),e.getValue())).toList();
     }
+    public synchronized List<OwnerAmount> findTotals(List<String> materials, int limit) {
+        Map<UUID, Long> amounts = new HashMap<>();
+        Map<UUID, String> names = new HashMap<>();
+        for (Snapshot v : vaults.values()) {
+            long total=materials.stream().mapToLong(item->v.items().getOrDefault(item,0L)).sum();
+            if(total>0) { amounts.merge(v.owner(),total,Long::sum); names.put(v.owner(),v.playerName()); }
+        }
+        return amounts.entrySet().stream().sorted(Map.Entry.<UUID,Long>comparingByValue().reversed())
+                .limit(limit).map(entry->new OwnerAmount(names.get(entry.getKey()),entry.getValue())).toList();
+    }
 }
