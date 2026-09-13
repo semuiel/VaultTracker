@@ -34,6 +34,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
 
     @Override public void onEnable() {
         saveDefaultConfig();
+        ensureTelegramConfig();
         String id = getConfig().getString("server-id", "test");
         if (!id.matches("[a-zA-Z0-9_-]{1,48}")) throw new IllegalArgumentException("Invalid server-id");
         RemoteStore.Settings database = null;
@@ -55,6 +56,12 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
         storage.start(catalogue::restore);
         synchronized(telegramLock) { replaceTelegram(); }
         getLogger().info("VaultTracker " + getPluginMeta().getVersion() + ": каталог ресурсов. /vtrack help");
+    }
+    private void ensureTelegramConfig() {
+        java.io.File file=new java.io.File(getDataFolder(),"telegram.yml");
+        if(file.exists()) return;
+        saveResource("telegram.yml",false);
+        getLogger().info("Создан стандартный Telegram-конфиг: "+file.getAbsolutePath());
     }
     private void applyRuntimeConfig() {
         debounceTicks=Math.max(1,Math.min(20,getConfig().getLong("update-delay-ticks",2)));
