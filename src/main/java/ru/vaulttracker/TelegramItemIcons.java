@@ -1,43 +1,26 @@
 package ru.vaulttracker;
+import java.util.*;
 
-import java.util.Locale;
-
-/** Ordinary Unicode emoji: approximate resource symbols, not Minecraft textures. */
+/** Stable category symbols shared by all Telegram item lists. */
 final class TelegramItemIcons {
-    static String label(String material) { return icon(material)+" "+RussianItems.name(material); }
-    static String groupLabel(ResourceGroups.Group group) { return icon(group.displayMaterial())+" "+group.title(); }
-    static String icon(String material) {
-        String name=material.toUpperCase(Locale.ROOT);
-        if(name.endsWith("PICKAXE")) return "⛏️";
-        if(name.endsWith("_AXE")) return "🪓";
-        if(name.endsWith("SWORD")) return "⚔️";
-        if(name.endsWith("HELMET") || name.endsWith("CHESTPLATE") || name.endsWith("LEGGINGS") || name.endsWith("BOOTS") || name.equals("SHIELD")) return "🛡️";
-        if(name.contains("DIAMOND")) return "💎";
-        if(name.contains("EMERALD")) return "🟢";
-        if(name.contains("GOLD") && !name.contains("APPLE") && !name.contains("CARROT")) return "🟡";
-        if(name.contains("IRON") || name.contains("NETHERITE")) return "🔩";
-        if(name.contains("COPPER")) return "🟠";
-        if(name.contains("REDSTONE")) return "🔴";
-        if(name.contains("LAPIS")) return "🔵";
-        if(name.contains("AMETHYST")) return "🟣";
-        if(name.contains("COAL") || name.equals("CHARCOAL")) return "⚫";
-        if(name.contains("BOOK")) return "📚";
-        if(name.equals("PAPER") || name.contains("MAP")) return "📜";
-        if(name.contains("SHULKER_BOX") || name.contains("CHEST") || name.equals("BARREL") || name.contains("BUNDLE")) return "📦";
-        if(name.contains("POTION") || name.equals("GLASS_BOTTLE")) return "🧪";
-        if(name.contains("BUCKET")) return "🪣";
-        if(name.endsWith("_LOG") || name.endsWith("_WOOD") || name.endsWith("_PLANKS") || name.equals("STICK")) return "🪵";
-        if(name.contains("LEAVES") || name.contains("SAPLING") || name.contains("SEEDS")) return "🌱";
-        if(name.contains("APPLE")) return "🍎";
-        if(name.contains("CARROT")) return "🥕";
-        if(name.equals("BREAD") || name.equals("WHEAT")) return "🌾";
-        if(name.contains("FISH") || name.contains("SALMON") || name.contains("COD")) return "🐟";
-        if(name.contains("BEEF") || name.contains("PORKCHOP") || name.contains("CHICKEN") || name.contains("MUTTON")) return "🍖";
-        if(name.contains("TORCH") || name.contains("CAMPFIRE") || name.equals("BLAZE_ROD")) return "🔥";
-        if(name.contains("STONE") || name.contains("DEEPSLATE") || name.contains("OBSIDIAN") || name.contains("GRANITE") || name.contains("DIORITE") || name.contains("ANDESITE")) return "🪨";
-        if(name.contains("BRICK")) return "🧱";
-        if(name.contains("SAND") || name.contains("DIRT") || name.equals("GRAVEL")) return "🟫";
-        return "📦";
-    }
-    private TelegramItemIcons() {}
+ static String label(String material) {return icon(material)+" "+RussianItems.name(material);}
+ static String groupLabel(ResourceGroups.Group group) {return icon(group.displayMaterial())+" "+group.title();}
+ static String icon(String material) {
+  String n=material.toUpperCase(Locale.ROOT).replace("MINECRAFT:","");
+  if(n.endsWith("SHULKER_BOX") || n.endsWith("_CHEST") || Set.of("CHEST","TRAPPED_CHEST","ENDER_CHEST","BARREL","BUNDLE").contains(n) || n.endsWith("_BUNDLE")) return "📦";
+  if(n.endsWith("SWORD") || n.endsWith("_SPEAR") || Set.of("BOW","CROSSBOW","TRIDENT","MACE","ARROW","SPECTRAL_ARROW","TIPPED_ARROW").contains(n)) return "⚔️";
+  if(n.endsWith("HELMET") || n.endsWith("CHESTPLATE") || n.endsWith("LEGGINGS") || n.endsWith("BOOTS") || n.endsWith("HORSE_ARMOR") || Set.of("SHIELD","ELYTRA","WOLF_ARMOR").contains(n)) return "🛡️";
+  if(n.endsWith("PICKAXE") || n.endsWith("_AXE") || n.endsWith("SHOVEL") || n.endsWith("_HOE") || Set.of("SHEARS","FISHING_ROD","FLINT_AND_STEEL","BRUSH","COMPASS","RECOVERY_COMPASS","CLOCK","SPYGLASS","LEAD").contains(n)) return "🛠️";
+  if(n.contains("POTION") || Set.of("GLASS_BOTTLE","DRAGON_BREATH","EXPERIENCE_BOTTLE","TOTEM_OF_UNDYING","ENCHANTED_BOOK","ENDER_PEARL","ENDER_EYE").contains(n)) return "🧪";
+  if(n.contains("BOOK") || n.equals("PAPER") || n.contains("MAP")) return "📚";
+  if(n.endsWith("BUCKET")) return "🪣";
+
+  if(Set.of("APPLE","GOLDEN_APPLE","ENCHANTED_GOLDEN_APPLE","BREAD","CARROT","GOLDEN_CARROT","POTATO","BAKED_POTATO","POISONOUS_POTATO","BEETROOT","BEETROOT_SOUP","MUSHROOM_STEW","RABBIT_STEW","SUSPICIOUS_STEW","BEEF","COOKED_BEEF","PORKCHOP","COOKED_PORKCHOP","CHICKEN","COOKED_CHICKEN","MUTTON","COOKED_MUTTON","RABBIT","COOKED_RABBIT","COD","COOKED_COD","SALMON","COOKED_SALMON","TROPICAL_FISH","PUFFERFISH","COOKIE","CAKE","PUMPKIN_PIE","MELON_SLICE","SWEET_BERRIES","GLOW_BERRIES","DRIED_KELP","CHORUS_FRUIT","HONEY_BOTTLE","ROTTEN_FLESH","SPIDER_EYE").contains(n)) return "🍖";
+  if(n.contains("SAPLING") || n.contains("LEAVES") || n.endsWith("SEEDS") || n.contains("FLOWER") || Set.of("WHEAT","BAMBOO","SUGAR_CANE","CACTUS","KELP","MOSS_BLOCK","DANDELION","POPPY","FERN","VINE").contains(n)) return "🌱";
+  if(n.endsWith("_ORE") || n.endsWith("_INGOT") || n.endsWith("_NUGGET") || n.startsWith("RAW_") || Set.of("DIAMOND","EMERALD","COAL","CHARCOAL","LAPIS_LAZULI","QUARTZ","AMETHYST_SHARD","NETHERITE_SCRAP","ANCIENT_DEBRIS").contains(n)) return "💎";
+  if(n.contains("REDSTONE") || n.contains("PISTON") || n.endsWith("_RAIL") || n.endsWith("_MINECART") || n.endsWith("_BUTTON") || n.endsWith("PRESSURE_PLATE") || Set.of("RAIL","MINECART","HOPPER","DROPPER","DISPENSER","OBSERVER","REPEATER","COMPARATOR","LEVER","CRAFTER","DAYLIGHT_DETECTOR","TARGET").contains(n)) return "⚙️";
+  if(RussianItems.block(n)) return "🧱";
+  return "•";
+ }
+ private TelegramItemIcons() {}
 }

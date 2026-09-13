@@ -45,6 +45,7 @@ class CabinetRolesTest {
     }
     @Test void onlineNotificationsAndSuperDelayAreIndependentOfAdminDelay() throws Exception {
         guard.offlineSeconds(42,-1L).get();guard.superDelay(500,-1).get();guard.presence(owner,"Player42",true);guard.restore(List.of(snap(owner,10,1)));guard.accept(snap(owner,9,2));
+        guard.history(500,0,1).get();clock.addAndGet(10000);
         assertEquals(Set.of(42L,500L),new HashSet<>(guard.deliveries().get().stream().map(GuardService.Delivery::recipient).toList()));
         assertThrows(ExecutionException.class,()->guard.superDelay(99,0).get());
     }
@@ -72,6 +73,78 @@ class CabinetRolesTest {
         var choice=click(99,click(99,menu.home(99),"Настройки администратора"),"Временный бан");
         var players=click(99,choice,"Игроки онлайн");assertTrue(players.text().contains("Игроки онлайн"));assertNotNull(button(players,"OnlineTarget"));
         verify(moderation).players(99,"online");
+    }
+    @Test void superAdminCanFilterPlayerListByPartialName() throws Exception {
+        var first=new TelegramModeration.Person(other,"Giga_TapoChek_",false,"");
+        var second=new TelegramModeration.Person(UUID.randomUUID(),"Semui",false,"");
+        when(moderation.players(500,"all")).thenReturn(CompletableFuture.completedFuture(List.of(first,second)));
+        when(moderation.adminGroup(500,other)).thenReturn(CompletableFuture.completedFuture(false));
+        var list=click(500,click(500,menu.home(500),"Супер"),"Список игроков");
+        list=click(500,list,"Все");
+        var prompt=click(500,list,"Поиск");
+        var filtered=menu.input(500,"tapo");
+        assertTrue(filtered.text().contains("поиск «tapo»"));
+        assertTrue(filtered.buttons().stream().anyMatch(b->b.text().contains("Giga_TapoChek_")));
+        assertFalse(filtered.buttons().stream().anyMatch(b->b.text().contains("Semui")));
+        assertTrue(prompt.text().contains("часть ника"));
+    }
+    @Test void superAdminPlayerCardOffersSpeedMenusWithDefaultsAndConfirmation() throws Exception {
+        var person=new TelegramModeration.Person(other,"Target",true,"");
+        when(moderation.players(500,"all")).thenReturn(CompletableFuture.completedFuture(List.of(person)));
+        when(moderation.info(500,other)).thenReturn(CompletableFuture.completedFuture(person));
+        when(moderation.adminGroup(500,other)).thenReturn(CompletableFuture.completedFuture(false));
+        when(moderation.speed(500,other,"fly",20)).thenReturn(CompletableFuture.completedFuture("Скорость полёта установлена"));
+        var root=click(500,menu.home(500),"Супер");var list=click(500,root,"Список игроков");list=click(500,list,"Все");var card=click(500,list,"Target");
+        var actions=click(500,card,"Действия игрока");
+        var fly=click(500,actions,"Скорость полёта");
+        assertTrue(fly.text().contains("1.0 — значение по умолчанию"));
+        assertTrue(fly.buttons().stream().anyMatch(b->b.text().endsWith("20.0")), fly.buttons().toString());
+        var confirm=click(500,fly,"20.0");
+        assertTrue(confirm.text().contains("скорость полёта 20.0x"));
+        click(500,confirm,"Подтвердить");verify(moderation).speed(500,other,"fly",20);
+    }
+    TelegramCommands.View rootActions() throws Exception {
+        var target=new TelegramModeration.Person(other,"Target",true,"");
+        when(moderation.players(500,"all")).thenReturn(CompletableFuture.completedFuture(List.of(target)));
+        when(moderation.info(500,other)).thenReturn(CompletableFuture.completedFuture(target));
+        when(moderation.adminGroup(500,other)).thenReturn(CompletableFuture.completedFuture(false));
+        return click(500,click(500,click(500,click(500,click(500,menu.home(500),"Супер"),"Список игроков"),"Все"),"Target"),"Действия игрока");
+    }
+    @Test void customNumbersValidateConfirmAndCancel() throws Exception {
+        var actions=rootActions();
+        for(String title:List.of("Размер","Скорость полёта","Скорость передвижения")) {
+            click(500,click(500,actions,title),"Своё значение");
+            assertTrue(menu.input(500,"NaN").text().contains("Введите число"));
+            assertTrue(menu.input(500,"21").text().contains("Введите число"));
+            var confirm=menu.input(500,"1,25");assertTrue(confirm.text().contains("1.25"));
+            assertTrue(menu.callback(99,button(confirm,"Подтвердить")).alert());
+            menu.home(500);assertTrue(menu.callback(500,button(confirm,"Подтвердить")).alert());
+        }
+        click(500,click(500,actions,"Размер"),"Своё значение");menu.home(500);assertNull(menu.input(500,"2"));
+        verify(moderation,never()).scale(anyLong(),any(),anyDouble());verify(moderation,never()).speed(anyLong(),any(),anyString(),anyDouble());
+        when(moderation.scale(500,other,1.25)).thenReturn(CompletableFuture.completedFuture("Готово"));
+        click(500,click(500,actions,"Размер"),"Своё значение");click(500,menu.input(500,"1.25"),"Подтвердить");verify(moderation).scale(500,other,1.25);
+    }
+    @Test void teleportMenusPreviewExactSourceDestinationAndCoordinates() throws Exception {
+        var actions=rootActions();
+        when(moderation.teleport(500,other,null,"223 200 1004")).thenReturn(CompletableFuture.completedFuture("Готово"));
+        click(500,actions,"на координаты");assertTrue(menu.input(500,"223 200").text().contains("x y z"));
+        var preview=menu.input(500,"223 200 1004");assertTrue(preview.text().contains("Target"));assertTrue(preview.text().contains("223 200 1004"));
+        verify(moderation,never()).teleport(anyLong(),any(),any(),any());
+        String yes=button(preview,"Подтвердить");menu.callback(500,yes);menu.callback(500,yes);verify(moderation).teleport(500,other,null,"223 200 1004");
+        var destination=new TelegramModeration.Person(owner,"Destination",true,"");
+        when(moderation.players(500,"online")).thenReturn(CompletableFuture.completedFuture(List.of(destination)));
+        when(moderation.info(500,owner)).thenReturn(CompletableFuture.completedFuture(destination));
+        when(moderation.teleport(500,other,owner,null)).thenReturn(CompletableFuture.completedFuture("Готово"));
+        preview=click(500,click(500,actions,"к игроку"),"Destination");assertTrue(preview.text().contains("Destination"));click(500,preview,"Подтвердить");verify(moderation).teleport(500,other,owner,null);
+    }
+    @Test void adminEventSearchIsAvailableAndRetainsFilterAcrossPages() throws Exception {
+        guard.restore(List.of(snap(owner,20,1)));clock.addAndGet(120001);
+        for(int i=1;i<=8;i++) {guard.attribute(snap(owner,20,1).sign(),"Investigator");guard.accept(snap(owner,20-i,i+1));}
+        var history=click(99,menu.home(99),"События");click(99,history,"Поиск событий");
+        var filtered=menu.input(99,"invest");assertTrue(filtered.text().contains("invest"));
+        assertTrue(click(99,filtered,"Вперёд").text().contains("invest"));
+        assertFalse(menu.home(42).buttons().stream().anyMatch(b->b.text().contains("События администраторов")));
     }
     @Test void cancelledOrRevokedConfirmationCannotModerate() throws Exception {
         var person=new TelegramModeration.Person(other,"Target",true,"");

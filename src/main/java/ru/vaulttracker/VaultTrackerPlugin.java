@@ -227,13 +227,16 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
             tell(e.getPlayer(),"Хранилище поставлено на учёт (" + (view.chests().size()==2 ? "двойной сундук" : "один блок") + "). Сохранение выполняется в фоне.");
         } catch (IllegalArgumentException ex) { tell(e.getPlayer(),ex.getMessage()); }
     }
-    private void nearby(Block b) { nearby(b,null); }
-    private void nearby(Block b,Player actor) {
+    private void nearby(Block b) { nearby(b,null,false); }
+    private void nearbyAutomated(Block b) { nearby(b,null,true); }
+    private void nearby(Block b,Player actor) { nearby(b,actor,false); }
+    private void nearby(Block b,Player actor,boolean automated) {
         BlockKey p = key(b);
         for (int cx=(p.x()-2)>>4; cx<=(p.x()+2)>>4; cx++) for (int cz=(p.z()-2)>>4; cz<=(p.z()+2)>>4; cz++)
             for (Snapshot v : catalogue.inChunk(new BlockKey.ChunkKey(p.world(),cx,cz)))
                 if (near(v.sign(),p) || v.chests().stream().anyMatch(c -> near(c,p))) {
                     if(actor!=null) guard.attribute(v.sign(),actor.getUniqueId(),actor.getName());
+                    if(automated) guard.automated(v.sign());
                     schedule(v.sign());
                 }
     }
@@ -241,11 +244,14 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
         return a.world().equals(b.world()) && Math.abs((long)a.x()-b.x())<=2 && Math.abs((long)a.y()-b.y())<=2 && Math.abs((long)a.z()-b.z())<=2;
     }
     private void changedInventory(Inventory inventory,Player actor) {
+        changedInventory(inventory,actor,actor==null);
+    }
+    private void changedInventory(Inventory inventory,Player actor,boolean automated) {
         InventoryHolder holder = inventory.getHolder(false);
         if (holder instanceof DoubleChest d) {
-            if (d.getLeftSide() instanceof Chest c) nearby(c.getBlock(),actor);
-            if (d.getRightSide() instanceof Chest c) nearby(c.getBlock(),actor);
-        } else if (holder instanceof BlockInventoryHolder block) nearby(block.getBlock(),actor);
+            if (d.getLeftSide() instanceof Chest c) nearby(c.getBlock(),actor,automated);
+            if (d.getRightSide() instanceof Chest c) nearby(c.getBlock(),actor,automated);
+        } else if (holder instanceof BlockInventoryHolder block) nearby(block.getBlock(),actor,automated);
     }
     private void destroyed(Block b) {
         BlockKey p=key(b);
@@ -263,12 +269,12 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
     @EventHandler(priority=EventPriority.MONITOR) public void close(InventoryCloseEvent e) { changedInventory(e.getInventory(),e.getPlayer() instanceof Player p ? p : null); }
     @EventHandler(priority=EventPriority.MONITOR, ignoreCancelled=true) public void move(InventoryMoveItemEvent e) { changedInventory(e.getSource(),null); changedInventory(e.getDestination(),null); }
     @EventHandler(priority=EventPriority.MONITOR, ignoreCancelled=true) public void pickup(InventoryPickupItemEvent e) { changedInventory(e.getInventory(),null); }
-    @EventHandler(priority=EventPriority.MONITOR, ignoreCancelled=true) public void cook(BlockCookEvent e) { nearby(e.getBlock()); }
-    @EventHandler(priority=EventPriority.MONITOR, ignoreCancelled=true) public void burn(FurnaceBurnEvent e) { nearby(e.getBlock()); }
-    @EventHandler(priority=EventPriority.MONITOR, ignoreCancelled=true) public void brew(BrewEvent e) { nearby(e.getBlock()); }
-    @EventHandler(priority=EventPriority.MONITOR, ignoreCancelled=true) public void brewFuel(BrewingStandFuelEvent e) { nearby(e.getBlock()); }
-    @EventHandler(priority=EventPriority.MONITOR, ignoreCancelled=true) public void dispense(BlockDispenseEvent e) { nearby(e.getBlock()); }
-    @EventHandler(priority=EventPriority.MONITOR, ignoreCancelled=true) public void craft(CrafterCraftEvent e) { nearby(e.getBlock()); }
+    @EventHandler(priority=EventPriority.MONITOR, ignoreCancelled=true) public void cook(BlockCookEvent e) { nearbyAutomated(e.getBlock()); }
+    @EventHandler(priority=EventPriority.MONITOR, ignoreCancelled=true) public void burn(FurnaceBurnEvent e) { nearbyAutomated(e.getBlock()); }
+    @EventHandler(priority=EventPriority.MONITOR, ignoreCancelled=true) public void brew(BrewEvent e) { nearbyAutomated(e.getBlock()); }
+    @EventHandler(priority=EventPriority.MONITOR, ignoreCancelled=true) public void brewFuel(BrewingStandFuelEvent e) { nearbyAutomated(e.getBlock()); }
+    @EventHandler(priority=EventPriority.MONITOR, ignoreCancelled=true) public void dispense(BlockDispenseEvent e) { nearbyAutomated(e.getBlock()); }
+    @EventHandler(priority=EventPriority.MONITOR, ignoreCancelled=true) public void craft(CrafterCraftEvent e) { nearbyAutomated(e.getBlock()); }
     // Direct interactions include bookshelves, shelves, pots, jukeboxes and campfires.
     @EventHandler(priority=EventPriority.MONITOR) public void interact(PlayerInteractEvent e) {
         if (e.getClickedBlock() != null && e.useInteractedBlock() != Event.Result.DENY) nearby(e.getClickedBlock(),e.getPlayer());
@@ -380,4 +386,3 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
         if (guard != null) guard.close();
     }
 }
-

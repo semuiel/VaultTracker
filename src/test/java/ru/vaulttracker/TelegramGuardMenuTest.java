@@ -103,6 +103,7 @@ class TelegramGuardMenuTest {
     @Test void notificationsSendPrivatelyAndFailuresRemainQueued() throws Exception {
         TelegramConfig config=mock(TelegramConfig.class);when(config.pageSize()).thenReturn(8);
         var snapshot=CatalogueTest.fixture(1,20);guard.restore(List.of(snapshot));guard.accept(CatalogueTest.fixture(2,19));
+        guard.history(99,0,1).get();clock.addAndGet(10000);
         var notify=TelegramBotService.class.getDeclaredMethod("notifyGuard");notify.setAccessible(true);
         try(var apis=mockConstruction(TelegramApi.class);
             var service=new TelegramBotService(config,catalogue,storage,Logger.getAnonymousLogger(),guard)) {

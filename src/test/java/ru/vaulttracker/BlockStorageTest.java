@@ -11,6 +11,18 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 class BlockStorageTest {
+    @Test void repeatedAutomatedObservationsDoNotPublishDuplicateSnapshots() {
+        List<Snapshot> published = new ArrayList<>();
+        Catalogue catalogue = new Catalogue(published::add);
+        UUID world = UUID.randomUUID(), owner = UUID.randomUUID();
+        BlockKey sign = new BlockKey(world, 1, 64, 1);
+        catalogue.register(sign, owner, "Alex", List.of(sign), Map.of("DIAMOND", 3L), 1L, 10);
+        assertTrue(catalogue.observe(sign, catalogue.get(sign).generation(), List.of(sign), Map.of("DIAMOND", 3L), 2L));
+        assertEquals(1, published.size());
+        assertTrue(catalogue.observe(sign, catalogue.get(sign).generation(), List.of(sign), Map.of("DIAMOND", 2L), 3L));
+        assertEquals(2, published.size());
+    }
+
     @Test void readsEveryBlockInventoryIncludingBarrelsShulkersAndMachines() throws Exception {
         List<Class<? extends TileStateInventoryHolder>> types = List.of(Barrel.class, ShulkerBox.class,
                 Furnace.class, BlastFurnace.class, Smoker.class, Hopper.class, Dispenser.class,

@@ -43,6 +43,24 @@ class TelegramPrivateMenuTest {
         return click(click(say("/start"),"🔎 Поиск"),label);
     }
 
+    @Test void totalTopIsAboveItemsRanksWholeCatalogueAndReturnsToFilter() {
+        register("Leader",Map.of("STONE",1728L,"DIAMOND",864L));
+        var list=open("📦 Предмет");assertEquals("🏆 Топ по всем предметам",list.buttons().getFirst().text());
+        assertEquals(0,list.buttons().getFirst().row());assertEquals(1,list.buttons().get(1).row());
+        list=say("алмаз");var top=click(list,"🏆 Топ по всем предметам");
+        assertTrue(top.text().contains("1. Leader — 1,5 шалк."));
+        assertTrue(top.text().contains("2. Alex — 0,02 шалк."));
+        assertFalse(top.text().contains("шт."));
+        var next=click(top,"Вперёд ▶");assertTrue(next.text().contains("3. Bob — <0,01 шалк."));
+        assertTrue(click(next,"◀ К списку").text().contains("Фильтр: «алмаз»"));
+        assertEquals("1 шалк.",ItemAmount.totalShulkers(1728));assertEquals("0 шалк.",ItemAmount.totalShulkers(0));
+    }
+    @Test void totalTopSumsMultipleVaultsByUuidAndDoesNotAddOreAliases() {
+        UUID owner=UUID.randomUUID(),world=UUID.randomUUID();
+        for(int i=0;i<2;i++) catalogue.register(new BlockKey(world,i,1,1),owner,"Combined",List.of(new BlockKey(world,i,1,2)),Map.of("DIAMOND_ORE",864L),1,100);
+        var rows=catalogue.allItemTotals();assertEquals(1728,rows.getFirst().amount());assertEquals("Combined",rows.getFirst().name());
+        assertEquals(1,rows.stream().filter(r->r.name().equals("Combined")).count());
+    }
     @Test void browsesPlayersAndTheirResourcePagesWithReturnToList() {
         var list=open("👤 Игрок");
         assertTrue(list.text().contains("1/2"));
@@ -108,11 +126,11 @@ class TelegramPrivateMenuTest {
         assertTrue(menu.callback(42,42,0,button).alert());
     }
 
-    @Test void expirationAndRestartStopTextInputAndInvalidateButtons() {
+    @Test void restartInvalidatesButtonsButLongIdleDoesNot() {
         var list=open("👤 Игрок");
+        var oldButton=data(list,"👤 Alex");
         clock.addAndGet(30*60*1000L);
-        assertNull(say("Alex"));
-        assertTrue(menu.callback(42,42,0,data(list,"👤 Alex")).alert());
+        assertFalse(menu.callback(42,42,0,oldButton).alert());
         list=open("👤 Игрок");
         var restarted=new TelegramPrivateMenu(catalogue,storage,commands,2,valid,clock::get);
         assertNull(restarted.handle(42,42,0,"Alex",false));
@@ -147,7 +165,7 @@ class TelegramPrivateMenuTest {
         var second=click(first,"Вперёд ▶");
         assertTrue(second.text().contains("2/2"));
         assertTrue(second.text().contains("Фильтр: «diam»"));
-        var selected=second.buttons().getFirst();
+        var selected=second.buttons().stream().filter(b->b.row()==1).findFirst().orElseThrow();
         var result=menu.callback(42,42,0,selected.data()).view();
         assertTrue(result.text().contains("топ владельцев"));
         var back=click(result,"◀ К списку");

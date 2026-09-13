@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "ru.vaulttracker"
-version = "0.7.3"
+version = "0.8.0"
 
 repositories {
     mavenCentral()
@@ -46,6 +46,3 @@ tasks.register<Jar>("smokeJar") {
     archiveClassifier.set("smoke")
     from(smoke.output)
 }
-
-
-

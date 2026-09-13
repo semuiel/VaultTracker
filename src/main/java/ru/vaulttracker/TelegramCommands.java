@@ -13,10 +13,10 @@ final class TelegramCommands {
         View(String text) { this(text,List.of()); }
     }
     record Callback(View view,String notice,boolean alert) {}
-    private enum Kind { PLAYER, OWNER, TOP, ITEMS }
+    private enum Kind { PLAYER, OWNER, TOP, ITEMS, TOTAL_TOP }
     private record Session(long userId,Kind kind,String argument,long createdAt) {}
 
-    private static final long SESSION_TTL_MS=30*60*1000L;
+    private static final int MAX_SESSIONS=4096;
     private final Catalogue catalogue;
     private final StorageEngine storage;
     private final int pageSize;
@@ -56,8 +56,8 @@ final class TelegramCommands {
         String[] parts=data.split(":",3);
         if(parts.length!=3) return new Callback(null,"Неизвестная кнопка.",true);
         Session session=sessions.get(parts[1]);
-        if(session==null || System.currentTimeMillis()-session.createdAt()>SESSION_TTL_MS) {
-            sessions.remove(parts[1]); return new Callback(null,"Кнопки устарели. Выполните /topitem ещё раз.",true);
+        if(session==null) {
+            return new Callback(null,"Кнопка больше недоступна. Выполните команду ещё раз.",true);
         }
         if(session.userId()!=userId) return new Callback(null,"Эти кнопки принадлежат автору запроса.",true);
         if(session.kind()==Kind.ITEMS && !adminAccess.test(userId)) return new Callback(null,"Нет прав администратора.",true);
@@ -104,9 +104,11 @@ final class TelegramCommands {
 
     private View begin(long userId,Kind kind,String argument,int page) {
         long now=System.currentTimeMillis();
-        sessions.entrySet().removeIf(entry->now-entry.getValue().createdAt()>SESSION_TTL_MS);
         String token=UUID.randomUUID().toString().replace("-","").substring(0,16);
         Session session=new Session(userId,kind,argument,now); sessions.put(token,session);
+        if(sessions.size()>MAX_SESSIONS) sessions.entrySet().stream()
+                .min(Comparator.comparingLong(entry->entry.getValue().createdAt()))
+                .ifPresent(entry->sessions.remove(entry.getKey()));
         return render(token,session,page);
     }
 
@@ -114,12 +116,17 @@ final class TelegramCommands {
         if(!storage.ready()) return loading();
         return begin(userId,Kind.OWNER,owner.toString(),1);
     }
+    View totalTop(long userId) {
+        if(!storage.ready()) return loading();
+        return begin(userId,Kind.TOTAL_TOP,"",1);
+    }
     private View render(String token,Session session,int requested) {
         return switch(session.kind()) {
             case PLAYER -> playerPage(token,session.argument(),requested);
             case OWNER -> ownerPage(token,catalogue.ownerItems(UUID.fromString(session.argument())),requested);
             case TOP -> topPage(token,session.argument(),requested);
             case ITEMS -> allItemsPage(token,requested);
+            case TOTAL_TOP -> totalTopPage(token,requested);
         };
     }
 
@@ -163,6 +170,16 @@ final class TelegramCommands {
         return new View(text.toString().stripTrailing(),buttons(token,page,pages));
     }
 
+    private View totalTopPage(String token,int requested) {
+        var rows=catalogue.allItemTotals();int pages=pages(rows.size()),page=clamp(requested,pages);
+        StringBuilder text=new StringBuilder("🏆 Топ по всем предметам • "+page+"/"+pages+"\nСумма ресурсов зарегистрированных хранилищ, в шалкерах.\n\n");
+        if(rows.isEmpty()) text.append("В каталоге пока нет предметов.");
+        int first=(page-1)*pageSize;
+        for(int i=first;i<Math.min(first+pageSize,rows.size());i++) {
+            var row=rows.get(i);text.append(i+1).append(". ").append(row.name()).append(" — ").append(ItemAmount.totalShulkers(row.amount())).append('\n');
+        }
+        return new View(text.toString().stripTrailing(),buttons(token,page,pages));
+    }
     private View allItemsPage(String token,int requested) {
         Map<String,Long> totals=new HashMap<>();
         for(Snapshot snapshot:catalogue.all()) snapshot.items().forEach((item,amount)->totals.merge(item,amount,Long::sum));

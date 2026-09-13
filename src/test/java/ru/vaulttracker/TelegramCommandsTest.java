@@ -47,7 +47,7 @@ class TelegramCommandsTest {
             assertEquals("Alex — 💎 Алмаз: 2000 шт. (1 шалкер + 272 шт.)",
                     commands.handle(42,10,20,"/item Alex алмаз",false).text());
             assertTrue(commands.handle(42,10,20,"/itemtop АР",false).text().contains("Alex — 10 шт."));
-            assertEquals("Alex — 🟢 Изумрудная руда (обычная + глубинная): 5 шт.",
+            assertEquals("Alex — 💎 Изумрудная руда (обычная + глубинная): 5 шт.",
                     commands.handle(42,10,20,"/itemtop Alex ИР",false).text());
         }
     }

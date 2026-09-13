@@ -3,6 +3,12 @@ package ru.vaulttracker;
 import org.bukkit.Material;
 
 final class ItemAmount {
+    /** A common count unit for mixed items, not their physical packing volume. */
+    static String totalShulkers(long amount) {
+        if(amount>0 && amount<18) return "<0,01 шалк.";
+        return java.math.BigDecimal.valueOf(amount).divide(java.math.BigDecimal.valueOf(1728),2,java.math.RoundingMode.HALF_UP)
+                .stripTrailingZeros().toPlainString().replace('.',',')+" шалк.";
+    }
     static String format(String material,long amount) {
         // Shulker boxes cannot themselves be packed into another shulker.
         if (amount < 27 || material.endsWith("SHULKER_BOX")) return amount+" шт.";

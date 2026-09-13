@@ -73,6 +73,9 @@ public final class Catalogue {
             for (BlockKey key : conflicts) { Snapshot v = vaults.get(key); if (v != null) remove(key, v.generation(), now); }
             return false;
         }
+        // Event bursts from automated blocks (including crafters) often observe
+        // the same inventory several times. Avoid publishing redundant snapshots.
+        if (old.chests().equals(chests) && old.items().equals(items)) return true;
         unindex(old);
         publish(new Snapshot(sign, generation, old.owner(), old.playerName(), chests, items, true, now, ++revision));
         return true;
@@ -124,6 +127,16 @@ public final class Catalogue {
         return findTotals(material,limit).stream().map(row -> row.name()+" — "+row.amount()).toList();
     }
     public record OwnerAmount(String name,long amount) {}
+    public synchronized List<OwnerAmount> allItemTotals() {
+        Map<UUID,Long> amounts=new HashMap<>();Map<UUID,String> names=new HashMap<>();
+        for(Snapshot vault:vaults.values()) {
+            names.put(vault.owner(),vault.playerName());
+            for(long amount:vault.items().values()) if(amount>0) amounts.merge(vault.owner(),amount,Math::addExact);
+        }
+        return amounts.entrySet().stream().sorted(Map.Entry.<UUID,Long>comparingByValue().reversed()
+                .thenComparing(e->names.get(e.getKey()),String.CASE_INSENSITIVE_ORDER).thenComparing(Map.Entry::getKey))
+                .map(e->new OwnerAmount(names.get(e.getKey()),e.getValue())).toList();
+    }
     public synchronized List<OwnerAmount> findTotals(String material, int limit) {
         Map<UUID, Long> amounts = new HashMap<>();
         Map<UUID, String> names = new HashMap<>();

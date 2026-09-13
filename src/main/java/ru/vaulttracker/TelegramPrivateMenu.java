@@ -8,10 +8,10 @@ import org.bukkit.Material;
 /** Personal search state. Group messages never enter this handler. */
 final class TelegramPrivateMenu {
     private enum Mode { HOME, SEARCH, PLAYERS, ITEMS, RESULT }
-    private enum ActionKind { HOME, SEARCH, PLAYERS, ITEMS, PAGE, SELECT, RESULT_PAGE, BACK, CLEAR }
+    private enum ActionKind { HOME, SEARCH, PLAYERS, ITEMS, PAGE, SELECT, RESULT_PAGE, BACK, CLEAR, TOTAL_TOP }
     private record Key(long userId,long chatId,int topicId) {}
     private record Action(ActionKind kind,String value) {}
-    private static final long TTL_MS=30*60*1000L;
+    private static final int MAX_STATES=4096;
     private static final class State {
         Mode mode=Mode.HOME, origin=Mode.SEARCH;
         List<String> choices=List.of();
@@ -47,12 +47,13 @@ final class TelegramPrivateMenu {
     }
 
     TelegramCommands.View handle(long userId,long chatId,int topicId,String input,boolean admin) {
-        expire();
+        pruneStates();
         Key key=new Key(userId,chatId,topicId);
         String text=input==null ? "" : input.trim();
         String command=TelegramCommands.command(text);
         if(text.startsWith("/")) {
             State state=new State(); state.user=userId;states.put(key,state);
+            pruneStates();
             if(Set.of("/start","/menu","/help","/cancel").contains(command)) {
                 String notice=command.equals("/cancel") ? "Поиск отменён." : "";
                 if(command.equals("/help")) notice="Выберите поиск кнопками или используйте /item предмет, /item Ник.\n/cancel — отменить ввод.";
@@ -73,7 +74,7 @@ final class TelegramPrivateMenu {
     }
 
     TelegramCommands.Callback callback(long userId,long chatId,int topicId,String data) {
-        expire();
+        pruneStates();
         Key key=new Key(userId,chatId,topicId);
         State state=states.get(key);
         String[] parts=data==null ? new String[0] : data.split(":",3);
@@ -94,6 +95,10 @@ final class TelegramPrivateMenu {
             }
             case PAGE -> state.page=Integer.parseInt(action.value());
             case SELECT -> { return new TelegramCommands.Callback(choose(key,state,action.value()),"",false); }
+            case TOTAL_TOP -> {
+                if(!storage.ready()) return new TelegramCommands.Callback(null,"Каталог загружается. Повторите чуть позже.",true);
+                state.result=commands.totalTop(userId);state.origin=Mode.ITEMS;state.mode=Mode.RESULT;
+            }
             case RESULT_PAGE -> {
                 if(!storage.ready()) return new TelegramCommands.Callback(null,"Каталог загружается. Повторите чуть позже.",true);
                 var result=commands.callback(userId,action.value());
@@ -181,18 +186,20 @@ final class TelegramPrivateMenu {
                 if(state.choices.isEmpty()) text+=state.filter.isEmpty() ? "\nЗарегистрированных игроков пока нет."
                         : "\nНичего не найдено. Введите другую часть названия или сбросьте фильтр.";
                 int first=(state.page-1)*pageSize;
+                if(!players) add(state,buttons,"🏆 Топ по всем предметам",0,ActionKind.TOTAL_TOP,"");
                 for(int i=first;i<Math.min(first+pageSize,state.choices.size());i++) {
                     String value=state.choices.get(i);
                     ResourceGroups.Group group=players ? null : ResourceGroups.resolve(value);
                     String label=players ? "👤 "+value : group==null ? TelegramItemIcons.label(value)
                             : TelegramItemIcons.icon(group.displayMaterial())+" "+group.title()+" ("+group.code()+")";
-                    add(state,buttons,label,i-first,ActionKind.SELECT,value);
+                    add(state,buttons,label,i-first+(players?0:1),ActionKind.SELECT,value);
                 }
-                if(state.page>1) add(state,buttons,"◀ Назад",pageSize,ActionKind.PAGE,Integer.toString(state.page-1));
-                if(state.page<pages) add(state,buttons,"Вперёд ▶",pageSize,ActionKind.PAGE,Integer.toString(state.page+1));
-                if(!state.filter.isEmpty()) add(state,buttons,"✖ Сбросить фильтр",pageSize+1,ActionKind.CLEAR,"");
-                add(state,buttons,"🔎 Другой поиск",pageSize+2,ActionKind.SEARCH,"");
-                add(state,buttons,"⌂ Меню",pageSize+2,ActionKind.HOME,"");
+                int navRow=pageSize+(players?0:1);
+                if(state.page>1) add(state,buttons,"◀ Назад",navRow,ActionKind.PAGE,Integer.toString(state.page-1));
+                if(state.page<pages) add(state,buttons,"Вперёд ▶",navRow,ActionKind.PAGE,Integer.toString(state.page+1));
+                if(!state.filter.isEmpty()) add(state,buttons,"✖ Сбросить фильтр",navRow+1,ActionKind.CLEAR,"");
+                add(state,buttons,"🔎 Другой поиск",navRow+2,ActionKind.SEARCH,"");
+                add(state,buttons,"⌂ Меню",navRow+2,ActionKind.HOME,"");
             }
             case RESULT -> {
                 text=state.result.text();
@@ -210,5 +217,9 @@ final class TelegramPrivateMenu {
         int index=state.actions.size(); state.actions.add(new Action(kind,value));
         buttons.add(new TelegramCommands.Button(text,"vm:"+state.token+":"+index,row));
     }
-    private void expire() { states.entrySet().removeIf(entry->clock.getAsLong()-entry.getValue().touched>=TTL_MS); }
+    private void pruneStates() {
+        if(states.size()<=MAX_STATES) return;
+        states.entrySet().stream().min(Comparator.comparingLong(entry->entry.getValue().touched))
+                .ifPresent(entry->states.remove(entry.getKey()));
+    }
 }

@@ -1,5 +1,5 @@
 name: VaultTracker
-version: 0.7.3
+version: 0.8.0
 main: ru.vaulttracker.VaultTrackerPlugin
 api-version: '1.21.11'
 folia-supported: true
@@ -25,6 +25,3 @@ permissions:
   vaulttracker.admin:
     default: op
     description: View storage status and request reconciliation
-
-
-

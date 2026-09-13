@@ -24,26 +24,58 @@ class GuardServiceTest {
     void offline() {guard.presence(owner,"Alex",false);clock.addAndGet(120_001);}
     List<GuardService.Event> events() throws Exception {return guard.history(99,0,20).get();}
 
+    List<GuardService.Delivery> ready() throws Exception {guard.account(0).get();clock.addAndGet(10000);return guard.deliveries().get();}
+    @Test void batchesTenSecondsPersistsAndKeepsChannelsPrivate() throws Exception {
+        guard.link(owner,"Alex",code(42)).get();guard.restore(List.of(snapshot(10,1)));offline();
+        guard.attribute(sign,"Griefer");guard.accept(snapshot(9,2));events();
+        assertTrue(guard.deliveries().get().isEmpty());clock.addAndGet(9000);
+        guard.attribute(sign,"Griefer");guard.accept(snapshot(7,3));events();
+        assertTrue(guard.deliveries().get().isEmpty());guard.close();guard=open();guard.configure(new GuardConfig(true,120000),Set.of(99L));
+        clock.addAndGet(1000);var result=guard.deliveries().get();assertEquals(2,result.size());
+        String player=result.stream().filter(d->d.recipient()==42).findFirst().orElseThrow().text();
+        String admin=result.stream().filter(d->d.recipient()==99).findFirst().orElseThrow().text();
+        assertTrue(player.contains("событий: 2"));assertTrue(player.contains("-3 шт."));assertFalse(player.contains("Griefer"));assertTrue(admin.contains("Griefer"));
+        assertEquals(2,events().size());assertEquals(2,guard.searchHistory(99,"алмаз",0,6).get().size());
+        assertEquals(2,guard.searchHistory(99,"grief",0,6).get().size());assertTrue(guard.searchHistory(99,"missing",0,6).get().isEmpty());
+        assertThrows(ExecutionException.class,()->guard.searchHistory(42,"Alex",0,6).get());
+        guard.restore(List.of(snapshot(7,3)));guard.attribute(sign,"Griefer");guard.accept(snapshot(6,4));events();
+        for(var d:result) guard.delivered(d.id(),true).get();assertTrue(guard.deliveries().get().isEmpty());
+        clock.addAndGet(10000);assertEquals(2,guard.deliveries().get().size());
+    }
+    @Test void withdrawalAndReturnDoNotCancelEachOtherInSummary() {
+        var first=new GuardService.Event(1,0,"Alex","world",Map.of("DIAMOND",-5L),false,"A");
+        var second=new GuardService.Event(2,1,"Alex","world",Map.of("DIAMOND",5L),false,"A");
+        String text=GuardService.batchText(List.of(first,second),true);
+        assertTrue(text.contains("-5 шт."));assertTrue(text.contains("+5 шт."));
+    }
     @Test void actorAppearsOnlyInAdminDeliveryAndHistory() throws Exception {
         guard.link(owner,"Alex",code(42)).get();guard.restore(List.of(snapshot(10,1)));offline();
         guard.attribute(sign,"Griefer");guard.accept(snapshot(9,2));
-        var deliveries=guard.deliveries().get();
+        var deliveries=ready();
         String ownerText=deliveries.stream().filter(d->d.recipient()==42).findFirst().orElseThrow().text();
         String adminText=deliveries.stream().filter(d->d.recipient()==99).findFirst().orElseThrow().text();
         assertFalse(ownerText.contains("Кто изменил"));assertTrue(adminText.contains("Кто изменил: Griefer"));
         assertEquals("Griefer",events().getFirst().actor());assertTrue(GuardService.eventText(events().getFirst(),0,8).contains("Кто изменил: Griefer"));
     }
+    @Test void automatedInventoryChangesUpdateBaselineWithoutBotAlerts() throws Exception {
+        guard.restore(List.of(snapshot(10,1)));offline();
+        guard.automated(sign);guard.accept(snapshot(7,2));
+        assertTrue(events().isEmpty());assertTrue(ready().isEmpty());
+        // A later player action is still reported normally.
+        guard.attribute(sign,UUID.randomUUID(),"Griefer");guard.accept(snapshot(6,3));
+        assertEquals(1,events().size());assertEquals("Griefer",events().getFirst().actor());
+    }
     @Test void automatedOrExpiredAttributionIsReportedAsUnknownToAdmins() throws Exception {
         guard.restore(List.of(snapshot(10,1)));offline();guard.accept(snapshot(9,2));
-        assertTrue(guard.deliveries().get().getFirst().text().contains("Кто изменил: не определено"));
-        for(var d:guard.deliveries().get()) guard.delivered(d.id(),true).get();
+        assertTrue(ready().getFirst().text().contains("Кто изменил: не определено"));
+        for(var d:ready()) guard.delivered(d.id(),true).get();
         guard.attribute(sign,"OldActor");clock.addAndGet(30_001);guard.accept(snapshot(8,3));
-        assertTrue(guard.deliveries().get().getFirst().text().contains("Кто изменил: не определено"));
+        assertTrue(ready().getFirst().text().contains("Кто изменил: не определено"));
     }
     @Test void ownerWorkingInOwnStorageCreatesNoGuardEventButAnotherPlayerStillDoes() throws Exception {
         UUID other=UUID.randomUUID();guard.link(owner,"Alex",code(42)).get();guard.restore(List.of(snapshot(10,1)));offline();
         guard.attribute(sign,owner,"Alex");guard.accept(snapshot(9,2));
-        assertTrue(events().isEmpty());assertTrue(guard.deliveries().get().isEmpty());
+        assertTrue(events().isEmpty());assertTrue(ready().isEmpty());
         guard.attribute(sign,other,"Griefer");guard.accept(snapshot(8,3));
         assertEquals(1,events().size());assertEquals("Griefer",events().getFirst().actor());
     }
@@ -51,19 +83,19 @@ class GuardServiceTest {
     @Test void personalDayDoesNotDelayAdminAlertsAndAppliesToFutureChanges() throws Exception {
         guard.link(owner,"Alex",code(42)).get();guard.offlineSeconds(42,86400L).get();
         guard.restore(List.of(snapshot(10,1)));offline();guard.accept(snapshot(9,2));
-        var first=guard.deliveries().get();assertEquals(List.of(99L),first.stream().map(GuardService.Delivery::recipient).toList());
+        var first=ready();assertEquals(List.of(99L),first.stream().map(GuardService.Delivery::recipient).toList());
         for(var d:first) guard.delivered(d.id(),true).get();
         clock.addAndGet(86400_000);guard.accept(snapshot(8,3));
-        assertEquals(Set.of(42L,99L),new HashSet<>(guard.deliveries().get().stream().map(GuardService.Delivery::recipient).toList()));
+        assertEquals(Set.of(42L,99L),new HashSet<>(ready().stream().map(GuardService.Delivery::recipient).toList()));
     }
     @Test void shorterPersonalTimeDoesNotSendAdminsEarlyOrLeakBetweenChannels() throws Exception {
         guard.link(owner,"Alex",code(99)).get();guard.offlineSeconds(99,0L).get();
         guard.restore(List.of(snapshot(10,1)));guard.presence(owner,"Alex",false);guard.accept(snapshot(9,2));
-        assertEquals(1,guard.deliveries().get().size());guard.toggleOwn(99).get();
-        assertTrue(guard.deliveries().get().isEmpty()); // admin preference cannot revive owner-only delivery
+        assertEquals(1,ready().size());guard.toggleOwn(99).get();
+        assertTrue(ready().isEmpty()); // admin preference cannot revive owner-only delivery
         guard.toggleOwn(99).get();guard.offlineSeconds(99,86400L).get();clock.addAndGet(120001);
-        guard.accept(snapshot(8,3));assertEquals(1,guard.deliveries().get().size());guard.toggleAdmin(99).get();
-        assertTrue(guard.deliveries().get().isEmpty()); // owner preference cannot revive admin-only delivery
+        guard.accept(snapshot(8,3));assertEquals(1,ready().size());guard.toggleAdmin(99).get();
+        assertTrue(ready().isEmpty()); // owner preference cannot revive admin-only delivery
     }
     @Test void personalTimePersistsAndResetFollowsServerSetting() throws Exception {
         guard.link(owner,"Alex",code(42)).get();assertNull(guard.offlineSeconds(42).get());
@@ -79,7 +111,7 @@ class GuardServiceTest {
     @Test void worldNamesAppearInEventsAndLegacyTextAndSurviveRestart() throws Exception {
         guard.world(sign.world(),"world_nether");guard.restore(List.of(snapshot(10,1)));offline();guard.accept(snapshot(9,2));
         assertEquals("Мир: world_nether\nКоординаты: 1 64 1",events().getFirst().location());
-        assertTrue(guard.deliveries().get().getFirst().text().contains("Мир: world_nether\nКоординаты:"));
+        assertTrue(ready().getFirst().text().contains("Мир: world_nether\nКоординаты:"));
         String legacy="Мир "+sign.world()+"; блок -3779 64 -305";
         assertEquals("Мир: world_nether\nКоординаты: -3779 64 -305",guard.readableLocation(legacy));
         guard.close();guard=open();assertTrue(guard.readableLocation(legacy).contains("world_nether"));
@@ -122,29 +154,29 @@ class GuardServiceTest {
         guard.link(owner,"Alex",code(42)).get();guard.restore(List.of(snapshot(10,1)));offline();
         guard.accept(snapshot(7,2));guard.accept(snapshot(7,3));
         assertEquals(1,events().size());assertEquals(-3L,events().getFirst().changes().get("DIAMOND"));
-        var deliveries=guard.deliveries().get();assertEquals(Set.of(42L,99L),new HashSet<>(deliveries.stream().map(GuardService.Delivery::recipient).toList()));
+        var deliveries=ready();assertEquals(Set.of(42L,99L),new HashSet<>(deliveries.stream().map(GuardService.Delivery::recipient).toList()));
         guard.presence(owner,"Alex",true);guard.accept(snapshot(2,4));assertEquals(1,events().size());
     }
     @Test void ownerAdminGetsOneMessageAndTogglesAreIndependent() throws Exception {
         guard.link(owner,"Alex",code(99)).get();guard.restore(List.of(snapshot(10,1)));offline();
-        guard.accept(snapshot(9,2));assertEquals(1,guard.deliveries().get().size());
-        guard.toggleOwn(99).get();assertEquals(1,guard.deliveries().get().size());
-        guard.toggleAdmin(99).get();assertTrue(guard.deliveries().get().isEmpty());
-        guard.accept(snapshot(8,3));assertTrue(guard.deliveries().get().isEmpty());assertEquals(2,events().size());
+        guard.accept(snapshot(9,2));assertEquals(1,ready().size());
+        guard.toggleOwn(99).get();assertEquals(1,ready().size());
+        guard.toggleAdmin(99).get();assertTrue(ready().isEmpty());
+        guard.accept(snapshot(8,3));assertTrue(ready().isEmpty());assertEquals(2,events().size());
     }
     @Test void notificationOptOutAndRemovedAdminApplyToQueuedMessages() throws Exception {
         guard.link(owner,"Alex",code(42)).get();guard.restore(List.of(snapshot(10,1)));offline();guard.accept(snapshot(9,2));
-        assertEquals(2,guard.deliveries().get().size());guard.toggleOwn(42).get();
-        guard.configure(new GuardConfig(true,120_000),Set.of());assertTrue(guard.deliveries().get().isEmpty());
+        assertEquals(2,ready().size());guard.toggleOwn(42).get();
+        guard.configure(new GuardConfig(true,120_000),Set.of());assertTrue(ready().isEmpty());
         assertThrows(ExecutionException.class,()->guard.history(99,0,5).get());
         assertThrows(ExecutionException.class,()->guard.toggleAdmin(42).get());
     }
     @Test void linksPreferencesEventsOfflineTimeAndOutboxSurviveRestart() throws Exception {
         guard.link(owner,"Alex",code(42)).get();guard.toggleAdmin(99).get();guard.restore(List.of(snapshot(10,1)));offline();
-        guard.accept(snapshot(9,2));assertEquals(1,guard.deliveries().get().size());guard.close();
+        guard.accept(snapshot(9,2));assertEquals(1,ready().size());guard.close();
         guard=open();guard.configure(new GuardConfig(true,120_000),Set.of(99L));guard.restore(List.of(snapshot(9,2)));
         assertEquals(owner,guard.account(42).get().uuid());assertFalse(guard.adminAlerts(99).get());assertEquals(1,events().size());
-        assertEquals(1,guard.deliveries().get().size());guard.accept(snapshot(8,3));assertEquals(2,events().size());
+        assertEquals(1,ready().size());guard.accept(snapshot(8,3));assertEquals(2,events().size());
     }
     @Test void restoredBaselineDoesNotCreateAnEventAndUnknownPresenceUsesStartupGrace() throws Exception {
         guard.restore(List.of(snapshot(10,1)));guard.accept(snapshot(9,2));assertTrue(events().isEmpty());
@@ -163,8 +195,8 @@ class GuardServiceTest {
     }
     @Test void retryAcknowledgementAndThirtyDayRetention() throws Exception {
         guard.restore(List.of(snapshot(10,1)));offline();guard.accept(snapshot(9,2));
-        var delivery=guard.deliveries().get().getFirst();guard.delivered(delivery.id(),false).get();assertTrue(guard.deliveries().get().isEmpty());
-        clock.addAndGet(300_000);assertEquals(1,guard.deliveries().get().size());guard.delivered(delivery.id(),true).get();assertTrue(guard.deliveries().get().isEmpty());
+        var delivery=ready().getFirst();guard.delivered(delivery.id(),false).get();assertTrue(ready().isEmpty());
+        clock.addAndGet(300_000);assertEquals(1,ready().size());guard.delivered(delivery.id(),true).get();assertTrue(ready().isEmpty());
         long id=events().getFirst().id();clock.addAndGet(GuardService.RETENTION+1);assertTrue(events().isEmpty());assertNull(guard.event(99,id).get());
     }
     @Test void joinUpdatesNameButNotUuidOrPreferences() throws Exception {
