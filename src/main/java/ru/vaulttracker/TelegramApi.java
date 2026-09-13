@@ -131,6 +131,20 @@ final class TelegramApi implements AutoCloseable {
         JsonObject body=new JsonObject(); body.addProperty("chat_id",chatId); body.addProperty("message_id",messageId);
         call("deleteMessage",body);
     }
+    String memberStatus(long chatId,long userId) throws IOException {
+        JsonObject body=new JsonObject();body.addProperty("chat_id",chatId);body.addProperty("user_id",userId);
+        return call("getChatMember",body).getAsJsonObject("result").get("status").getAsString();
+    }
+    void setMemberTag(long chatId,long userId,String tag) throws IOException {
+        JsonObject body=new JsonObject();body.addProperty("chat_id",chatId);body.addProperty("user_id",userId);
+        if(tag!=null && !tag.isBlank()) body.addProperty("tag",tag);
+        call("setChatMemberTag",body);
+    }
+    void setAdministratorTitle(long chatId,long userId,String title) throws IOException {
+        JsonObject body=new JsonObject();body.addProperty("chat_id",chatId);body.addProperty("user_id",userId);
+        body.addProperty("custom_title",title==null ? "" : title);
+        call("setChatAdministratorCustomTitle",body);
+    }
     static JsonObject messageBody(long chatId,TelegramCommands.View view) {
         JsonObject body=new JsonObject(); body.addProperty("chat_id",chatId); body.addProperty("text",view.text());
         body.addProperty("disable_web_page_preview",true);

@@ -28,7 +28,7 @@ final class TelegramBotService implements AutoCloseable {
     TelegramBotService(TelegramConfig config,Catalogue catalogue,StorageEngine storage,Logger log,GuardService guard,TelegramModeration moderation) {
         this.config=config; this.api=new TelegramApi(config); this.commands=new TelegramCommands(catalogue,storage,config.pageSize()); this.log=log;
         this.privateMenu=new TelegramPrivateMenu(catalogue,storage,commands,config.pageSize());
-        this.guard=guard;this.guardMenu=guard==null ? null : new TelegramGuardMenu(guard,commands,moderation);
+        this.guard=guard;this.guardMenu=guard==null ? null : new TelegramGuardMenu(guard,commands,moderation,new TelegramTagManager(config,api));
         privateMenu.guard(guard);
         commands.adminAccess(this::isAdmin);
         worker=Thread.ofVirtual().name("VaultTracker-telegram").unstarted(this::run);

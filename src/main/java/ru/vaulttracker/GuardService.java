@@ -93,6 +93,10 @@ final class GuardService implements AutoCloseable {
         if(toggle) execute("UPDATE accounts SET telegram_tag=NOT telegram_tag WHERE tg=?",user);
         try(var s=db.prepareStatement("SELECT telegram_tag FROM accounts WHERE tg=?")) {s.setLong(1,user);try(var rs=s.executeQuery()) {rs.next();return rs.getBoolean(1);}}
     });}
+    CompletableFuture<Void> setTag(long user,boolean enabled) {return submit(()-> {
+        if(accountNow(user)==null) throw new SecurityException("Сначала привяжите персонажа");
+        execute("UPDATE accounts SET telegram_tag=? WHERE tg=?",enabled,user);return null;
+    });}
     long superDelay(long user) {requireSuper(user);return superDelays.getOrDefault(user,defaultOfflineSeconds());}
     CompletableFuture<Void> superDelay(long user,long seconds) {return submit(()-> {
         if(seconds== -2) {requireSuper(user);execute("DELETE FROM super_delays WHERE tg=?",user);superDelays.remove(user);return null;}

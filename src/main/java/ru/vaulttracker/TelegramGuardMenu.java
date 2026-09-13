@@ -11,8 +11,12 @@ final class TelegramGuardMenu {
     private final GuardService guard;
     private final TelegramCommands commands;
     private final TelegramModeration moderation;
-    TelegramGuardMenu(GuardService guard,TelegramCommands commands) {this(guard,commands,null);}
-    TelegramGuardMenu(GuardService guard,TelegramCommands commands,TelegramModeration moderation) {this.guard=guard;this.commands=commands;this.moderation=moderation;}
+    private final TelegramTagManager tags;
+    TelegramGuardMenu(GuardService guard,TelegramCommands commands) {this(guard,commands,null,null);}
+    TelegramGuardMenu(GuardService guard,TelegramCommands commands,TelegramModeration moderation) {this(guard,commands,moderation,null);}
+    TelegramGuardMenu(GuardService guard,TelegramCommands commands,TelegramModeration moderation,TelegramTagManager tags) {
+        this.guard=guard;this.commands=commands;this.moderation=moderation;this.tags=tags;
+    }
 
     TelegramCommands.Callback callback(long user,String data) throws Exception {
         cancelInput(user);
@@ -20,14 +24,15 @@ final class TelegramGuardMenu {
         long now=System.currentTimeMillis();actions.entrySet().removeIf(e->e.getValue().expires()<now);
         Action a=actions.get(data);
         if(a==null || a.user()!=user) return new TelegramCommands.Callback(null,"Кнопка устарела. Откройте /menu.",true);
-        if(Set.of("own","admin","link","time","tag","rootTime").contains(a.op()) || a.op().startsWith("do:")) actions.remove(data);
+        if(Set.of("own","admin","link","time","tagApply","tagReset","rootTime").contains(a.op()) || a.op().startsWith("do:")) actions.remove(data);
         TelegramCommands.View view;
         switch(a.op()) {
             case "link" -> view=new TelegramCommands.View(guard.generate(user).get(),List.of(new TelegramCommands.Button("Обновить кабинет","vg:home")));
             case "resources" -> {var account=guard.account(user).get();view=account==null ? home(user) : withHome(commands.ownResources(user,account.uuid()));}
             case "settings" -> view=settings(user,false);
             case "own" -> {guard.toggleOwn(user).get();view=settings(user,false);}
-            case "tag" -> {guard.tag(user,true).get();view=settings(user,false);}
+            case "tagApply" -> view=tag(user,true);
+            case "tagReset" -> view=tag(user,false);
             case "time" -> {long value=Long.parseLong(a.value());guard.offlineSeconds(user,value== -2 ? null : value).get();view=settings(user,false);}
             case "custom" -> view=prompt(user,"time","Отправьте число секунд от 0 до 31536000. Например, 172800 — двое суток.");
             case "adminHome" -> view=adminHome(user);
@@ -95,15 +100,27 @@ final class TelegramGuardMenu {
         List<TelegramCommands.Button> buttons=new ArrayList<>();int row=0;
         if(!root) {
             boolean on=guard.account(user).get().notifications(),tag=guard.tag(user,false).get();
-            text+="\nВаши уведомления: "+(on ? "включены" : "выключены")+"\nTelegram-тег: "+(tag ? "включён" : "выключен")+" (применение тега пока не подключено).";
+            text+="\nВаши уведомления: "+(on ? "включены" : "выключены")+"\nTelegram-тег: "+(tag ? "успешно применён во всех настроенных чатах" : "сброшен, ещё не применялся или применился не во всех чатах")+".";
             buttons.add(b(user,(on ? "🔔 Отключить" : "🔕 Включить")+" мои уведомления","own","",0,row++));
         }
         long[] values={-1,0,120,300,900,3600,21600,86400,172800,604800};
         for(long value:values) buttons.add(b(user,duration(value),root ? "rootTime" : "time",Long.toString(value),0,row++));
         buttons.add(b(user,"✏️ Своё время",root ? "rootCustom" : "custom","",0,row++));
         buttons.add(b(user,"Как на сервере",root ? "rootTime" : "time","-2",0,row++));
-        if(!root) buttons.add(b(user,"🏷 Вкл/выкл никнейм в Telegram-теге","tag","",0,row++));
+        if(!root) {
+            String nickname=guard.account(user).get().name();
+            buttons.add(b(user,"🏷 Применить тег «"+nickname+"»","tagApply","",0,row++));
+            buttons.add(b(user,"♻️ Сбросить тег","tagReset","",0,row++));
+        }
         buttons.add(homeButton(row));return new TelegramCommands.View(text,List.copyOf(buttons));
+    }
+    private TelegramCommands.View tag(long user,boolean apply) throws Exception {
+        var account=guard.account(user).get();
+        if(account==null) return home(user);
+        if(tags==null) return withHome(new TelegramCommands.View("Управление Telegram-тегами сейчас недоступно."));
+        TelegramTagManager.Result result=apply ? tags.apply(user,account.name()) : tags.reset(user);
+        if(result.complete()) guard.setTag(user,apply).get();
+        return new TelegramCommands.View(result.text(),List.of(b(user,"⚙️ Назад в настройки","settings","",0,0),homeButton(1)));
     }
     private static String duration(long seconds) {
         if(seconds<0) return "В том числе в игре";if(seconds==0) return "Сразу после выхода";

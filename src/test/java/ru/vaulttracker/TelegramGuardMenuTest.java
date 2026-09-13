@@ -68,6 +68,16 @@ class TelegramGuardMenuTest {
         assertTrue(menu.callback(42,toggle).view().text().contains("Ваши уведомления: выключены"));
         assertTrue(menu.callback(42,toggle).alert());
     }
+    @Test void settingsHaveSeparateApplyAndResetTagButtons() throws Exception {
+        guard.link(UUID.randomUUID(),"Alex",guard.generate(42).get().split("/vtrack link ")[1].substring(0,32)).get();
+        TelegramTagManager tags=mock(TelegramTagManager.class);
+        when(tags.apply(42,"Alex")).thenReturn(new TelegramTagManager.Result("applied",true,true));
+        when(tags.reset(42)).thenReturn(new TelegramTagManager.Result("reset",true,true));
+        menu=new TelegramGuardMenu(guard,new TelegramCommands(catalogue,storage,1,id->true),null,tags);
+        var settings=click(42,menu.home(42),"Настройки");
+        var result=click(42,settings,"Применить тег");assertEquals("applied",result.text());verify(tags).apply(42,"Alex");assertTrue(guard.tag(42,false).get());
+        settings=click(42,result,"Назад в настройки");result=click(42,settings,"Сбросить тег");assertEquals("reset",result.text());verify(tags).reset(42);assertFalse(guard.tag(42,false).get());
+    }
     @Test void resourcesUseUuidWhenNamesCollideAndPagesRemainBoundToRequester() throws Exception {
         UUID owner=UUID.randomUUID(),world=UUID.randomUUID();
         guard.link(owner,"Alex",guard.generate(42).get().split("/vtrack link ")[1].substring(0,32)).get();

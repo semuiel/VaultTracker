@@ -33,7 +33,7 @@ class CabinetRolesTest {
         assertFalse(menu.home(99).buttons().stream().anyMatch(b->b.text().contains("Супер")));
         assertTrue(menu.home(500).buttons().stream().anyMatch(b->b.row()==5 && b.text().contains("Супер")));
         var settings=click(42,home,"Настройки");assertNotNull(button(settings,"Отключить мои"));assertNotNull(button(settings,"В том числе в игре"));assertNotNull(button(settings,"2 дн."));
-        click(42,settings,"Telegram-теге");assertTrue(guard.tag(42,false).get());
+        assertNotNull(button(settings,"Применить тег"));assertNotNull(button(settings,"Сбросить тег"));
     }
     @Test void personalHistoryUsesUuidAnd48HoursAndNeverExposesActor() throws Exception {
         guard.restore(List.of(snap(owner,10,1),snap(other,10,1)));clock.addAndGet(120001);
