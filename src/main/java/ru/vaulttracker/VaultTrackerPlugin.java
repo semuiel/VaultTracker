@@ -104,9 +104,8 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
     private static boolean marker(String text) { return "[vault]".equalsIgnoreCase(text.trim()); }
     static void decorateOwner(Sign sign, String playerName) {
         SignSide front = sign.getSide(Side.FRONT);
-        if (plain(front.line(0)).equals("Собственность")
-                && plain(front.line(1)).equals("игрока")
-                && plain(front.line(2)).equals(playerName) && plain(front.line(3)).isEmpty()) return;
+        // Only replace the registration marker; players may keep their own labels.
+        if (!marker(plain(front.line(0)))) return;
         front.line(0, Component.text("Собственность"));
         front.line(1, Component.text("игрока"));
         front.line(2, Component.text(playerName));
@@ -179,7 +178,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
         if (v == null || !readable(p,w)) return;
         Block block = location(p,w).getBlock();
         // Registration belongs to the persisted catalogue, not the displayed marker.
-        // SignChangeEvent handles deliberate removal by editing the front text.
+        // Editing its text does not change registration or ownership.
         if (!(block.getState() instanceof Sign sign)) {
             catalogue.remove(p,v.generation(),System.currentTimeMillis()); return;
         }
@@ -197,6 +196,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
         if (existing != null && !existing.owner().equals(e.getPlayer().getUniqueId()) && !e.getPlayer().hasPermission("vaulttracker.admin")) {
             e.setCancelled(true); tell(e.getPlayer(),"Эта табличка зарегистрирована другим игроком."); return;
         }
+        if (existing != null) return;
         if (!marker(plain(e.line(0)))) return;
         if (!storage.ready()) { e.setCancelled(true); tell(e.getPlayer(),"Каталог пока недоступен. Сообщите администратору: /vtrack status"); return; }
         if (!e.getPlayer().hasPermission("vaulttracker.register")) { e.setCancelled(true); tell(e.getPlayer(),"Нет права vaulttracker.register."); return; }
@@ -214,14 +214,8 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
         if (e.getSide() != Side.FRONT) return;
         BlockKey p = key(e.getBlock());
         Snapshot existing = catalogue.get(p);
-        boolean keepOwner = existing != null && (plain(e.line(0)).equals(existing.playerName())
-                || (plain(e.line(0)).equals("Собственность") && plain(e.line(1)).equals("игрока")
-                && plain(e.line(2)).equals(existing.playerName())));
-        if (!marker(plain(e.line(0))) && !keepOwner) {
-            if (existing != null) { catalogue.remove(p,existing.generation(),System.currentTimeMillis()); tell(e.getPlayer(),"Хранилище снято с учёта."); }
-            return;
-        }
-        if (existing != null) { schedule(p); return; }
+        // Text edits need neither a catalogue mutation nor an inventory check.
+        if (existing != null || !marker(plain(e.line(0)))) return;
         if (!storage.ready() || !e.getPlayer().hasPermission("vaulttracker.register")) return;
         ChestView view = readChest(attached(e.getBlock()));
         if (view == null || view.chests().isEmpty()) return;
