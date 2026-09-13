@@ -8,13 +8,14 @@ import org.bukkit.Material;
 /** Personal search state. Group messages never enter this handler. */
 final class TelegramPrivateMenu {
     private enum Mode { HOME, SEARCH, PLAYERS, ITEMS, RESULT }
-    private enum ActionKind { HOME, SEARCH, PLAYERS, ITEMS, PAGE, SELECT, RESULT_PAGE, BACK }
+    private enum ActionKind { HOME, SEARCH, PLAYERS, ITEMS, PAGE, SELECT, RESULT_PAGE, BACK, CLEAR }
     private record Key(long userId,long chatId,int topicId) {}
     private record Action(ActionKind kind,String value) {}
     private static final long TTL_MS=30*60*1000L;
     private static final class State {
         Mode mode=Mode.HOME, origin=Mode.SEARCH;
         List<String> choices=List.of();
+        String filter="";
         int page=1;
         long touched;
         String token;
@@ -60,7 +61,11 @@ final class TelegramPrivateMenu {
         }
         State state=states.get(key);
         if(state==null || text.isBlank() || (state.mode!=Mode.PLAYERS && state.mode!=Mode.ITEMS)) return null;
-        return choose(key,state,text);
+        if(!storage.ready()) return render(state,"Каталог загружается. Повторите чуть позже.");
+        state.filter=text.length()>128 ? text.substring(0,128) : text;
+        state.choices=choices(state.mode).stream().filter(value->matches(state.mode,value,state.filter)).toList();
+        state.page=1;
+        return render(state,"");
     }
 
     TelegramCommands.Callback callback(long userId,long chatId,int topicId,String data) {
@@ -81,7 +86,7 @@ final class TelegramPrivateMenu {
             case PLAYERS, ITEMS -> {
                 if(!storage.ready()) return new TelegramCommands.Callback(null,"Каталог загружается. Повторите чуть позже.",true);
                 state.mode=action.kind()==ActionKind.PLAYERS ? Mode.PLAYERS : Mode.ITEMS;
-                state.choices=choices(state.mode); state.page=1;
+                state.choices=choices(state.mode); state.page=1; state.filter="";
             }
             case PAGE -> state.page=Integer.parseInt(action.value());
             case SELECT -> { return new TelegramCommands.Callback(choose(key,state,action.value()),"",false); }
@@ -92,6 +97,7 @@ final class TelegramPrivateMenu {
                 state.result=result.view();
             }
             case BACK -> state.mode=state.origin;
+            case CLEAR -> { state.filter=""; state.choices=choices(state.mode); state.page=1; }
         }
         return new TelegramCommands.Callback(render(state,""),"",false);
     }
@@ -123,6 +129,20 @@ final class TelegramPrivateMenu {
         return List.copyOf(sorted);
     }
 
+    private static boolean matches(Mode mode,String value,String query) {
+        String needle=searchKey(query);
+        if(mode==Mode.PLAYERS) return searchKey(value).contains(needle);
+        ResourceGroups.Group group=ResourceGroups.resolve(value);
+        String names=group==null ? value+" "+RussianItems.name(value)
+                : group.code()+" "+(group.code().equals("AR") ? "АР" : "ИР")+" "+group.title()+" "+String.join(" ",group.materials());
+        String haystack=searchKey(names);
+        return Arrays.stream(needle.split(" ")).allMatch(haystack::contains);
+    }
+    private static String searchKey(String value) {
+        return value.toLowerCase(Locale.ROOT).replace('ё','е').replace("minecraft:","")
+                .replace('_',' ').replace('-',' ').trim().replaceAll("\\s+"," ");
+    }
+
     private TelegramCommands.View render(State state,String notice) {
         state.touched=clock.getAsLong();
         state.token=UUID.randomUUID().toString().replace("-","").substring(0,16);
@@ -145,20 +165,24 @@ final class TelegramPrivateMenu {
                 state.page=Math.max(1,Math.min(state.page,pages));
                 boolean players=state.mode==Mode.PLAYERS;
                 text=(players ? "👤 Игроки каталога" : "📦 Предметы каталога")+" • "+state.page+"/"+pages
-                        +"\nНажмите кнопку или отправьте "+(players ? "точный ник игрока" : "название предмета")+" в этот личный чат."
+                        +"\nНажмите кнопку или отправьте часть "+(players ? "ника игрока" : "названия предмета на русском или английском")+" в этот личный чат."
                         +"\nОтмена: /cancel";
-                if(state.choices.isEmpty()) text+="\nЗарегистрированных игроков пока нет.";
+                if(!state.filter.isEmpty()) text+="\nФильтр: «"+state.filter+"» • Найдено: "+state.choices.size();
+                if(state.choices.isEmpty()) text+=state.filter.isEmpty() ? "\nЗарегистрированных игроков пока нет."
+                        : "\nНичего не найдено. Введите другую часть названия или сбросьте фильтр.";
                 int first=(state.page-1)*pageSize;
                 for(int i=first;i<Math.min(first+pageSize,state.choices.size());i++) {
                     String value=state.choices.get(i);
                     ResourceGroups.Group group=players ? null : ResourceGroups.resolve(value);
-                    String label=players ? "👤 "+value : group==null ? RussianItems.name(value) : group.title()+" ("+group.code()+")";
+                    String label=players ? "👤 "+value : group==null ? TelegramItemIcons.label(value)
+                            : TelegramItemIcons.icon(group.displayMaterial())+" "+group.title()+" ("+group.code()+")";
                     add(state,buttons,label,i-first,ActionKind.SELECT,value);
                 }
                 if(state.page>1) add(state,buttons,"◀ Назад",pageSize,ActionKind.PAGE,Integer.toString(state.page-1));
                 if(state.page<pages) add(state,buttons,"Вперёд ▶",pageSize,ActionKind.PAGE,Integer.toString(state.page+1));
-                add(state,buttons,"🔎 Другой поиск",pageSize+1,ActionKind.SEARCH,"");
-                add(state,buttons,"⌂ Меню",pageSize+1,ActionKind.HOME,"");
+                if(!state.filter.isEmpty()) add(state,buttons,"✖ Сбросить фильтр",pageSize+1,ActionKind.CLEAR,"");
+                add(state,buttons,"🔎 Другой поиск",pageSize+2,ActionKind.SEARCH,"");
+                add(state,buttons,"⌂ Меню",pageSize+2,ActionKind.HOME,"");
             }
             case RESULT -> {
                 text=state.result.text();

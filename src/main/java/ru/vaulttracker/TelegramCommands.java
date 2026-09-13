@@ -82,12 +82,12 @@ final class TelegramCommands {
             group=ResourceGroups.resolve(tail);
             if(group!=null) {
                 long amount=group.materials().stream().mapToLong(item->owners.getFirst().items().getOrDefault(item,0L)).sum();
-                return new View(owners.getFirst().name()+" — "+group.title()+": "+ItemAmount.format(group.displayMaterial(),amount));
+                return new View(owners.getFirst().name()+" — "+TelegramItemIcons.groupLabel(group)+": "+ItemAmount.format(group.displayMaterial(),amount));
             }
             material=resolveItem(tail);
             if(material==null) return new View("Неизвестный предмет. Пример: /item "+first+" алмаз");
             var owner=owners.getFirst();
-            return new View(owner.name()+" — "+RussianItems.name(material)+": "+ItemAmount.format(material,owner.items().getOrDefault(material,0L)));
+            return new View(owner.name()+" — "+TelegramItemIcons.label(material)+": "+ItemAmount.format(material,owner.items().getOrDefault(material,0L)));
         }
         int page=1;
         if(!tail.isEmpty()) try { page=Integer.parseInt(tail); }
@@ -127,7 +127,7 @@ final class TelegramCommands {
         int first=(page-1)*pageSize;
         for(int i=first;i<Math.min(first+pageSize,rows.size());i++) {
             var row=rows.get(i);
-            text.append(i+1).append(". ").append(RussianItems.name(row.getKey())).append(" — ")
+            text.append(i+1).append(". ").append(TelegramItemIcons.label(row.getKey())).append(" — ")
                     .append(ItemAmount.format(row.getKey(),row.getValue())).append('\n');
         }
         return new View(text.toString().stripTrailing(),buttons(token,page,pages));
@@ -136,9 +136,9 @@ final class TelegramCommands {
     private View topPage(String token,String material,int requested) {
         ResourceGroups.Group group=ResourceGroups.fromQuery(material);
         var rows=group==null ? catalogue.findTotals(material,Integer.MAX_VALUE) : catalogue.findTotals(group.materials(),Integer.MAX_VALUE);
-        if(rows.isEmpty()) return new View((group==null ? RussianItems.name(material) : group.title())+" — не найдено в зарегистрированных хранилищах.");
+        if(rows.isEmpty()) return new View((group==null ? TelegramItemIcons.label(material) : TelegramItemIcons.groupLabel(group))+" — не найдено в зарегистрированных хранилищах.");
         int pages=pages(rows.size()); int page=clamp(requested,pages);
-        String title=group==null ? RussianItems.name(material) : group.title();
+        String title=group==null ? TelegramItemIcons.label(material) : TelegramItemIcons.groupLabel(group);
         String displayMaterial=group==null ? material : group.displayMaterial();
         StringBuilder text=new StringBuilder("🏆 ").append(title).append(" • топ владельцев • ")
                 .append(page).append('/').append(pages).append("\n\n");
@@ -163,7 +163,7 @@ final class TelegramCommands {
         int first=(page-1)*pageSize;
         for(int i=first;i<Math.min(first+pageSize,rows.size());i++) {
             var row=rows.get(i);
-            text.append(i+1).append(". ").append(RussianItems.name(row.getKey())).append(" — ")
+            text.append(i+1).append(". ").append(TelegramItemIcons.label(row.getKey())).append(" — ")
                     .append(ItemAmount.format(row.getKey(),row.getValue())).append('\n');
         }
         return new View(text.toString().stripTrailing(),buttons(token,page,pages));

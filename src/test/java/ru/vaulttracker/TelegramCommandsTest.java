@@ -41,13 +41,13 @@ class TelegramCommandsTest {
             var player=commands.handle(42,10,20,"/topitem Alex",false);
             assertTrue(player.text().contains("Ресурсы Alex")); assertFalse(player.buttons().isEmpty());
             var quantity=commands.handle(42,10,20,"/topitem Alex diamond",false);
-            assertEquals("Alex — Алмаз: 2000 шт. (1 шалкер + 272 шт.)",quantity.text());
+            assertEquals("Alex — 💎 Алмаз: 2000 шт. (1 шалкер + 272 шт.)",quantity.text());
             assertTrue(commands.handle(42,10,20,"/item алмаз",false).text().contains("Alex — 2000 шт."));
             assertTrue(commands.handle(42,10,20,"/item железный слиток",false).text().contains("Alex — 50 шт."));
-            assertEquals("Alex — Алмаз: 2000 шт. (1 шалкер + 272 шт.)",
+            assertEquals("Alex — 💎 Алмаз: 2000 шт. (1 шалкер + 272 шт.)",
                     commands.handle(42,10,20,"/item Alex алмаз",false).text());
             assertTrue(commands.handle(42,10,20,"/itemtop АР",false).text().contains("Alex — 10 шт."));
-            assertEquals("Alex — Изумрудная руда (обычная + глубинная): 5 шт.",
+            assertEquals("Alex — 🟢 Изумрудная руда (обычная + глубинная): 5 шт.",
                     commands.handle(42,10,20,"/itemtop Alex ИР",false).text());
         }
     }
@@ -126,7 +126,7 @@ class TelegramCommandsTest {
             verifyNoInteractions(api);
             process.invoke(service,new TelegramApi.Incoming(6,42,0,42,5,"NoSuchPlayer",null,null,true));
             verify(api).send(eq(42L),eq(0),sent.capture());
-            assertTrue(sent.getValue().text().contains("Игрок не найден"));
+            assertTrue(sent.getValue().text().contains("Ничего не найдено"));
             verify(api,never()).delete(anyLong(),anyInt());
             clearInvocations(api);
             process.invoke(service,new TelegramApi.Incoming(7,42,0,42,6,"/cancel",null,null,true));

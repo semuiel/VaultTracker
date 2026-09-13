@@ -31,7 +31,7 @@ class TelegramPrivateMenuTest {
     }
     private TelegramCommands.View say(String text) { return menu.handle(42,42,0,text,false); }
     private static String data(TelegramCommands.View view,String label) {
-        return view.buttons().stream().filter(b->b.text().equals(label)).findFirst().orElseThrow().data();
+        return view.buttons().stream().filter(b->b.text().equals(label) || b.text().endsWith(" "+label)).findFirst().orElseThrow().data();
     }
     private TelegramCommands.View click(TelegramCommands.View view,String label) {
         for(var button:view.buttons()) assertTrue(button.data().getBytes(StandardCharsets.UTF_8).length<=64);
@@ -64,12 +64,12 @@ class TelegramPrivateMenuTest {
     @Test void acceptsNicknameOnlyDuringPlayerSearchIncludingMaterialName() {
         assertNull(say("Alex"));
         open("👤 Игрок");
-        assertTrue(say("несуществующий").text().contains("Игрок не найден"));
-        var result=say("stone");
+        assertTrue(say("несуществующий").text().contains("Ничего не найдено"));
+        var result=click(say("stone"),"👤 Stone");
         assertTrue(result.text().contains("Ресурсы Stone"));
         assertNull(say("Alex"));
         click(result,"◀ К списку");
-        assertTrue(say("Alex").text().contains("Ресурсы Alex"));
+        assertTrue(click(say("Alex"),"👤 Alex").text().contains("Ресурсы Alex"));
         open("👤 Игрок");
         say("/cancel");
         assertNull(say("Alex"));
@@ -81,7 +81,7 @@ class TelegramPrivateMenuTest {
         assertTrue(ores.text().contains("Alex — 7 шт."));
         list=click(ores,"◀ К списку");
         int pages=0;
-        while(list.buttons().stream().noneMatch(b->b.text().equals("Алмаз"))) {
+        while(list.buttons().stream().noneMatch(b->b.text().equals("💎 Алмаз"))) {
             assertTrue(pages++<10); list=click(list,"Вперёд ▶");
         }
         var top=click(list,"Алмаз");
@@ -89,12 +89,12 @@ class TelegramPrivateMenuTest {
         assertTrue(top.text().contains("Bob — 7 шт."));
         assertTrue(click(top,"Вперёд ▶").text().contains("Stone — 2 шт."));
         open("📦 Предмет");
-        assertTrue(say("железный слиток").text().contains("Alex — 8 шт."));
+        assertTrue(click(say("железный слиток"),"Железный слиток").text().contains("Alex — 8 шт."));
         open("📦 Предмет");
-        assertTrue(say("ИР").text().contains("Bob — 5 шт."));
+        assertTrue(click(say("ИР"),"Изумрудная руда (обычная + глубинная) (IR)").text().contains("Bob — 5 шт."));
         open("📦 Предмет");
-        assertTrue(say("Alex").text().contains("Предмет не найден"));
-        assertTrue(say("diamond").text().contains("топ владельцев"));
+        assertTrue(say("Alex").text().contains("Ничего не найдено"));
+        assertTrue(click(say("diamond"),"Алмаз").text().contains("топ владельцев"));
     }
 
     @Test void buttonsCannotBeUsedByAnotherUserChatTopicOrOldScreen() {
@@ -136,12 +136,51 @@ class TelegramPrivateMenuTest {
         assertTrue(emptyPlayers.buttons().stream().anyMatch(b->b.text().equals("⌂ Меню")));
     }
 
+    @Test void filtersRussianAndEnglishFragmentsAndKeepsFilterAcrossPagesAndResults() {
+        open("📦 Предмет");
+        for(String query:List.of("Алм","алма","DIAM","diamond","minecraft:diamond")) {
+            var filtered=say(query);
+            assertTrue(filtered.text().contains("Найдено: 4"),filtered.text());
+            assertTrue(filtered.text().contains("1/2"));
+        }
+        var first=say("diam");
+        var second=click(first,"Вперёд ▶");
+        assertTrue(second.text().contains("2/2"));
+        assertTrue(second.text().contains("Фильтр: «diam»"));
+        var selected=second.buttons().getFirst();
+        var result=menu.callback(42,42,0,selected.data()).view();
+        assertTrue(result.text().contains("топ владельцев"));
+        var back=click(result,"◀ К списку");
+        assertTrue(back.text().contains("2/2"));
+        assertTrue(back.text().contains("Фильтр: «diam»"));
+        var cleared=click(back,"✖ Сбросить фильтр");
+        assertFalse(cleared.text().contains("Фильтр:"));
+        assertTrue(cleared.text().contains("1/5"));
+        var narrowed=say("алм глуб");
+        assertTrue(narrowed.text().contains("Найдено: 2"));
+        assertTrue(say("deepSlate_diam").text().contains("Найдено: 2"));
+    }
+
+    @Test void filtersPlayerFragmentsAndRecoversFromEmptyResults() {
+        register("Alina",Map.of("STONE",1L));
+        register("Sally",Map.of("STONE",1L));
+        open("👤 Игрок");
+        var filtered=say("AL");
+        assertTrue(filtered.text().contains("Найдено: 3"));
+        var second=click(filtered,"Вперёд ▶");
+        assertTrue(second.buttons().stream().anyMatch(b->b.text().equals("👤 Sally")));
+        assertTrue(say("zzzz").text().contains("Ничего не найдено"));
+        var alex=say("lex");
+        assertTrue(alex.text().contains("Найдено: 1"));
+        assertTrue(click(alex,"👤 Alex").text().contains("Ресурсы Alex"));
+    }
+
     @Test void directCommandsRetainPermissionsAndCancelPendingInput() {
         open("👤 Игрок");
         assertTrue(say("/items").text().contains("только администратору"));
         assertNull(say("Alex"));
         when(storage.status()).thenReturn("Работает");
         assertTrue(menu.handle(42,42,0,"/status",true).text().contains("Работает"));
-        assertTrue(say("/item Alex diamond").text().contains("Alex — Алмаз: 12 шт."));
+        assertTrue(say("/item Alex diamond").text().contains("Alex — 💎 Алмаз: 12 шт."));
     }
 }
