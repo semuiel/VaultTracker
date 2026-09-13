@@ -1,5 +1,5 @@
 name: VaultTracker
-version: 0.4.9
+version: 0.5.0
 main: ru.vaulttracker.VaultTrackerPlugin
 api-version: '1.21.11'
 folia-supported: true

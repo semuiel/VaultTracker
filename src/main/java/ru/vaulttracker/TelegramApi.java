@@ -11,7 +11,11 @@ import java.util.*;
 
 final class TelegramApi implements AutoCloseable {
     record Incoming(long updateId,long chatId,int topicId,long userId,int messageId,String text,
-                    String callbackId,String callbackData) {
+                    String callbackId,String callbackData,boolean privateChat) {
+        Incoming(long updateId,long chatId,int topicId,long userId,int messageId,String text,
+                 String callbackId,String callbackData) {
+            this(updateId,chatId,topicId,userId,messageId,text,callbackId,callbackData,false);
+        }
         boolean callback() { return callbackId!=null; }
     }
     private static final MediaType JSON=MediaType.get("application/json; charset=utf-8");
@@ -54,6 +58,14 @@ final class TelegramApi implements AutoCloseable {
         JsonArray commands=new JsonArray();
         commands.add(command("item","Поиск ресурсов и игроков"));
         JsonObject body=new JsonObject(); body.add("commands",commands); call("setMyCommands",body);
+        JsonArray privateCommands=new JsonArray();
+        privateCommands.add(command("menu","Открыть меню поиска"));
+        privateCommands.add(command("search","Поиск игрока или предмета"));
+        privateCommands.add(command("item","Поиск ресурсов командой"));
+        privateCommands.add(command("cancel","Отменить ввод для поиска"));
+        privateCommands.add(command("help","Помощь"));
+        JsonObject scope=new JsonObject(); scope.addProperty("type","all_private_chats");
+        body.add("scope",scope); body.add("commands",privateCommands); call("setMyCommands",body);
     }
     private static JsonObject command(String name,String description) {
         JsonObject value=new JsonObject(); value.addProperty("command",name); value.addProperty("description",description); return value;
@@ -78,7 +90,7 @@ final class TelegramApi implements AutoCloseable {
             return new Incoming(id,message.getAsJsonObject("chat").get("id").getAsLong(),
                     message.has("message_thread_id") ? message.get("message_thread_id").getAsInt() : 0,
                     userId(callback),message.get("message_id").getAsInt(),null,callback.get("id").getAsString(),
-                    callback.has("data") ? callback.get("data").getAsString() : null);
+                    callback.has("data") ? callback.get("data").getAsString() : null,isPrivate(message));
         }
         return new Incoming(id,0,0,0,0,null,null,null);
     }
@@ -86,7 +98,11 @@ final class TelegramApi implements AutoCloseable {
         return new Incoming(updateId,message.getAsJsonObject("chat").get("id").getAsLong(),
                 message.has("message_thread_id") ? message.get("message_thread_id").getAsInt() : 0,
                 userId(message),message.get("message_id").getAsInt(),message.has("text") ? message.get("text").getAsString() : null,
-                null,null);
+                null,null,isPrivate(message));
+    }
+    private static boolean isPrivate(JsonObject message) {
+        JsonObject chat=message.getAsJsonObject("chat");
+        return chat!=null && chat.has("type") && "private".equals(chat.get("type").getAsString());
     }
     private static long userId(JsonObject object) {
         return object.has("from") && object.getAsJsonObject("from").has("id")
@@ -116,11 +132,13 @@ final class TelegramApi implements AutoCloseable {
         body.addProperty("disable_web_page_preview",true);
         JsonArray keyboard=new JsonArray();
         if(!view.buttons().isEmpty()) {
-            JsonArray row=new JsonArray();
+            JsonArray row=null; int rowNumber=-1;
             for(var button:view.buttons()) {
+                if(row==null || button.row()!=rowNumber) {
+                    row=new JsonArray(); keyboard.add(row); rowNumber=button.row();
+                }
                 JsonObject value=new JsonObject(); value.addProperty("text",button.text()); value.addProperty("callback_data",button.data()); row.add(value);
             }
-            keyboard.add(row);
         }
         JsonObject markup=new JsonObject(); markup.add("inline_keyboard",keyboard); body.add("reply_markup",markup);
         return body;

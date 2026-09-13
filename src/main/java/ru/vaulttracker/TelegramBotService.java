@@ -7,11 +7,13 @@ import java.util.logging.Logger;
 
 final class TelegramBotService implements AutoCloseable {
     private final TelegramConfig config; private final TelegramApi api; private final TelegramCommands commands; private final Logger log;
+    private final TelegramPrivateMenu privateMenu;
     private final AtomicBoolean stopping=new AtomicBoolean(); private final Thread worker;
     private final ScheduledExecutorService deletionScheduler=Executors.newSingleThreadScheduledExecutor(
             runnable->Thread.ofVirtual().name("VaultTracker-telegram-delete").unstarted(runnable));
     TelegramBotService(TelegramConfig config,Catalogue catalogue,StorageEngine storage,Logger log) {
         this.config=config; this.api=new TelegramApi(config); this.commands=new TelegramCommands(catalogue,storage,config.pageSize()); this.log=log;
+        this.privateMenu=new TelegramPrivateMenu(catalogue,storage,commands,config.pageSize());
         worker=Thread.ofVirtual().name("VaultTracker-telegram").unstarted(this::run);
     }
     void start() { worker.start(); }
@@ -47,6 +49,12 @@ final class TelegramBotService implements AutoCloseable {
     }
     private void process(TelegramApi.Incoming update) throws Exception {
         if(update.callback()) {
+            if(update.privateChat()) {
+                var result=privateMenu.callback(update.userId(),update.chatId(),update.topicId(),update.callbackData());
+                api.answerCallback(update.callbackId(),result.notice(),result.alert());
+                if(result.view()!=null) api.edit(update.chatId(),update.messageId(),result.view());
+                return;
+            }
             if(!config.allowed(update.chatId(),update.topicId())) {
                 api.answerCallback(update.callbackId(),"",false); return;
             }
@@ -55,7 +63,7 @@ final class TelegramBotService implements AutoCloseable {
             if(result.view()!=null) api.edit(update.chatId(),update.messageId(),result.view());
             return;
         }
-        if(!isCommand(update.text())) return;
+        if(!update.privateChat() && !isCommand(update.text())) return;
         if(TelegramCommands.command(update.text()).equals("/id")) {
             log.info("Telegram /id — данные для telegram.yml (отправитель: "+update.userId()+"):\n"
                     +"chats:\n"
@@ -68,6 +76,15 @@ final class TelegramBotService implements AutoCloseable {
             if(update.messageId()>0) {
                 try { api.delete(update.chatId(),update.messageId()); }
                 catch(Exception e) { log.fine("Не удалось удалить команду /id из Telegram: "+api.safe(e)); }
+            }
+            return;
+        }
+        if(update.privateChat()) {
+            var view=privateMenu.handle(update.userId(),update.chatId(),update.topicId(),update.text(),config.admin(update.userId()));
+            if(view!=null) api.send(update.chatId(),update.topicId(),view);
+            if(isCommand(update.text()) && update.messageId()>0) {
+                try { api.delete(update.chatId(),update.messageId()); }
+                catch(Exception e) { log.fine("Не удалось удалить команду в личном чате: "+api.safe(e)); }
             }
             return;
         }

@@ -6,7 +6,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Predicate;
 
 final class TelegramCommands {
-    record Button(String text,String data) {}
+    record Button(String text,String data,int row) {
+        Button(String text,String data) { this(text,data,0); }
+    }
     record View(String text,List<Button> buttons) {
         View(String text) { this(text,List.of()); }
     }
@@ -134,7 +136,7 @@ final class TelegramCommands {
     private View topPage(String token,String material,int requested) {
         ResourceGroups.Group group=ResourceGroups.fromQuery(material);
         var rows=group==null ? catalogue.findTotals(material,Integer.MAX_VALUE) : catalogue.findTotals(group.materials(),Integer.MAX_VALUE);
-        if(rows.isEmpty()) return new View(group==null ? RussianItems.name(material) : group.title()+" — не найдено в зарегистрированных хранилищах.");
+        if(rows.isEmpty()) return new View((group==null ? RussianItems.name(material) : group.title())+" — не найдено в зарегистрированных хранилищах.");
         int pages=pages(rows.size()); int page=clamp(requested,pages);
         String title=group==null ? RussianItems.name(material) : group.title();
         String displayMaterial=group==null ? material : group.displayMaterial();

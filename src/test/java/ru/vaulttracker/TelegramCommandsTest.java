@@ -97,6 +97,49 @@ class TelegramCommandsTest {
         }
     }
 
+    @Test void privateMenuBypassesGroupRestrictionsButNeverCapturesGroupConversation() throws Exception {
+        TelegramConfig config=mock(TelegramConfig.class);
+        when(config.pageSize()).thenReturn(8);
+        var process=TelegramBotService.class.getDeclaredMethod("process",TelegramApi.Incoming.class);
+        process.setAccessible(true);
+        try(var apis=mockConstruction(TelegramApi.class);
+            var service=new TelegramBotService(config,catalogue,storage,java.util.logging.Logger.getAnonymousLogger())) {
+            var api=apis.constructed().getFirst();
+            process.invoke(service,new TelegramApi.Incoming(1,42,0,42,1,"обычное сообщение",null,null,true));
+            verifyNoInteractions(api);
+            process.invoke(service,new TelegramApi.Incoming(2,42,0,42,2,"/start",null,null,true));
+            var sent=org.mockito.ArgumentCaptor.forClass(TelegramCommands.View.class);
+            verify(api).send(eq(42L),eq(0),sent.capture());
+            verify(api).delete(42,2);
+            String search=sent.getValue().buttons().getFirst().data();
+            clearInvocations(api);
+            process.invoke(service,new TelegramApi.Incoming(3,42,0,42,3,null,"c1",search,true));
+            var edited=org.mockito.ArgumentCaptor.forClass(TelegramCommands.View.class);
+            verify(api).edit(eq(42L),eq(3),edited.capture());
+            String players=edited.getValue().buttons().stream().filter(b->b.text().equals("👤 Игрок")).findFirst().orElseThrow().data();
+            clearInvocations(api);
+            process.invoke(service,new TelegramApi.Incoming(4,42,0,42,3,null,"c2",players,true));
+            verify(api).edit(eq(42L),eq(3),any());
+            clearInvocations(api);
+            when(config.allowed(-100,20)).thenReturn(true);
+            process.invoke(service,new TelegramApi.Incoming(5,-100,20,42,4,"Alex",null,null,false));
+            verifyNoInteractions(api);
+            process.invoke(service,new TelegramApi.Incoming(6,42,0,42,5,"NoSuchPlayer",null,null,true));
+            verify(api).send(eq(42L),eq(0),sent.capture());
+            assertTrue(sent.getValue().text().contains("Игрок не найден"));
+            verify(api,never()).delete(anyLong(),anyInt());
+            clearInvocations(api);
+            process.invoke(service,new TelegramApi.Incoming(7,42,0,42,6,"/cancel",null,null,true));
+            clearInvocations(api);
+            process.invoke(service,new TelegramApi.Incoming(8,42,0,42,7,"NoSuchPlayer",null,null,true));
+            verifyNoInteractions(api);
+            when(config.allowed(-100,20)).thenReturn(false);
+            process.invoke(service,new TelegramApi.Incoming(9,-100,20,42,8,"/item алмаз",null,null,false));
+            verify(api).delete(-100,8);
+            verify(api,never()).send(anyLong(),anyInt(),any());
+        }
+    }
+
     @Test void ignoresConversationButStillHandlesButtonsWithoutMessageText() throws Exception {
         TelegramConfig config=mock(TelegramConfig.class);
         var process=TelegramBotService.class.getDeclaredMethod("process",TelegramApi.Incoming.class);
