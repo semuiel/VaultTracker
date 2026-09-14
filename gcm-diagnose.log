@@ -1,0 +1,247 @@
+﻿Diagnose log at 2026-09-13T23:26:14Z
+
+AppPath: C:\Program Files\Git\mingw64\bin\git-credential-manager.exe
+InstallDir: C:\Program Files\Git\mingw64\bin\
+Version: 2.9.1+6760f0ef069c994aa2bb1d703fb374986ee82a3e
+
+------------
+Diagnostic: Environment
+Skipped: False
+Success: True
+Exception: None
+Log:
+OSType: Windows
+OSVersion: 10.0 (build 19045)
+Reading environment variables... OK
+ Variables:
+SystemDrive=C:
+PIP_DISABLE_PIP_VERSION_CHECK=1
+NUKE_PATH=C:\Users\PC\.nuke\topaz_video_ai
+ProgramW6432=C:\Program Files
+PAGER=cat
+PROCESSOR_IDENTIFIER=AMD64 Family 23 Model 8 Stepping 2, AuthenticAMD
+TMP=C:\Users\PC\AppData\Local\Temp
+CODEX_INTERNAL_ORIGINATOR_OVERRIDE=Codex Desktop
+PROCESSOR_LEVEL=23
+Path=C:\Users\PC\.codex\tmp\arg0\codex-arg0aVXrTu;C:\Users\PC\.cache\codex-runtimes\codex-primary-runtime\dependencies\native\libheif\libheif\bin;C:\Users\PC\.cache\codex-runtimes\codex-primary-runtime\dependencies\native\jxrlib\jxrlib\bin;C:\Users\PC\.cache\codex-runtimes\codex-primary-runtime\dependencies\native\poppler\Library\bin;C:\Users\PC\.cache\codex-runtimes\codex-primary-runtime\dependencies\bin\override;C:\Program Files\Amazon Corretto\jdk21.0.12_9\bin;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\;C:\Windows\System32\OpenSSH\;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\dotnet\;C:\Program Files\Git\cmd;C:\Users\PC\.cache\codex-runtimes\codex-primary-runtime\dependencies\native\powershell;C:\Users\PC\AppData\Local\Microsoft\WindowsApps;C:\Program Files\JetBrains\IntelliJ IDEA 2026.2.2\bin;C:\Users\PC\.cache\codex-runtimes\codex-primary-runtime\dependencies\bin\fallback;C:\Users\PC\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin;C:\Users\PC\.cache\codex-runtimes\codex-primary-runtime\dependencies\native\git\cmd;C:\Users\PC\AppData\Local\OpenAI\Codex\bin\116cfc4fd47f015a;C:\Users\PC\AppData\Local\OpenAI\Codex\bin\bffc5354119c8421
+SystemRoot=C:\Windows
+HOMEPATH=\Users\PC
+RUST_LOG=warn
+NO_PROXY=localhost,127.0.0.1,::1
+USERPROFILE=C:\Users\PC
+CODEX_VERSION=0.154.0-alpha.6.2
+PROCESSOR_REVISION=0802
+CARGO_NET_OFFLINE=true
+TEMP=C:\Users\PC\AppData\Local\Temp
+FPS_BROWSER_APP_PROFILE_STRING=Internet Explorer
+FPS_BROWSER_USER_PROFILE_STRING=Default
+LOGONSERVER=\\DESKTOP-PTDJ2OE
+TERM=dumb
+NO_COLOR=1
+PUBLIC=C:\Users\Public
+CODEX_THREAD_ID=01a09d01-6976-72e0-8fea-0a8643768ebe
+CODEX_MCP_NODE_PATH=C:\Users\PC\AppData\Local\OpenAI\Codex\runtimes\cua_node\a708e72b10c27b59\bin\node.exe
+USERNAME=PC
+GH_PAGER=cat
+OneDrive=C:\Users\PC\OneDrive
+PATH=C:\Users\PC\.cache\codex-runtimes\codex-primary-runtime\dependencies\native\powershell;C:\Users\PC\.sbx-denybin;C:\Users\PC\.codex\tmp\arg0\codex-arg0aVXrTu;C:\Users\PC\.cache\codex-runtimes\codex-primary-runtime\dependencies\native\libheif\libheif\bin;C:\Users\PC\.cache\codex-runtimes\codex-primary-runtime\dependencies\native\jxrlib\jxrlib\bin;C:\Users\PC\.cache\codex-runtimes\codex-primary-runtime\dependencies\native\poppler\Library\bin;C:\Users\PC\.cache\codex-runtimes\codex-primary-runtime\dependencies\bin\override;C:\Program Files\Amazon Corretto\jdk21.0.12_9\bin;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\;C:\Windows\System32\OpenSSH\;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\dotnet\;C:\Program Files\Git\cmd;C:\Users\PC\.cache\codex-runtimes\codex-primary-runtime\dependencies\native\powershell;C:\Users\PC\AppData\Local\Microsoft\WindowsApps;C:\Program Files\JetBrains\IntelliJ IDEA 2026.2.2\bin;C:\Users\PC\.cache\codex-runtimes\codex-primary-runtime\dependencies\bin\fallback;C:\Users\PC\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin;C:\Users\PC\.cache\codex-runtimes\codex-primary-runtime\dependencies\native\git\cmd;C:\Users\PC\AppData\Local\OpenAI\Codex\bin\116cfc4fd47f015a;C:\Users\PC\AppData\Local\OpenAI\Codex\bin\bffc5354119c8421
+GIT_HTTP_PROXY=http://127.0.0.1:9
+CommonProgramFiles=C:\Program Files\Common Files
+windir=C:\Windows
+CODEX_SANDBOX_NETWORK_DISABLED=1
+CODEX_APP_TOOLS_PIPE_PATH=\\.\pipe\codex-browser-use-5f914cf7-b6a0-4328-81f5-4d69559b91fa
+ProgramData=C:\ProgramData
+LC_CTYPE=C.UTF-8
+IntelliJ IDEA=C:\Program Files\JetBrains\IntelliJ IDEA 2026.2.2\bin
+PIP_NO_INDEX=1
+COMPUTERNAME=DESKTOP-PTDJ2OE
+CommonProgramFiles(x86)=C:\Program Files (x86)\Common Files
+GIT_ALLOW_PROTOCOLS=
+ALLUSERSPROFILE=C:\ProgramData
+CommonProgramW6432=C:\Program Files\Common Files
+LESS=
+NPM_CONFIG_OFFLINE=true
+ProgramFiles(x86)=C:\Program Files (x86)
+SBX_NONET_ACTIVE=1
+GIT_HTTPS_PROXY=http://127.0.0.1:9
+PROCESSOR_ARCHITECTURE=AMD64
+DriverData=C:\Windows\System32\Drivers\DriverData
+HOMEDRIVE=C:
+CODEX_SAGE_BACKFILL_TRACKER_TAB_REUSE=1
+GIT_TRACE2_PARENT_SID=2d23c875-54bb-49ed-b749-8eb32fbd0e2c
+NUMBER_OF_PROCESSORS=16
+OS=Windows_NT
+OMP_WAIT_POLICY=PASSIVE
+CODEX_SESSION_ID=01a09d01-6976-72e0-8fea-0a8643768ebe
+CODEX_PERMISSION_PROFILE=:workspace
+LANG=C.UTF-8
+ComSpec=C:\Windows\system32\cmd.exe
+USERDOMAIN_ROAMINGPROFILE=DESKTOP-PTDJ2OE
+PATHEXT=.BAT;.CMD;.COM;.EXE;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC;.CPL
+PSModulePath=C:\Users\PC\Documents\PowerShell\Modules;C:\Program Files\PowerShell\Modules;c:\users\pc\.cache\codex-runtimes\codex-primary-runtime\dependencies\native\powershell\Modules;C:\Program Files\WindowsPowerShell\Modules;C:\Windows\system32\WindowsPowerShell\v1.0\Modules
+JAVA_HOME=C:\Program Files\Amazon Corretto\jdk21.0.12_9
+ProgramFiles=C:\Program Files
+CODEX_CI=1
+LC_ALL=C.UTF-8
+APPDATA=C:\Users\PC\AppData\Roaming
+USERDOMAIN=DESKTOP-PTDJ2OE
+GIT_SSH_COMMAND=cmd /c exit 1
+LOCALAPPDATA=C:\Users\PC\AppData\Local
+HTTPS_PROXY=http://127.0.0.1:9
+ALL_PROXY=http://127.0.0.1:9
+GIT_PAGER=cat
+COLORTERM=
+KMP_BLOCKTIME=0
+LOG_FORMAT=json
+HTTP_PROXY=http://127.0.0.1:9
+
+
+------------
+Diagnostic: File system
+Skipped: False
+Success: True
+Exception: None
+Log:
+Temporary directory is 'C:\Users\PC\AppData\Local\Temp\'...
+Checking basic file I/O...
+Writing to temporary file 'C:\Users\PC\AppData\Local\Temp\6f534284953b296076beb46a'... OK
+Reading from temporary file 'C:\Users\PC\AppData\Local\Temp\6f534284953b296076beb46a'... OK
+Deleting temporary file 'C:\Users\PC\AppData\Local\Temp\6f534284953b296076beb46a'... OK
+Testing IFileSystem instance...
+UserHomePath: C:\Users\PC
+UserDataDirectoryPath: C:\Users\PC\.gcm
+GetCurrentDirectory(): C:\Users\PC\Documents\Codex\2026-09-13\vs\VaultTracker
+
+------------
+Diagnostic: Networking
+Skipped: False
+Success: False
+Exception:
+System.Net.Http.HttpRequestException: Произошла ошибка при отправке запроса. ---> System.Net.WebException: Невозможно соединиться с удаленным сервером ---> System.Net.Sockets.SocketException: Подключение не установлено, т.к. конечный компьютер отверг запрос на подключение 127.0.0.1:9
+   в System.Net.Sockets.Socket.InternalEndConnect(IAsyncResult asyncResult)
+   в System.Net.Sockets.Socket.EndConnect(IAsyncResult asyncResult)
+   в System.Net.ServicePoint.ConnectSocketInternal(Boolean connectFailure, Socket s4, Socket s6, Socket& socket, IPAddress& address, ConnectSocketState state, IAsyncResult asyncResult, Exception& exception)
+   --- Конец трассировки внутреннего стека исключений ---
+   в System.Net.HttpWebRequest.EndGetResponse(IAsyncResult asyncResult)
+   в System.Net.Http.HttpClientHandler.GetResponseCallback(IAsyncResult ar)
+   --- Конец трассировки внутреннего стека исключений ---
+   в System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw()
+   в System.Runtime.CompilerServices.TaskAwaiter.HandleNonSuccessAndDebuggerNotification(Task task)
+   в GitCredentialManager.Diagnostics.NetworkingDiagnostic.<RunInternalAsync>d__4.MoveNext()
+--- Конец трассировка стека из предыдущего расположения, где возникло исключение ---
+   в System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw()
+   в System.Runtime.CompilerServices.TaskAwaiter.HandleNonSuccessAndDebuggerNotification(Task task)
+   в GitCredentialManager.Diagnostics.Diagnostic.<RunAsync>d__6.MoveNext()
+Log:
+Checking networking and HTTP stack...
+Creating HTTP client... OK
+IsNetworkAvailable: True
+Sending HEAD request to http://example.com... warning: HEAD request failed
+Sending HEAD request to http://httpforever.com... warning: HEAD request failed
+Sending HEAD request to https://example.com...
+------------
+Diagnostic: Git
+Skipped: False
+Success: True
+Exception: None
+Log:
+Getting Git version... OK
+Git version is '2.55.0.windows.5'
+Locating current repository...Git repository at 'C:/Users/PC/Documents/Codex/2026-09-13/vs/VaultTracker/.git'
+ OK
+Listing all Git configuration... OK
+Git configuration:
+file:C:/Program Files/Git/etc/gitconfig	diff.astextplain.textconv=astextplain
+file:C:/Program Files/Git/etc/gitconfig	filter.lfs.clean=git-lfs clean -- %f
+file:C:/Program Files/Git/etc/gitconfig	filter.lfs.smudge=git-lfs smudge -- %f
+file:C:/Program Files/Git/etc/gitconfig	filter.lfs.process=git-lfs filter-process
+file:C:/Program Files/Git/etc/gitconfig	filter.lfs.required=true
+file:C:/Program Files/Git/etc/gitconfig	http.sslbackend=schannel
+file:C:/Program Files/Git/etc/gitconfig	core.autocrlf=true
+file:C:/Program Files/Git/etc/gitconfig	core.fscache=true
+file:C:/Program Files/Git/etc/gitconfig	core.symlinks=false
+file:C:/Program Files/Git/etc/gitconfig	pull.rebase=false
+file:C:/Program Files/Git/etc/gitconfig	credential.helper=manager
+file:C:/Program Files/Git/etc/gitconfig	credential.https://dev.azure.com.usehttppath=true
+file:C:/Program Files/Git/etc/gitconfig	init.defaultbranch=main
+file:C:/Users/PC/.gitconfig	user.name=semuiel
+file:C:/Users/PC/.gitconfig	init.defaultranch=main
+file:.git/config	core.repositoryformatversion=0
+file:.git/config	core.filemode=false
+file:.git/config	core.bare=false
+file:.git/config	core.logallrefupdates=true
+file:.git/config	core.symlinks=false
+file:.git/config	core.ignorecase=true
+file:.git/config	user.name=semuiel
+file:.git/config	user.email=semuiel@users.noreply.github.com
+file:.git/config	remote.origin.url=https://github.com/semuiel/VaultTracker.git
+file:.git/config	remote.origin.fetch=+refs/heads/*:refs/remotes/origin/*
+file:.git/config	branch.main.remote=origin
+file:.git/config	branch.main.merge=refs/heads/main
+
+
+------------
+Diagnostic: Credential storage
+Skipped: False
+Success: True
+Exception: None
+Log:
+ICredentialStore instance is of type: CredentialStore
+Writing test credential... OK
+Reading test credential... OK
+Deleting test credential... OK
+
+------------
+Diagnostic: Microsoft authentication (AAD/MSA)
+Skipped: False
+Success: False
+Exception:
+System.UnauthorizedAccessException: Отказано в доступе по пути "C:\Users\PC\AppData\Local\.IdentityService".
+   в System.IO.__Error.WinIOError(Int32 errorCode, String maybeFullPath)
+   в System.IO.Directory.InternalCreateDirectory(String fullPath, String path, Object dirSecurityObj, Boolean checkHost)
+   в System.IO.Directory.InternalCreateDirectoryHelper(String path, Boolean checkHost)
+   в Microsoft.Identity.Client.Extensions.Msal.CrossPlatLock..ctor(String lockfilePath, Int32 lockFileRetryDelay, Int32 lockFileRetryCount)
+   в Microsoft.Identity.Client.Extensions.Msal.MsalCacheHelper.CreateCrossPlatLock(StorageCreationProperties storageCreationProperties)
+   в Microsoft.Identity.Client.Extensions.Msal.MsalCacheHelper.<CreateAsync>d__23.MoveNext()
+--- Конец трассировка стека из предыдущего расположения, где возникло исключение ---
+   в System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw()
+   в System.Runtime.CompilerServices.TaskAwaiter.HandleNonSuccessAndDebuggerNotification(Task task)
+   в GitCredentialManager.Diagnostics.MicrosoftAuthenticationDiagnostic.<RunInternalAsync>d__1.MoveNext()
+--- Конец трассировка стека из предыдущего расположения, где возникло исключение ---
+   в System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw()
+   в System.Runtime.CompilerServices.TaskAwaiter.HandleNonSuccessAndDebuggerNotification(Task task)
+   в GitCredentialManager.Diagnostics.Diagnostic.<RunAsync>d__6.MoveNext()
+Log:
+Broker is not enabled.
+Gathering MSAL token cache data... OK
+CacheDirectory: C:\Users\PC\AppData\Local\.IdentityService
+CacheFileName: msal.cache
+CacheFilePath: C:\Users\PC\AppData\Local\.IdentityService\msal.cache
+Creating cache helper...
+------------
+Diagnostic: GitHub API
+Skipped: False
+Success: False
+Exception:
+System.Net.Http.HttpRequestException: Произошла ошибка при отправке запроса. ---> System.Net.WebException: Невозможно соединиться с удаленным сервером ---> System.Net.Sockets.SocketException: Подключение не установлено, т.к. конечный компьютер отверг запрос на подключение 127.0.0.1:9
+   в System.Net.Sockets.Socket.InternalEndConnect(IAsyncResult asyncResult)
+   в System.Net.Sockets.Socket.EndConnect(IAsyncResult asyncResult)
+   в System.Net.ServicePoint.ConnectSocketInternal(Boolean connectFailure, Socket s4, Socket s6, Socket& socket, IPAddress& address, ConnectSocketState state, IAsyncResult asyncResult, Exception& exception)
+   --- Конец трассировки внутреннего стека исключений ---
+   в System.Net.HttpWebRequest.EndGetResponse(IAsyncResult asyncResult)
+   в System.Net.Http.HttpClientHandler.GetResponseCallback(IAsyncResult ar)
+   --- Конец трассировки внутреннего стека исключений ---
+   в System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw()
+   в System.Runtime.CompilerServices.TaskAwaiter.HandleNonSuccessAndDebuggerNotification(Task task)
+   в GitHub.GitHubRestApi.<GetMetaInfoAsync>d__5.MoveNext()
+--- Конец трассировка стека из предыдущего расположения, где возникло исключение ---
+   в System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw()
+   в System.Runtime.CompilerServices.TaskAwaiter.HandleNonSuccessAndDebuggerNotification(Task task)
+   в GitHub.Diagnostics.GitHubApiDiagnostic.<RunInternalAsync>d__2.MoveNext()
+--- Конец трассировка стека из предыдущего расположения, где возникло исключение ---
+   в System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw()
+   в System.Runtime.CompilerServices.TaskAwaiter.HandleNonSuccessAndDebuggerNotification(Task task)
+   в GitCredentialManager.Diagnostics.Diagnostic.<RunAsync>d__6.MoveNext()
+Log:
+Using 'https://github.com/' as API target.
+Querying '/meta' endpoint...
