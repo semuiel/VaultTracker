@@ -36,16 +36,23 @@ final class LinkedChatIdentity {
         }
     }
     Component render(GuardService.Account account,String text) throws Exception {
+        return render(account,text,true);
+    }
+    Component render(GuardService.Account account,String text,boolean showTag) throws Exception {
         Style style=style(account.uuid());
         // Minecraft account names are inserted into Flexity's trusted template, never Telegram names.
-        if(!account.name().matches("[A-Za-z0-9_.-]{1,32}")) return fallback(account.name(),text);
-        Component body=(Component)format.invoke(formatter,true,account.name(),Component.text(text),style.color());
-        Component result=Component.text("[TG] ",NamedTextColor.AQUA);
+        if(!account.name().matches("[A-Za-z0-9_.-]{1,32}")) return fallback(account.name(),text,showTag);
+        Component body=(Component)format.invoke(formatter,true,account.name(),Component.text(text,NamedTextColor.WHITE),style.color());
+        Component result=tag(showTag);
         if(style.prefix()!=null&&!style.prefix().isBlank()) result=result.append(MiniMessage.miniMessage().deserialize(style.prefix())).append(Component.space());
         return result.append(body);
     }
     static Component fallback(String name,String text) {
-        return Component.text("[TG] ",NamedTextColor.AQUA).append(Component.text(name,NamedTextColor.WHITE))
+        return fallback(name,text,true);
+    }
+    static Component tag(boolean show) {return show?Component.text("[TG] ",NamedTextColor.AQUA):Component.empty();}
+    static Component fallback(String name,String text,boolean showTag) {
+        return tag(showTag).append(Component.text(name,NamedTextColor.WHITE))
                 .append(Component.text(": ",NamedTextColor.GRAY)).append(Component.text(text,NamedTextColor.WHITE));
     }
 }

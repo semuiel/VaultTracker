@@ -109,7 +109,7 @@ final class TelegramChatBridge implements Listener,AutoCloseable {
         }
         if(!config.chat.matches(update)) return false;
         if(!config.flag("chat.telegramToMinecraft",true) || (update.media()&&!config.flag("messages.mediaLabels",true))) return true;
-        String senderName=update.profile()==null||update.profile().isBlank()?Long.toString(update.userId()):update.profile();
+        String senderName=update.displayName()==null||update.displayName().isBlank()?Long.toString(update.userId()):update.displayName();
         Component message=incomingMessage(update.userId(),senderName,limit(text,1500));
         plugin.getServer().getGlobalRegionScheduler().run(plugin,task->{
             if(stopping.get()) return;
@@ -119,14 +119,22 @@ final class TelegramChatBridge implements Listener,AutoCloseable {
         return true;
     }
     Component incomingMessage(long user,String sender,String text) {
-        if(guard!=null&&config.flag("messages.linkedPlayerIdentity",true)) try {
+        boolean showTag=config.flag("messages.showTelegramTagUnlinked",config.flag("messages.showTelegramTag",true));
+        if(guard!=null) try {
             var account=guard.account(user).get(5,TimeUnit.SECONDS);
             if(account!=null) {
-                try {if(identity!=null) return identity.render(account,text);} catch(Exception e) {identityWarning();}
-                return LinkedChatIdentity.fallback(account.name(),text);
+                showTag=config.flag("messages.showTelegramTagLinked",config.flag("messages.showTelegramTag",true));
+                if(config.flag("messages.linkedPlayerIdentity",true)) {
+                    try {if(identity!=null) return identity.render(account,text,showTag);} catch(Exception e) {identityWarning();}
+                    return LinkedChatIdentity.fallback(account.name(),text,showTag);
+                }
             }
         } catch(Exception e) {identityWarning();}
-        return MiniMessage.miniMessage().deserialize(config.format("telegramChat","<aqua>[TG] {sender}</aqua> {text}").replace("{sender}","<bridge_sender>").replace("{text}","<bridge_text>"),Placeholder.unparsed("bridge_sender",limit(sender,120)),Placeholder.unparsed("bridge_text",text));
+        String template=config.format("telegramChat","{tg}<white>{sender}<gray>:</gray> {text}</white>");
+        if(template.equals("<aqua>[TG] {sender}</aqua> {text}")) template="{tg}<white>{sender}<gray>:</gray> {text}</white>";
+        // Existing configs used a literal marker. Keep the toggle effective without rewriting them.
+        if(!template.contains("{tg}")) template=template.replace("[TG] ","{tg}").replace("[TG]","{tg}");
+        return MiniMessage.miniMessage().deserialize(template.replace("{tg}","<bridge_tag>").replace("{sender}","<bridge_sender>").replace("{text}","<bridge_text>"),Placeholder.component("bridge_tag",LinkedChatIdentity.tag(showTag)),Placeholder.component("bridge_sender",Component.text(limit(sender,120),net.kyori.adventure.text.format.NamedTextColor.WHITE)),Placeholder.component("bridge_text",Component.text(text,net.kyori.adventure.text.format.NamedTextColor.WHITE)));
     }
     private void identityWarning() {
         long now=System.currentTimeMillis();if(now-lastIdentityWarning>60000) {lastIdentityWarning=now;plugin.getLogger().warning("Не удалось получить оформление привязанного персонажа; используется запасное оформление [TG].");}

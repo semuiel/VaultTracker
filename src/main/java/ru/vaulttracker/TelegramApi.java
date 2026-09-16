@@ -16,7 +16,8 @@ final class TelegramApi implements AutoCloseable {
     }
     static boolean permanentFailure(Throwable failure) {return failure instanceof ApiError error && error.code>=400 && error.code<500 && error.code!=429;}
     record Incoming(long updateId,long chatId,int topicId,long userId,int messageId,String text,
-                    String callbackId,String callbackData,boolean privateChat,String profile,boolean senderBot,boolean media) {
+                    String callbackId,String callbackData,boolean privateChat,String profile,boolean senderBot,boolean media,String displayName) {
+        Incoming(long updateId,long chatId,int topicId,long userId,int messageId,String text,String callbackId,String callbackData,boolean privateChat,String profile,boolean senderBot,boolean media) {this(updateId,chatId,topicId,userId,messageId,text,callbackId,callbackData,privateChat,profile,senderBot,media,profile);}
         Incoming(long updateId,long chatId,int topicId,long userId,int messageId,String text,String callbackId,String callbackData,boolean privateChat,String profile) {this(updateId,chatId,topicId,userId,messageId,text,callbackId,callbackData,privateChat,profile,false,false);}
         Incoming(long updateId,long chatId,int topicId,long userId,int messageId,String text,String callbackId,String callbackData,boolean privateChat) {this(updateId,chatId,topicId,userId,messageId,text,callbackId,callbackData,privateChat,"");}
         Incoming(long updateId,long chatId,int topicId,long userId,int messageId,String text,
@@ -110,13 +111,18 @@ final class TelegramApi implements AutoCloseable {
         return new Incoming(updateId,message.getAsJsonObject("chat").get("id").getAsLong(),
                 message.has("message_thread_id") ? message.get("message_thread_id").getAsInt() : 0,
                 userId(message),message.get("message_id").getAsInt(),messageText(message),
-                null,null,isPrivate(message),profile(message),message.has("from") && message.getAsJsonObject("from").has("is_bot") && message.getAsJsonObject("from").get("is_bot").getAsBoolean(),!message.has("text"));
+                null,null,isPrivate(message),profile(message),message.has("from") && message.getAsJsonObject("from").has("is_bot") && message.getAsJsonObject("from").get("is_bot").getAsBoolean(),!message.has("text"),displayName(message));
     }
     private static String messageText(JsonObject message) {
         if(message.has("text")) return message.get("text").getAsString();
         String label=null;
         for(String type:List.of("photo","video","animation","document","audio","voice","video_note","sticker","poll")) if(message.has(type)) {label=switch(type){case "photo"->"[Фото]";case "video"->"[Видео]";case "animation"->"[GIF]";case "document"->"[Документ]";case "audio"->"[Аудио]";case "voice"->"[Голосовое сообщение]";case "video_note"->"[Видеосообщение]";case "sticker"->"[Стикер]";default->"[Опрос]";};break;}
         return label==null?null:label+(message.has("caption")?" "+message.get("caption").getAsString():"");
+    }
+    private static String displayName(JsonObject object) {
+        if(!object.has("from")) return "";JsonObject from=object.getAsJsonObject("from");List<String> parts=new ArrayList<>();
+        for(String key:List.of("first_name","last_name")) if(from.has(key)) parts.add(from.get(key).getAsString());
+        return String.join(" ",parts);
     }
     private static String profile(JsonObject object) {
         if(!object.has("from")) return "";JsonObject from=object.getAsJsonObject("from");List<String> parts=new ArrayList<>();

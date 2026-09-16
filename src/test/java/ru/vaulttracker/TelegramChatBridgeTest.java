@@ -37,6 +37,35 @@ class TelegramChatBridgeTest {
         when(player.getUniqueId()).thenReturn(UUID.randomUUID());when(player.getName()).thenReturn("Alex");when(player.displayName()).thenReturn(Component.text("DisplayAlex"));when(player.getWorld()).thenReturn(world);when(world.getEnvironment()).thenReturn(World.Environment.NETHER);when(world.getName()).thenReturn("world_nether");
     }
     TelegramApi.Incoming message(long chat,int topic,String text) {return new TelegramApi.Incoming(1,chat,topic,42,1,text,null,null,false,"Sender");}
+    @Test void telegramMarkerCanBeDisabledWithLegacyTemplateAndTextIsWhite() throws Exception {
+        var settings=TelegramChatConfig.parse(TelegramChatConfigTest.SETTINGS+"\nmessages:\n  showTelegramTag: false\nformats:\n  telegramChat: '<aqua>[TG] {sender}</aqua> {text}'\n");
+        try(var apis=mockConstruction(TelegramApi.class);var bridge=new TelegramChatBridge(plugin,settings,catalogue)) {
+            var message=bridge.incomingMessage(42,"Gaben","<red>text");
+            assertEquals("Gaben: <red>text",TelegramChatBridge.plain(message));
+            assertTrue(whiteText(message,"<red>text"));
+        }
+    }
+    private boolean whiteText(Component component,String text) {
+        return whiteText(component,text,null);
+    }
+    private boolean whiteText(Component component,String text,net.kyori.adventure.text.format.TextColor inherited) {
+        var color=component.color()==null?inherited:component.color();
+        if(component instanceof net.kyori.adventure.text.TextComponent value && value.content().contains(text)) return net.kyori.adventure.text.format.NamedTextColor.WHITE.equals(color);
+        return component.children().stream().anyMatch(child->whiteText(child,text,color));
+    }
+    @Test void linkedAndUnlinkedMarkersAreIndependent() throws Exception {
+        GuardService guard=mock(GuardService.class);
+        when(guard.account(42)).thenReturn(java.util.concurrent.CompletableFuture.completedFuture(new GuardService.Account(UUID.randomUUID(),"Alex",true)));
+        when(guard.account(43)).thenReturn(java.util.concurrent.CompletableFuture.completedFuture(null));
+        for(boolean linked:List.of(false,true)) {
+            var settings=TelegramChatConfig.parse(TelegramChatConfigTest.SETTINGS+"\nmessages:\n  showTelegramTagLinked: "+linked+"\n  showTelegramTagUnlinked: "+(!linked)+"\n");
+            try(var apis=mockConstruction(TelegramApi.class);var bridge=new TelegramChatBridge(plugin,settings,catalogue)) {
+                bridge.linkedAccounts(guard);
+                assertEquals(linked,TelegramChatBridge.plain(bridge.incomingMessage(42,"Sender","hello")).contains("[TG]"));
+                assertEquals(!linked,TelegramChatBridge.plain(bridge.incomingMessage(43,"Sender","hello")).contains("[TG]"));
+            }
+        }
+    }
     @Test void linkedIdentityIsResolvedByTelegramIdAndUnlinkedSenderKeepsExistingFormat() throws Exception {
         GuardService guard=mock(GuardService.class);
         when(guard.account(42)).thenReturn(java.util.concurrent.CompletableFuture.completedFuture(new GuardService.Account(UUID.randomUUID(),"Alex",true)));

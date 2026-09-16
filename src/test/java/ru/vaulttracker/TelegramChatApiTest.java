@@ -11,6 +11,10 @@ import java.util.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class TelegramChatApiTest {
+    @Test void displayNameExcludesUsernameButAdminProfilePreservesIt() {
+        var update=TelegramApi.parseUpdate(JsonParser.parseString("{\"update_id\":1,\"message\":{\"message_id\":1,\"chat\":{\"id\":-100,\"type\":\"supergroup\"},\"from\":{\"id\":42,\"first_name\":\"Gaben\",\"last_name\":\"Example\",\"username\":\"GabenMax\"},\"text\":\"Hi\"}}").getAsJsonObject());
+        assertEquals("Gaben Example",update.displayName());assertTrue(update.profile().contains("@GabenMax"));
+    }
     @TempDir Path folder;
     @Test void customEmojiRejectionFallsBackToOrdinaryEmojiInSameTopic() throws Exception {
         var requests=new java.util.concurrent.CopyOnWriteArrayList<JsonObject>();var server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);

@@ -35,7 +35,8 @@ class LinkedChatIdentityTest {
         String malicious="<click:run_command:'/op me'>Hi</click>";
         Component output=identity.render(new GuardService.Account(uuid,"Alex",true),malicious);
         assertEquals("[TG] VIP [G] Alex: "+malicious,TelegramChatBridge.plain(output));
-        assertEquals(Component.text(malicious),formatter.received);assertEquals("<green>",formatter.color);
+        assertEquals(Component.text(malicious,net.kyori.adventure.text.format.NamedTextColor.WHITE),formatter.received);assertEquals("<green>",formatter.color);
+        assertFalse(TelegramChatBridge.plain(identity.render(new GuardService.Account(uuid,"Alex",true),malicious,false)).contains("[TG]"));
     }
     @Test void loadsOfflineStyleFromFlexityDatabaseAndClosesResources() throws Exception {
         Services services=new Services();Connection connection=mock(Connection.class);PreparedStatement query=mock(PreparedStatement.class);ResultSet rows=mock(ResultSet.class);

@@ -21,6 +21,9 @@ chat:
   telegramToMinecraft: true
 
 messages:
+  # Независимые переключатели [TG]: привязанные и непривязанные пользователи.
+  showTelegramTagLinked: true
+  showTelegramTagUnlinked: true
   # Telegram от привязанного пользователя: игровой ник и оформление Flexity
   # с отметкой [TG], в том числе офлайн. false — прежнее Telegram-имя.
   # Без Flexity используется игровой ник с [TG]. Текст сообщения не исполняет теги.
@@ -115,7 +118,7 @@ formats:
   minecraftChat: "<b>[{username}]</b> {text}"
   # Minecraft: MiniMessage. {sender} и {text} вставляются как безопасный текст.
   # Внешний отправитель не может внедрять команды/кликабельные теги.
-  telegramChat: "<aqua>[TG] {sender}</aqua> {text}"
+  telegramChat: "{tg}<white>{sender}<gray>:</gray> {text}</white>"
   # Список: заголовок {count}, {page}, {pages}; строка {emoji}, {name},
   # {username} (настоящий ник), {world}, {number} (порядковый номер).
   listHeader: "📝 <b>Вот они слева направо:</b> · {count} онлайн · {page}/{pages}"
