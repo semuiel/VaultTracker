@@ -21,6 +21,10 @@ chat:
   telegramToMinecraft: true
 
 messages:
+  # Telegram от привязанного пользователя: игровой ник и оформление Flexity
+  # с отметкой [TG], в том числе офлайн. false — прежнее Telegram-имя.
+  # Без Flexity используется игровой ник с [TG]. Текст сообщения не исполняет теги.
+  linkedPlayerIdentity: true
   # Flexity добавляет U+E000 к глобальным сообщениям автоматически.
   # Локальный чат не пересылается. Пустая строка разрешает все сообщения.
   requirePrefixInMinecraft: "\uE000"

@@ -94,6 +94,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
                 TelegramChatConfig chatConfig=TelegramChatConfig.load(getDataFolder().toPath());
                 if(chatConfig.enabled) {
                     telegramChat=new TelegramChatBridge(this,chatConfig,telegramConfig);
+                    telegramChat.linkedAccounts(guard);
                     boolean shared=chatConfig.shared(telegramConfig);
                     if(shared) telegram.chatBridge(telegramChat);
                     telegramChat.start(shared);chatStatus="чат запущен"+(shared?" с общим токеном":" с отдельным токеном");

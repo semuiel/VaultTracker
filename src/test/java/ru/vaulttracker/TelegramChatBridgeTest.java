@@ -37,6 +37,17 @@ class TelegramChatBridgeTest {
         when(player.getUniqueId()).thenReturn(UUID.randomUUID());when(player.getName()).thenReturn("Alex");when(player.displayName()).thenReturn(Component.text("DisplayAlex"));when(player.getWorld()).thenReturn(world);when(world.getEnvironment()).thenReturn(World.Environment.NETHER);when(world.getName()).thenReturn("world_nether");
     }
     TelegramApi.Incoming message(long chat,int topic,String text) {return new TelegramApi.Incoming(1,chat,topic,42,1,text,null,null,false,"Sender");}
+    @Test void linkedIdentityIsResolvedByTelegramIdAndUnlinkedSenderKeepsExistingFormat() throws Exception {
+        GuardService guard=mock(GuardService.class);
+        when(guard.account(42)).thenReturn(java.util.concurrent.CompletableFuture.completedFuture(new GuardService.Account(UUID.randomUUID(),"Alex",true)));
+        when(guard.account(43)).thenReturn(java.util.concurrent.CompletableFuture.completedFuture(null));
+        try(var apis=mockConstruction(TelegramApi.class);var bridge=new TelegramChatBridge(plugin,config,catalogue)) {
+            bridge.linkedAccounts(guard);
+            assertEquals("[TG] Alex: hello",TelegramChatBridge.plain(bridge.incomingMessage(42,"FakeAdmin","hello")));
+            assertTrue(TelegramChatBridge.plain(bridge.incomingMessage(43,"Sender","hello")).contains("Sender"));
+            verify(guard).account(42);verify(guard).account(43);
+        }
+    }
     @Test void forwardsOnlyConfiguredTopicAndTreatsSenderContentAsLiteral() throws Exception {
         try(var apis=mockConstruction(TelegramApi.class);var bridge=new TelegramChatBridge(plugin,config,catalogue)) {
             bridge.username("ChatBot");bridge.start(true);

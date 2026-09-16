@@ -35,6 +35,10 @@ final class TelegramChatBridge implements Listener,AutoCloseable {
     private final Thread sender,receiver;
     private volatile String username;
     private volatile long lastQueueWarning;
+    private GuardService guard;
+    private volatile LinkedChatIdentity identity;
+    private volatile long lastIdentityWarning;
+    void linkedAccounts(GuardService value) {guard=value;}
     TelegramChatBridge(JavaPlugin plugin,TelegramChatConfig config,TelegramConfig catalogue) throws Exception {
         this.plugin=plugin;this.config=config;transport=config.transport(catalogue);api=new TelegramApi(transport);
         translations=new TelegramChatText(plugin.getDataFolder().toPath());
@@ -43,7 +47,12 @@ final class TelegramChatBridge implements Listener,AutoCloseable {
     }
     void start(boolean shared) {
         plugin.getServer().getPluginManager().registerEvents(this,plugin);
-        plugin.getServer().getGlobalRegionScheduler().run(plugin,t->{if(stopping.get()) return;for(Player p:plugin.getServer().getOnlinePlayers()) p.getScheduler().run(plugin,task->{if(!stopping.get()) remember(p);},null);});
+        plugin.getServer().getGlobalRegionScheduler().run(plugin,t->{
+            if(stopping.get()) return;
+            var flexity=plugin.getServer().getPluginManager().getPlugin("flexity");
+            if(flexity!=null&&flexity.isEnabled()) try {identity=new LinkedChatIdentity(flexity);} catch(Exception e) {plugin.getLogger().warning("Оформление Flexity недоступно: используется игровой ник с [TG].");}
+            for(Player p:plugin.getServer().getOnlinePlayers()) p.getScheduler().run(plugin,task->{if(!stopping.get()) remember(p);},null);
+        });
         sender.start();if(!shared) receiver.start();
     }
     void username(String value) {username=value;}
@@ -101,13 +110,26 @@ final class TelegramChatBridge implements Listener,AutoCloseable {
         if(!config.chat.matches(update)) return false;
         if(!config.flag("chat.telegramToMinecraft",true) || (update.media()&&!config.flag("messages.mediaLabels",true))) return true;
         String senderName=update.profile()==null||update.profile().isBlank()?Long.toString(update.userId()):update.profile();
-        Component message=MiniMessage.miniMessage().deserialize(config.format("telegramChat","<aqua>[TG] {sender}</aqua> {text}").replace("{sender}","<bridge_sender>").replace("{text}","<bridge_text>"),Placeholder.unparsed("bridge_sender",limit(senderName,120)),Placeholder.unparsed("bridge_text",limit(text,1500)));
+        Component message=incomingMessage(update.userId(),senderName,limit(text,1500));
         plugin.getServer().getGlobalRegionScheduler().run(plugin,task->{
             if(stopping.get()) return;
             for(Player player:plugin.getServer().getOnlinePlayers()) player.getScheduler().run(plugin,t->{if(!stopping.get()) player.sendMessage(message);},null);
             plugin.getServer().getConsoleSender().sendMessage(message);
         });
         return true;
+    }
+    Component incomingMessage(long user,String sender,String text) {
+        if(guard!=null&&config.flag("messages.linkedPlayerIdentity",true)) try {
+            var account=guard.account(user).get(5,TimeUnit.SECONDS);
+            if(account!=null) {
+                try {if(identity!=null) return identity.render(account,text);} catch(Exception e) {identityWarning();}
+                return LinkedChatIdentity.fallback(account.name(),text);
+            }
+        } catch(Exception e) {identityWarning();}
+        return MiniMessage.miniMessage().deserialize(config.format("telegramChat","<aqua>[TG] {sender}</aqua> {text}").replace("{sender}","<bridge_sender>").replace("{text}","<bridge_text>"),Placeholder.unparsed("bridge_sender",limit(sender,120)),Placeholder.unparsed("bridge_text",text));
+    }
+    private void identityWarning() {
+        long now=System.currentTimeMillis();if(now-lastIdentityWarning>60000) {lastIdentityWarning=now;plugin.getLogger().warning("Не удалось получить оформление привязанного персонажа; используется запасное оформление [TG].");}
     }
     private boolean consumeListCallback(TelegramApi.Incoming update) {
         String data=update.callbackData();if(data==null||!data.startsWith("vcl:")) return false;
