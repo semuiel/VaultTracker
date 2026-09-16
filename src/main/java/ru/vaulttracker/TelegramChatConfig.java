@@ -62,7 +62,7 @@ final class TelegramChatConfig {
     boolean advancementEnabled() {return flag("advancements.enabled",true);}
     boolean listTarget(TelegramApi.Incoming update) {return chat.matches(update)||(advancementEnabled()&&advancements.matches(update));}
     int listLifetimeSeconds() {return Math.max(30,Math.min(3600,yaml.getInt("list.messageLifetimeSeconds",300)));}
-    int mergeSeconds() {return yaml.getInt("messages.mergeWindowSeconds",5);}
+    int mergeSeconds() {return yaml.getInt("messages.mergeWindowSeconds",0);}
     String format(String key,String fallback) {return text("formats."+key,fallback);}
     boolean shared(TelegramConfig catalogue) {return enabled && catalogue.enabled() && token.equals(catalogue.token());}
     TelegramConfig transport(TelegramConfig catalogue) {

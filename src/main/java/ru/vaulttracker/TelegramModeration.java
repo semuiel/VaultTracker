@@ -25,6 +25,18 @@ class TelegramModeration {
     private final GuardService guard;
     private final Map<UUID,Boolean> lpAdminState=new ConcurrentHashMap<>();
     TelegramModeration(JavaPlugin plugin,GuardService guard) {this.plugin=plugin;this.guard=guard;}
+    CompletableFuture<BlockKey> ownPosition(long user,UUID uuid) {
+        return guard.account(user).thenCompose(account->{
+            if(account==null||!account.uuid().equals(uuid)) return CompletableFuture.failedFuture(new SecurityException("Нет доступа"));
+            return global(()->plugin.getServer().getPlayer(uuid)).thenCompose(player->{
+                if(player==null) return CompletableFuture.completedFuture(null);
+                CompletableFuture<BlockKey> result=new CompletableFuture<>();
+                player.getScheduler().run(plugin,t->{try {var loc=player.getLocation();result.complete(new BlockKey(loc.getWorld().getUID(),loc.getBlockX(),loc.getBlockY(),loc.getBlockZ()));}catch(Exception e){result.completeExceptionally(e);}},()->result.complete(null));
+                return result.orTimeout(10,TimeUnit.SECONDS);
+            });
+        });
+    }
+    CompletableFuture<Map<UUID,String>> worldLabels() {return global(()->{Map<UUID,String> result=new HashMap<>();for(World world:plugin.getServer().getWorlds()) result.put(world.getUID(),world.getName());return Map.copyOf(result);});}
     private <T> CompletableFuture<T> global(Callable<T> job) {
         CompletableFuture<T> result=new CompletableFuture<>();
         try {plugin.getServer().getGlobalRegionScheduler().run(plugin,task-> {if(result.isDone()) return;try {result.complete(job.call());} catch(Exception e) {result.completeExceptionally(e);}});}

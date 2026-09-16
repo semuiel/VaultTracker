@@ -60,6 +60,8 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
         Objects.requireNonNull(getCommand("vaulttracker")).setTabCompleter(this);
         Objects.requireNonNull(getCommand("topitem")).setExecutor(this);
         Objects.requireNonNull(getCommand("topitem")).setTabCompleter(this);
+        Objects.requireNonNull(getCommand("find")).setExecutor(this);
+        Objects.requireNonNull(getCommand("find")).setTabCompleter(this);
         storage.start(snapshots-> {catalogue.restore(snapshots);guard.restore(snapshots);});
         synchronized(telegramLock) { replaceTelegram(); }
         if(telegramChat!=null) telegramChat.serverEvent(true);
@@ -75,7 +77,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
     }
     private void applyRuntimeConfig() {
         debounceTicks=Math.max(1,Math.min(20,getConfig().getLong("update-delay-ticks",2)));
-        playerLimit=Math.max(1,getConfig().getInt("max-vaults-per-player",100));
+        playerLimit=0;
     }
     private String replaceTelegram() {
         if(telegram!=null) { telegram.close(); telegram=null; }
@@ -326,7 +328,26 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
     }
     @EventHandler(priority=EventPriority.MONITOR) public void quit(PlayerQuitEvent e) {guard.presence(e.getPlayer().getUniqueId(),e.getPlayer().getName(),false);}
     private static void tell(CommandSender sender,String message) { sender.sendMessage(Component.text("[VaultTracker] " + message)); }
+    private boolean findOwn(CommandSender sender,String[] args) {
+        if(!(sender instanceof Player player)) {tell(sender,"Поиск сундуков доступен в игре.");return true;}
+        if(!player.hasPermission("vaulttracker.search")) {tell(sender,"Нет права vaulttracker.search.");return true;}
+        if(!storage.ready()) {tell(sender,"Каталог загружается.");return true;}
+        if(args.length==0) {tell(sender,"/find diamond_ore [страница] — поиск в своих зарегистрированных сундуках.");return true;}
+        int requested=1,end=args.length;
+        if(args.length>1&&args[args.length-1].matches("[0-9]+")) {try {requested=Integer.parseInt(args[--end]);} catch(NumberFormatException e) {tell(sender,"Слишком большой номер страницы.");return true;}}
+        String query=String.join(" ",Arrays.copyOf(args,end));if(query.isBlank()||query.length()>64) {tell(sender,"Введите название предмета до 64 символов.");return true;}
+        var loc=player.getLocation();var rows=OwnResourceSearch.find(catalogue,player.getUniqueId(),query,new BlockKey(loc.getWorld().getUID(),loc.getBlockX(),loc.getBlockY(),loc.getBlockZ()));
+        int pages=Math.max(1,(rows.size()+19)/20),page=Math.max(1,Math.min(requested,pages));
+        tell(sender,"Ваши сундуки · "+query+" · "+page+"/"+pages+". Ближайшие в вашем мире сначала.");
+        if(rows.isEmpty()) tell(sender,"Не найдено в зарегистрированных хранилищах.");
+        for(var row:rows.subList((page-1)*20,Math.min(page*20,rows.size()))) {World world=getServer().getWorld(row.chest().world());tell(sender,OwnResourceSearch.line(row,world==null?row.chest().world().toString():world.getName()));}
+        Component navigation=Component.text("◀ Назад");
+        if(page>1) navigation=navigation.clickEvent(net.kyori.adventure.text.event.ClickEvent.runCommand("/find "+query+" "+(page-1)));
+        Component next=Component.text("Вперёд ▶");if(page<pages) next=next.clickEvent(net.kyori.adventure.text.event.ClickEvent.runCommand("/find "+query+" "+(page+1)));
+        player.sendMessage(navigation.append(Component.text("   "+page+"/"+pages+"   ")).append(next));return true;
+    }
     @Override public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+        if(command.getName().equalsIgnoreCase("find")) return findOwn(sender,args);
         if (command.getName().equalsIgnoreCase("topitem") || command.getName().equalsIgnoreCase("itemtop")) {
             return new TopItemCommand(catalogue,storage::ready).execute(sender,args);
         }
@@ -371,6 +392,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
         return true;
     }
     @Override public List<String> onTabComplete(CommandSender sender,Command command,String alias,String[] args) {
+        if(command.getName().equalsIgnoreCase("find")) return args.length==1 ? Arrays.stream(Material.values()).filter(m->!m.name().startsWith("LEGACY_")).filter(Material::isItem).map(m->m.name().toLowerCase(Locale.ROOT)).filter(s->s.startsWith(args[0].toLowerCase(Locale.ROOT))).limit(40).toList():List.of();
         if (command.getName().equalsIgnoreCase("topitem")) {
             if (!sender.hasPermission("vaulttracker.search") || args.length==0) return List.of();
             boolean explicit=args.length>1 && args[0].equalsIgnoreCase("player");

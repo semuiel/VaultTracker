@@ -23,6 +23,16 @@ class TelegramGuardMenuTest {
         menu=new TelegramGuardMenu(guard,new TelegramCommands(catalogue,storage,1,id->true));
     }
     @AfterEach void close() {guard.close();}
+    @Test void ownChestSearchPaginatesAndDoesNotExposeOtherOwners() throws Exception {
+        UUID owner=UUID.randomUUID(),world=UUID.randomUUID();
+        guard.link(owner,"Alex",guard.generate(42).get().split("/vtrack link ")[1].substring(0,32)).get();
+        for(int i=0;i<21;i++) catalogue.register(new BlockKey(world,i,65,0),owner,"Alex",List.of(new BlockKey(world,i,64,0)),Map.of("DIAMOND_ORE",1L),1,0);
+        catalogue.register(new BlockKey(world,999,65,0),UUID.randomUUID(),"Alex",List.of(new BlockKey(world,999,64,0)),Map.of("DIAMOND_ORE",999L),1,0);
+        menu.callback(42,"vg:resourceSearch");var page=menu.input(42,"алмазная руда");
+        assertTrue(page.text().contains("1/2"));assertFalse(page.text().contains("999"));assertTrue(page.text().contains("офлайн"));
+        String next=button(page,"Вперёд");assertTrue(menu.callback(43,next).alert());
+        assertTrue(menu.callback(42,next).view().text().contains("2/2"));
+    }
     String button(TelegramCommands.View view,String contains) {return view.buttons().stream().filter(b->b.text().contains(contains)).findFirst().orElseThrow().data();}
     TelegramCommands.View click(long user,TelegramCommands.View view,String contains) throws Exception {return menu.callback(user,button(view,contains)).view();}
     @Test void personalSettingsOfferOnlyThreePresetsAndAreOwnerBound() throws Exception {

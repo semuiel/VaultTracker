@@ -25,13 +25,15 @@ final class TelegramGuardMenu {
         cancelInput(user);
         if("vg:home".equals(data)) return answer(home(user));
         if("vg:menu".equals(data)) return answer(mainMenu(user));
+        if("vg:resourceSearch".equals(data)) return answer(prompt(user,"resourceSearch","Введите название ресурса на русском или английском. Поиск только по вашим зарегистрированным сундукам."));
         Action a=actions.get(data);
         if(a==null || a.user()!=user) return new TelegramCommands.Callback(null,"Кнопка больше недоступна. Откройте /menu.",true);
         if(Set.of("own","admin","link","time","tagApply","tagReset","rootTime").contains(a.op()) || a.op().startsWith("do:")) actions.remove(data);
         TelegramCommands.View view;
         switch(a.op()) {
             case "link" -> view=new TelegramCommands.View(guard.generate(user).get(),List.of(new TelegramCommands.Button("Обновить кабинет","vg:home")));
-            case "resources" -> {var account=guard.account(user).get();view=account==null ? home(user) : withHome(commands.ownResources(user,account.uuid()));}
+            case "resources" -> {var account=guard.account(user).get();view=account==null ? home(user) : resourceHome(user,account.uuid());}
+            case "resourceResults" -> view=resourceResults(user,a.value(),a.page());
             case "settings" -> view=settings(user,false);
             case "own" -> {guard.toggleOwn(user).get();view=settings(user,false);}
             case "tagApply" -> view=tag(user,true);
@@ -81,6 +83,23 @@ final class TelegramGuardMenu {
             }
         }
         return answer(view);
+    }
+    private TelegramCommands.View resourceHome(long user,UUID owner) {
+        return withHome(commands.ownResources(user,owner));
+    }
+    private TelegramCommands.View resourceResults(long user,String query,int requested) throws Exception {
+        var account=guard.account(user).get();if(account==null) return home(user);
+        BlockKey origin=moderation==null?null:moderation.ownPosition(user,account.uuid()).get();
+        Map<UUID,String> worlds=moderation==null?Map.of():moderation.worldLabels().get();
+        var rows=commands.ownSearch(account.uuid(),query,origin);int pages=Math.max(1,(rows.size()+19)/20),page=Math.max(0,Math.min(requested,pages-1));
+        StringBuilder text=new StringBuilder("🔎 "+query+" · "+(page+1)+"/"+pages+"\n"+(origin==null?"Игрок офлайн: сортировка по миру и координатам.":"Ближайшие сундуки в вашем мире сначала.")+"\n");
+        if(rows.isEmpty()) text.append("Не найдено в ваших зарегистрированных хранилищах.");
+        for(var row:rows.subList(page*20,Math.min(rows.size(),(page+1)*20))) text.append(OwnResourceSearch.line(row,worlds.getOrDefault(row.chest().world(),row.chest().world().toString()))).append('\n');
+        List<TelegramCommands.Button> buttons=new ArrayList<>();
+        if(page>0) buttons.add(b(user,"⬅ Назад","resourceResults",query,page-1,0));
+        if(page+1<pages) buttons.add(b(user,"Вперёд ➡","resourceResults",query,page+1,0));
+        buttons.add(new TelegramCommands.Button("🔎 Другой поиск","vg:resourceSearch",1));
+        buttons.add(b(user,"↩ Мои ресурсы","resources","",0,2));buttons.add(homeButton(3));return new TelegramCommands.View(text.toString(),List.copyOf(buttons));
     }
     private static TelegramCommands.Callback answer(TelegramCommands.View view) {return new TelegramCommands.Callback(navigation(view),"",false);}
     private static TelegramCommands.View navigation(TelegramCommands.View view) {
@@ -183,6 +202,10 @@ final class TelegramGuardMenu {
     }
     private TelegramCommands.View inputValue(long user,String text) throws Exception {
         Input pending=waiting.get(user);if(pending==null) return null;
+        if(pending.kind().equals("resourceSearch")&&pending.expires()>=System.currentTimeMillis()) {
+            String query=text.strip();if(query.isEmpty()||query.length()>64) return new TelegramCommands.View("Введите от 1 до 64 символов.");
+            waiting.remove(user);return resourceResults(user,query,0);
+        }
         if(pending.expires()<System.currentTimeMillis()) {waiting.remove(user);return withHome(new TelegramCommands.View("Время ввода истекло. Откройте настройки снова."));}
         if(pending.kind().startsWith("teleportSearch:")) {guard.requireCapability(user,"teleport");String query=text.trim();if(query.isEmpty()||query.length()>64) return withHome(new TelegramCommands.View("Введите от 1 до 64 символов."));waiting.remove(user);return teleportPlayers(user,pending.kind().substring(15),0,query);}
         if(pending.kind().equals("historySearch")) {

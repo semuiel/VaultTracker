@@ -48,7 +48,7 @@ public final class Catalogue {
                                           List<BlockKey> chests, Map<String, Long> items, long now, int limit) {
         Snapshot existing = vaults.get(sign);
         if (existing != null) throw new IllegalArgumentException("Эта табличка уже зарегистрирована.");
-        if (vaults.values().stream().filter(v -> v.owner().equals(owner)).count() >= limit)
+        if (limit>0 && vaults.values().stream().filter(v -> v.owner().equals(owner)).count() >= limit)
             throw new IllegalArgumentException("Достигнут лимит зарегистрированных сундуков.");
         for (BlockKey chest : chests) if (claims.containsKey(chest))
             throw new IllegalArgumentException("Этот сундук уже учтён другой табличкой.");

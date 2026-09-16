@@ -116,6 +116,10 @@ final class TelegramCommands {
         if(!storage.ready()) return loading();
         return begin(userId,Kind.OWNER,owner.toString(),1);
     }
+    List<OwnResourceSearch.Row> ownSearch(UUID owner,String query,BlockKey origin) {
+        if(!storage.ready()) throw new IllegalStateException("Каталог загружается");
+        return OwnResourceSearch.find(catalogue,owner,query,origin);
+    }
     View totalTop(long userId) {
         if(!storage.ready()) return loading();
         return begin(userId,Kind.TOTAL_TOP,"",1);
@@ -123,7 +127,13 @@ final class TelegramCommands {
     private View render(String token,Session session,int requested) {
         return switch(session.kind()) {
             case PLAYER -> playerPage(token,session.argument(),requested);
-            case OWNER -> ownerPage(token,catalogue.ownerItems(UUID.fromString(session.argument())),requested);
+            case OWNER -> {
+                View view=ownerPage(token,catalogue.ownerItems(UUID.fromString(session.argument())),requested);
+                List<Button> buttons=new ArrayList<>(view.buttons());
+                int row=buttons.stream().mapToInt(Button::row).max().orElse(-1)+1;
+                buttons.add(new Button("🔎 Найти ресурс в сундуках","vg:resourceSearch",row));
+                yield new View(view.text(),List.copyOf(buttons));
+            }
             case TOP -> topPage(token,session.argument(),requested);
             case ITEMS -> allItemsPage(token,requested);
             case TOTAL_TOP -> totalTopPage(token,requested);

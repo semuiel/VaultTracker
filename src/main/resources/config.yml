@@ -11,5 +11,6 @@ database:
   password: ''
 # Вместо пароля в файле можно задать переменную окружения VAULT_DB_PASSWORD.
 update-delay-ticks: 2
-max-vaults-per-player: 100
+# Регистрация хранилищ без ограничений; сохранённый старый лимит не применяется.
+max-vaults-per-player: 0
 # Telegram настраивается отдельно в plugins/VaultTracker/telegram.yml.
