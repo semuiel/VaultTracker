@@ -27,6 +27,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
     private Catalogue catalogue;
     private StorageEngine storage;
     private TelegramBotService telegram;
+    private TelegramChatBridge telegramChat;
     private GuardService guard;
     private final Object telegramLock=new Object();
     private final Set<BlockKey> scheduled = ConcurrentHashMap.newKeySet();
@@ -61,13 +62,16 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
         Objects.requireNonNull(getCommand("topitem")).setTabCompleter(this);
         storage.start(snapshots-> {catalogue.restore(snapshots);guard.restore(snapshots);});
         synchronized(telegramLock) { replaceTelegram(); }
+        if(telegramChat!=null) telegramChat.serverEvent(true);
         getLogger().info("VaultTracker " + getPluginMeta().getVersion() + ": каталог ресурсов. /vtrack help");
     }
     private void ensureTelegramConfig() {
-        java.io.File file=new java.io.File(getDataFolder(),"telegram.yml");
-        if(file.exists()) return;
-        saveResource("telegram.yml",false);
-        getLogger().info("Создан стандартный Telegram-конфиг: "+file.getAbsolutePath());
+        for(String name:List.of("telegram.yml","telegramchat.yml")) {
+            java.io.File file=new java.io.File(getDataFolder(),name);
+            if(file.exists()) continue;
+            saveResource(name,false);
+            getLogger().info("Создан стандартный Telegram-конфиг: "+file.getAbsolutePath());
+        }
     }
     private void applyRuntimeConfig() {
         debounceTicks=Math.max(1,Math.min(20,getConfig().getLong("update-delay-ticks",2)));
@@ -75,12 +79,31 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
     }
     private String replaceTelegram() {
         if(telegram!=null) { telegram.close(); telegram=null; }
+        if(telegramChat!=null) {telegramChat.close();telegramChat=null;}
         try {
-            TelegramConfig telegramConfig=TelegramConfig.load(getDataFolder().toPath());
+            TelegramConfig telegramConfig=TelegramConfig.load(getDataFolder().toPath(),false);
             guard.configure(GuardConfig.load(getDataFolder().toPath()),telegramConfig.adminUserIds());
-            if(!telegramConfig.enabled()) { getLogger().info("Telegram-бот выключен в telegram.yml."); return "Telegram-бот выключен."; }
-            telegram=new TelegramBotService(telegramConfig,catalogue,storage,getLogger(),guard,new TelegramModeration(this,guard)); telegram.start();
-            return "Настройки применены, Telegram-бот перезапущен.";
+            if(telegramConfig.enabled()) {
+                if(telegramConfig.token().matches("[0-9]+:[A-Za-z0-9_-]{20,}")) telegram=new TelegramBotService(telegramConfig,catalogue,storage,getLogger(),guard,new TelegramModeration(this,guard));
+                else getLogger().warning("Каталожный Telegram-бот не запущен: заполните token в telegram.yml. Чат-бот с отдельным токеном может работать независимо.");
+            }
+            String chatStatus="чат выключен";
+            try {
+                TelegramChatConfig chatConfig=TelegramChatConfig.load(getDataFolder().toPath());
+                if(chatConfig.enabled) {
+                    telegramChat=new TelegramChatBridge(this,chatConfig,telegramConfig);
+                    boolean shared=chatConfig.shared(telegramConfig);
+                    if(shared) telegram.chatBridge(telegramChat);
+                    telegramChat.start(shared);chatStatus="чат запущен"+(shared?" с общим токеном":" с отдельным токеном");
+                }
+            } catch(Exception failure) {
+                if(telegramChat!=null) {telegramChat.close();telegramChat=null;}
+                if(telegram!=null) telegram.chatBridge(null);
+                chatStatus="чат не запущен: проверьте telegramchat.yml";
+                getLogger().warning("Telegram-чат не запущен: "+failure.getClass().getSimpleName()+". Проверьте telegramchat.yml и telegramchat-lang.json.");
+            }
+            if(telegram!=null) telegram.start();
+            return "Настройки применены: каталог "+(telegram==null?"выключен":"запущен")+", "+chatStatus+".";
         } catch(Exception e) {
             getLogger().severe("Telegram-бот не запущен: "+e.getMessage()+". Учёт хранилищ продолжает работать.");
             return "Настройки плагина применены, но Telegram-бот не запущен: "+e.getMessage();
@@ -381,7 +404,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
     @Override public void onDisable() {
         stopping=true;
         getServer().getGlobalRegionScheduler().cancelTasks(this);
-        synchronized(telegramLock) { if(telegram!=null) { telegram.close(); telegram=null; } }
+        synchronized(telegramLock) { if(telegram!=null) { telegram.close(); telegram=null; } if(telegramChat!=null) {telegramChat.shutdown();telegramChat=null;} }
         if (storage != null) storage.close();
         if (guard != null) guard.close();
     }

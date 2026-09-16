@@ -18,6 +18,9 @@ record TelegramConfig(boolean enabled, String token, Set<Long> allowedChatIds, S
     record Chat(boolean isDefault,long chatId,int topicId) {}
 
     static TelegramConfig load(Path dataFolder) throws IOException {
+        return load(dataFolder,true);
+    }
+    static TelegramConfig load(Path dataFolder,boolean validateToken) throws IOException {
         Files.createDirectories(dataFolder);
         Path path=dataFolder.resolve("telegram.yml");
         if(!Files.exists(path)) try(InputStream input=TelegramConfig.class.getResourceAsStream("/telegram.yml")) {
@@ -27,7 +30,7 @@ record TelegramConfig(boolean enabled, String token, Set<Long> allowedChatIds, S
         YamlConfiguration y=YamlConfiguration.loadConfiguration(path.toFile());
         boolean enabled=y.getBoolean("enabled",false);
         String token=secret(y.getString("token",""),"VAULT_TELEGRAM_TOKEN");
-        if(enabled && !token.matches("[0-9]+:[A-Za-z0-9_-]{20,}"))
+        if(enabled && validateToken && !token.matches("[0-9]+:[A-Za-z0-9_-]{20,}"))
             throw new IllegalArgumentException("В telegram.yml не задан корректный token");
         Set<Long> allowed=new LinkedHashSet<>();
         for(Object value:list(y,"allowedChatIds","allowed-chat-ids")) try { allowed.add(Long.parseLong(value.toString())); }

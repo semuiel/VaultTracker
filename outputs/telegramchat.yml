@@ -1,0 +1,136 @@
+# Мост Minecraft ↔ Telegram. Полностью отдельные настройки от telegram.yml.
+# После изменений: /vtrack reload. Старые файлы автоматически не перезаписываются.
+# Сначала заполните token и chat.chatId, затем включите модуль.
+enabled: false
+
+# Токен из @BotFather. Можно использовать отдельного бота или токен из telegram.yml.
+# При одинаковом токене VaultTracker сам использует один приёмник обновлений.
+# Другой плагин (например tgbridge) с ЭТИМ ЖЕ токеном нужно отключить.
+# Альтернатива файлу: переменная окружения VAULT_TELEGRAM_CHAT_TOKEN.
+token: ""
+
+# Прокси здесь не задаются: используются telegram-proxies.txt и advanced.proxy
+# из telegram.yml, включая перебор прокси. Каталожного бота можно выключить.
+chat:
+  # ID группы (отрицательный, обычно начинается с -100).
+  chatId: 0
+  # ID темы форума. Для обычной группы или основной темы: 0.
+  topicId: 0
+  # Каждое направление можно отключить отдельно.
+  minecraftToTelegram: true
+  telegramToMinecraft: true
+
+messages:
+  # Пустая строка отправляет все игровые сообщения. Если нужен отдельный
+  # канал чата, укажите префикс, например "!" или специальный символ U+E000.
+  requirePrefixInMinecraft: ""
+  keepPrefix: false
+  # Объединять сообщения Minecraft → Telegram за указанное число секунд.
+  # 0 — без объединения; максимум 30. Достижения объединением чата не затрагиваются.
+  mergeWindowSeconds: 5
+  # false — отображаемое имя из игрового чата; true — настоящий игровой ник.
+  useRealUsername: false
+  # Telegram → Minecraft: пересылать подписи и текстовые обозначения медиа.
+  # Изображения и файлы не загружаются на сервер.
+  mediaLabels: true
+  # Telegram-уведомления без звука для пересылаемого чата.
+  silent: false
+
+advancements:
+  enabled: true
+  # Независимый чат/тема для достижений, например тема флуда.
+  # При enabled: true обязательно заполните chatId, как и для chat выше.
+  chatId: 0
+  topicId: 0
+  task: true
+  goal: true
+  challenge: true
+  showDescription: false
+  silent: false
+  # Переводы ванильных достижений берутся из встроенного ru_ru.json.
+  # Дополнительно можно создать telegramchat-lang.json с переводами ключей
+  # Minecraft для нестандартных достижений. Существующий файл не перезаписывается.
+
+list:
+  enabled: true
+  # /list и /list@имя_бота работают в теме чата и в теме достижений.
+  # Один игрок — одна строка; до 20 игроков на странице одного сообщения.
+  # Кнопки перелистывают это же сообщение. Через это число секунд оно удаляется.
+  messageLifetimeSeconds: 300
+  useRealUsername: true
+  silent: false
+  dimensions:
+    # Тип измерения определяется сервером, а не именем папки мира.
+    # emoji — обычный смайлик и обязательная замена для customEmojiId.
+    # customEmojiId — числовой Telegram custom_emoji_id, В КАВЫЧКАХ.
+    # Пустая строка отключает кастомный эмодзи.
+    # По правилам Telegram для кастомных эмодзи нужен Premium владельца бота
+    # либо дополнительное имя бота Fragment; ограничения определяет Telegram.
+    # Если Telegram явно отклонит кастомные эмодзи, бот отправит обычные.
+    overworld:
+      emoji: "🌍"
+      customEmojiId: ""
+    nether:
+      emoji: "🔥"
+      customEmojiId: ""
+    end:
+      emoji: "🌌"
+      customEmojiId: ""
+    other:
+      emoji: "❓"
+      customEmojiId: ""
+
+# Остальные события по умолчанию выключены, как в приложенном tgbridge.
+# Отправляются в chat.chatId/chat.topicId; можно включить по отдельности.
+events:
+  join: false
+  firstJoinOnly: false
+  leave: false
+  death: false
+  serverStart: false
+  serverStop: false
+  silent: true
+
+advanced:
+  # Адрес Telegram API для чат-модуля. Обычно менять не нужно.
+  botApiUrl: "https://api.telegram.org"
+  # Длительность одного ожидания обновлений (5–50 секунд).
+  # При ОБЩЕМ токене обновления получает каталог с его настройками опроса.
+  pollTimeoutSeconds: 30
+  connectionRetry:
+    # Бесконечное восстановление. Задержки в миллисекундах.
+    initialDelay: 1000
+    maxDelay: 300000
+
+formats:
+  # Telegram: HTML (<b>, <i>, <code>...), НЕ Markdown и НЕ MiniMessage.
+  # Данные игроков и сообщения автоматически экранируются.
+  # В любом шаблоне Telegram можно использовать
+  # <tg-emoji emoji-id="ЧИСЛОВОЙ_ID">🙂</tg-emoji>.
+  # minecraftChat: {username}, {text}. Имя следует messages.useRealUsername.
+  minecraftChat: "<b>[{username}]</b> {text}"
+  # Minecraft: MiniMessage. {sender} и {text} вставляются как безопасный текст.
+  # Внешний отправитель не может внедрять команды/кликабельные теги.
+  telegramChat: "<aqua>[TG] {sender}</aqua> {text}"
+  # Список: заголовок {count}, {page}, {pages}; строка {emoji}, {name},
+  # {username} (настоящий ник), {world}, {number} (порядковый номер).
+  listHeader: "📝 <b>Вот они слева направо:</b> · {count} онлайн · {page}/{pages}"
+  listRow: "{emoji} {name}"
+  listEmpty: "<b>Идеальное время для захвата мира. Никакой конкуренции.😉</b>"
+  # Достижения: {username}, {title}, {description}. Описание добавляется
+  # только при showDescription: true; в остальных случаях оно пустое.
+  advancementTask: "😼 <b>{username} получил достижение {title}</b>\n{description}"
+  advancementGoal: "🎯 <b>{username} достиг цели {title}</b>\n{description}"
+  advancementChallenge: "🏅 <b>{username} завершил испытание {title}</b>\n{description}"
+  join: "🥳 <b>{username} вошёл в игру</b>"
+  firstJoin: "🥳 <b>{username} впервые вошёл в игру</b>"
+  leave: "😕 <b>{username} вышел из игры</b>"
+  death: "☠️ {text}"
+  serverStart: "✅ <b>Сервер запущен!</b>"
+  serverStop: "❌ <b>Сервер остановлен!</b>"
+
+# Мост читает сообщения только указанной темы. Для Telegram → Minecraft
+# отключите Privacy Mode у бота в @BotFather или выдайте права администратора.
+# /list доступен всем участникам обеих настроенных тем. Команды из Telegram не исполняются.
+# Очередь исходящих сообщений ограничена 1000 записями / 10 минутами.
+# Она хранится в памяти: перезапуск очищает её. Сбой Telegram не блокирует игру.

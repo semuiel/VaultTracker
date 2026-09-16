@@ -18,6 +18,7 @@ final class RussianItems {
         } catch (IOException e) { throw new IllegalStateException("Cannot load Russian translations",e); }
     }
     static boolean block(String material) {return TRANSLATIONS.containsKey("block.minecraft."+material.toLowerCase(Locale.ROOT));}
+    static String translation(String key) {return TRANSLATIONS.getOrDefault(key,key);}
     static String name(String material) {
         String key = material.toLowerCase(Locale.ROOT);
         return TRANSLATIONS.getOrDefault("item.minecraft."+key,TRANSLATIONS.getOrDefault("block.minecraft."+key,material));

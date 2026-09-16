@@ -10,9 +10,14 @@ import java.time.Duration;
 import java.util.*;
 
 final class TelegramApi implements AutoCloseable {
-    private static final class ApiError extends IOException {ApiError(String message) {super(message);}}
+    private static final class ApiError extends IOException {
+        final int code;
+        ApiError(int code,String message) {super(message);this.code=code;}
+    }
+    static boolean permanentFailure(Throwable failure) {return failure instanceof ApiError error && error.code>=400 && error.code<500 && error.code!=429;}
     record Incoming(long updateId,long chatId,int topicId,long userId,int messageId,String text,
-                    String callbackId,String callbackData,boolean privateChat,String profile) {
+                    String callbackId,String callbackData,boolean privateChat,String profile,boolean senderBot,boolean media) {
+        Incoming(long updateId,long chatId,int topicId,long userId,int messageId,String text,String callbackId,String callbackData,boolean privateChat,String profile) {this(updateId,chatId,topicId,userId,messageId,text,callbackId,callbackData,privateChat,profile,false,false);}
         Incoming(long updateId,long chatId,int topicId,long userId,int messageId,String text,String callbackId,String callbackData,boolean privateChat) {this(updateId,chatId,topicId,userId,messageId,text,callbackId,callbackData,privateChat,"");}
         Incoming(long updateId,long chatId,int topicId,long userId,int messageId,String text,
                  String callbackId,String callbackData) {
@@ -73,6 +78,10 @@ final class TelegramApi implements AutoCloseable {
     private static JsonObject command(String name,String description) {
         JsonObject value=new JsonObject(); value.addProperty("command",name); value.addProperty("description",description); return value;
     }
+    void registerChatCommands(boolean catalogue) throws IOException {
+        JsonArray commands=new JsonArray();if(catalogue) commands.add(command("item","Поиск ресурсов и игроков"));commands.add(command("list","Игроки онлайн и их измерения"));
+        JsonObject body=new JsonObject(),scope=new JsonObject();scope.addProperty("type","all_group_chats");body.add("scope",scope);body.add("commands",commands);call("setMyCommands",body);
+    }
     List<Incoming> updates(long offset) throws IOException {
         JsonObject body=new JsonObject(); body.addProperty("offset",offset); body.addProperty("timeout",config.pollTimeoutSeconds());
         body.addProperty("limit",50); JsonArray allowed=new JsonArray(); allowed.add("message"); allowed.add("callback_query"); body.add("allowed_updates",allowed);
@@ -100,8 +109,14 @@ final class TelegramApi implements AutoCloseable {
     private static Incoming incomingMessage(long updateId,JsonObject message) {
         return new Incoming(updateId,message.getAsJsonObject("chat").get("id").getAsLong(),
                 message.has("message_thread_id") ? message.get("message_thread_id").getAsInt() : 0,
-                userId(message),message.get("message_id").getAsInt(),message.has("text") ? message.get("text").getAsString() : null,
-                null,null,isPrivate(message),profile(message));
+                userId(message),message.get("message_id").getAsInt(),messageText(message),
+                null,null,isPrivate(message),profile(message),message.has("from") && message.getAsJsonObject("from").has("is_bot") && message.getAsJsonObject("from").get("is_bot").getAsBoolean(),!message.has("text"));
+    }
+    private static String messageText(JsonObject message) {
+        if(message.has("text")) return message.get("text").getAsString();
+        String label=null;
+        for(String type:List.of("photo","video","animation","document","audio","voice","video_note","sticker","poll")) if(message.has(type)) {label=switch(type){case "photo"->"[Фото]";case "video"->"[Видео]";case "animation"->"[GIF]";case "document"->"[Документ]";case "audio"->"[Аудио]";case "voice"->"[Голосовое сообщение]";case "video_note"->"[Видеосообщение]";case "sticker"->"[Стикер]";default->"[Опрос]";};break;}
+        return label==null?null:label+(message.has("caption")?" "+message.get("caption").getAsString():"");
     }
     private static String profile(JsonObject object) {
         if(!object.has("from")) return "";JsonObject from=object.getAsJsonObject("from");List<String> parts=new ArrayList<>();
@@ -120,6 +135,28 @@ final class TelegramApi implements AutoCloseable {
         JsonObject body=messageBody(chatId,view);
         if(topicId>0) body.addProperty("message_thread_id",topicId);
         return call("sendMessage",body).getAsJsonObject("result").get("message_id").getAsInt();
+    }
+    int sendHtml(long chatId,int topicId,String html,boolean silent) throws IOException {
+        return sendHtml(chatId,topicId,html,silent,List.of());
+    }
+    int sendHtml(long chatId,int topicId,String html,boolean silent,List<TelegramCommands.Button> buttons) throws IOException {
+        JsonObject body=new JsonObject();body.addProperty("chat_id",chatId);if(topicId>0) body.addProperty("message_thread_id",topicId);
+        body.addProperty("text",html);body.addProperty("parse_mode","HTML");body.addProperty("disable_notification",silent);body.addProperty("disable_web_page_preview",true);
+        addKeyboard(body,buttons);
+        try {return call("sendMessage",body).getAsJsonObject("result").get("message_id").getAsInt();} catch(ApiError e) {
+            String plainEmoji=TelegramChatFormat.withoutCustomEmoji(html);
+            if(plainEmoji.equals(html) || e.code!=400) throw e;
+            body.addProperty("text",plainEmoji);return call("sendMessage",body).getAsJsonObject("result").get("message_id").getAsInt();
+        }
+    }
+    void editHtml(long chatId,int messageId,String html,List<TelegramCommands.Button> buttons) throws IOException {
+        JsonObject body=new JsonObject();body.addProperty("chat_id",chatId);body.addProperty("message_id",messageId);
+        body.addProperty("text",html);body.addProperty("parse_mode","HTML");body.addProperty("disable_web_page_preview",true);addKeyboard(body,buttons);
+        try {call("editMessageText",body);} catch(ApiError e) {
+            String plainEmoji=TelegramChatFormat.withoutCustomEmoji(html);
+            if(plainEmoji.equals(html) || e.code!=400) {if(!benignCallbackError(e)) throw e;return;}
+            body.addProperty("text",plainEmoji);try {call("editMessageText",body);} catch(IOException retry) {if(!benignCallbackError(retry)) throw retry;}
+        }
     }
     void edit(long chatId,int messageId,TelegramCommands.View view) throws IOException {
         JsonObject body=messageBody(chatId,view); body.addProperty("message_id",messageId);
@@ -168,10 +205,14 @@ final class TelegramApi implements AutoCloseable {
     static JsonObject messageBody(long chatId,TelegramCommands.View view) {
         JsonObject body=new JsonObject(); body.addProperty("chat_id",chatId); body.addProperty("text",view.text());
         body.addProperty("disable_web_page_preview",true);
+        addKeyboard(body,view.buttons());
+        return body;
+    }
+    private static void addKeyboard(JsonObject body,List<TelegramCommands.Button> buttons) {
         JsonArray keyboard=new JsonArray();
-        if(!view.buttons().isEmpty()) {
+        if(!buttons.isEmpty()) {
             JsonArray row=null; int rowNumber=-1;
-            for(var button:view.buttons()) {
+            for(var button:buttons) {
                 if(row==null || button.row()!=rowNumber) {
                     row=new JsonArray(); keyboard.add(row); rowNumber=button.row();
                 }
@@ -179,7 +220,6 @@ final class TelegramApi implements AutoCloseable {
             }
         }
         JsonObject markup=new JsonObject(); markup.add("inline_keyboard",keyboard); body.add("reply_markup",markup);
-        return body;
     }
     private JsonObject call(String method,JsonObject body) throws IOException {
         Request request=new Request.Builder().url(baseUrl+method).post(RequestBody.create(gson.toJson(body),JSON)).build();
@@ -189,7 +229,7 @@ final class TelegramApi implements AutoCloseable {
             try { json=JsonParser.parseString(raw).getAsJsonObject(); }
             catch(RuntimeException e) { throw new IOException("Telegram вернул некорректный ответ (HTTP "+response.code()+")"); }
             if(!response.isSuccessful() || !json.has("ok") || !json.get("ok").getAsBoolean())
-                throw new ApiError("Telegram API: "+(json.has("description") ? json.get("description").getAsString() : "HTTP "+response.code()));
+                throw new ApiError(json.has("error_code")?json.get("error_code").getAsInt():response.code(),"Telegram API: "+(json.has("description") ? json.get("description").getAsString() : "HTTP "+response.code()));
             return json;
         } catch(IOException failure) {
             if(failure instanceof ApiError) throw failure;

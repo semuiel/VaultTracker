@@ -14,6 +14,7 @@ final class TelegramBotService implements AutoCloseable {
     private final ScheduledExecutorService notifications=Executors.newSingleThreadScheduledExecutor(
             r->Thread.ofVirtual().name("VaultTracker-guard-notify").unstarted(r));
     private String username;
+    private TelegramChatBridge chatBridge;
     private static final Set<String> COMMANDS=Set.of("/start","/help","/id","/status","/items","/item","/topitem","/itemtop");
     private static final Set<String> PRIVATE_COMMANDS=Set.of("/menu","/search","/cancel");
     private final AtomicBoolean stopping=new AtomicBoolean(); private final Thread worker;
@@ -34,13 +35,16 @@ final class TelegramBotService implements AutoCloseable {
         worker=Thread.ofVirtual().name("VaultTracker-telegram").unstarted(this::run);
     }
     void start() { worker.start(); }
+    void chatBridge(TelegramChatBridge bridge) {chatBridge=bridge;}
     private boolean isAdmin(long user) {return guard==null ? config.admin(user) : guard.admin(user);}
     private void run() {
         int failures=0; long offset=TelegramApi.loadOffset(config.offsetFile()); boolean initialized=false;
         while(!stopping.get()) {
             try {
                 if(!initialized) {
-                    username=api.verify(); api.registerCommands(); initialized=true; failures=0;
+                    username=api.verify(); api.registerCommands();
+                    if(chatBridge!=null) {chatBridge.username(username);api.registerChatCommands(true);}
+                    initialized=true; failures=0;
                     if(guard!=null) notifications.scheduleWithFixedDelay(this::notifyGuard,2,2,TimeUnit.SECONDS);
                     log.info("Telegram-бот @"+username+" запущен внутри VaultTracker.");
                     if(config.chats().isEmpty() && config.allowedChatIds().isEmpty()) log.warning("chats и allowedChatIds пусты: Telegram-каталог доступен всем пользователям бота.");
@@ -76,6 +80,8 @@ final class TelegramBotService implements AutoCloseable {
         return Math.min(config.retry().maxDelay(),config.retry().initialDelay()*multiplier);
     }
     private void process(TelegramApi.Incoming update) throws Exception {
+        if(chatBridge!=null && chatBridge.consume(update)) return;
+        if(update.media()) return;
         if(guard!=null) guard.rememberTelegram(update.userId(),update.profile());
         if(update.callback()) {
             if(update.privateChat()) {
