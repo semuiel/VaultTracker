@@ -28,7 +28,7 @@ final class TelegramBotService implements AutoCloseable {
     TelegramBotService(TelegramConfig config,Catalogue catalogue,StorageEngine storage,Logger log,GuardService guard,TelegramModeration moderation) {
         this.config=config; this.api=new TelegramApi(config); this.commands=new TelegramCommands(catalogue,storage,config.pageSize()); this.log=log;
         this.privateMenu=new TelegramPrivateMenu(catalogue,storage,commands,config.pageSize());
-        this.guard=guard;this.guardMenu=guard==null ? null : new TelegramGuardMenu(guard,commands,moderation,new TelegramTagManager(config,api));
+        this.guard=guard;this.guardMenu=guard==null ? null : new TelegramGuardMenu(guard,commands,moderation,new TelegramTagManager(config,api),api);
         privateMenu.guard(guard);
         commands.adminAccess(this::isAdmin);
         worker=Thread.ofVirtual().name("VaultTracker-telegram").unstarted(this::run);
@@ -58,8 +58,7 @@ final class TelegramBotService implements AutoCloseable {
             } catch(Exception e) {
                 if(stopping.get() || Thread.currentThread().isInterrupted()) break;
                 failures++; log.warning("Telegram недоступен: "+api.safe(e)+"; повтор подключения запланирован.");
-                int maximum=config.retry().maxAttempts();
-                if(maximum>0 && failures>=maximum) { log.severe("Telegram-бот остановлен после "+failures+" неудачных попыток. Перезапустите сервер после исправления telegram.yml."); break; }
+                failures=Math.min(failures,31); // Telegram retries forever; game storage has its own workers.
                 try { Thread.sleep(delay(failures)); } catch(InterruptedException interrupted) { Thread.currentThread().interrupt(); break; }
             }
         }
@@ -77,6 +76,7 @@ final class TelegramBotService implements AutoCloseable {
         return Math.min(config.retry().maxDelay(),config.retry().initialDelay()*multiplier);
     }
     private void process(TelegramApi.Incoming update) throws Exception {
+        if(guard!=null) guard.rememberTelegram(update.userId(),update.profile());
         if(update.callback()) {
             if(update.privateChat()) {
                 if(guardMenu!=null) guardMenu.cancelInput(update.userId());
@@ -125,7 +125,7 @@ final class TelegramBotService implements AutoCloseable {
             TelegramCommands.View view=null;
             if(guardMenu!=null && !isCommand(update.text())) view=guardMenu.input(update.userId(),update.text());
             if(view==null && guardMenu!=null && Set.of("/start","/menu","/cancel").contains(TelegramCommands.command(update.text()))) {
-                privateMenu.leave(update.userId(),update.chatId(),update.topicId());view=guardMenu.home(update.userId());
+                privateMenu.leave(update.userId(),update.chatId(),update.topicId());view=guardMenu.mainMenu(update.userId());
             }
             if(view==null) view=privateMenu.handle(update.userId(),update.chatId(),update.topicId(),update.text(),isAdmin(update.userId()));
             if(view!=null) api.send(update.chatId(),update.topicId(),view);

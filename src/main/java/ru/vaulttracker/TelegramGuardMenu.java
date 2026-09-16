@@ -4,6 +4,7 @@ import java.util.*;
 
 /** Private cabinet. Permissions are checked on every read and confirmed action. */
 final class TelegramGuardMenu {
+    private static final int PAGE_SIZE=TelegramConfig.LIST_PAGE_SIZE;
     private record Action(long user,String op,String value,int page,long createdAt) {}
     private record Input(String kind,long expires) {}
     private final Map<String,Action> actions=new HashMap<>();
@@ -12,15 +13,18 @@ final class TelegramGuardMenu {
     private final TelegramCommands commands;
     private final TelegramModeration moderation;
     private final TelegramTagManager tags;
+    private final TelegramApi api;
     TelegramGuardMenu(GuardService guard,TelegramCommands commands) {this(guard,commands,null,null);}
     TelegramGuardMenu(GuardService guard,TelegramCommands commands,TelegramModeration moderation) {this(guard,commands,moderation,null);}
-    TelegramGuardMenu(GuardService guard,TelegramCommands commands,TelegramModeration moderation,TelegramTagManager tags) {
-        this.guard=guard;this.commands=commands;this.moderation=moderation;this.tags=tags;
+    TelegramGuardMenu(GuardService guard,TelegramCommands commands,TelegramModeration moderation,TelegramTagManager tags) {this(guard,commands,moderation,tags,null);}
+    TelegramGuardMenu(GuardService guard,TelegramCommands commands,TelegramModeration moderation,TelegramTagManager tags,TelegramApi api) {
+        this.guard=guard;this.commands=commands;this.moderation=moderation;this.tags=tags;this.api=api;
     }
 
     TelegramCommands.Callback callback(long user,String data) throws Exception {
         cancelInput(user);
         if("vg:home".equals(data)) return answer(home(user));
+        if("vg:menu".equals(data)) return answer(mainMenu(user));
         Action a=actions.get(data);
         if(a==null || a.user()!=user) return new TelegramCommands.Callback(null,"Кнопка больше недоступна. Откройте /menu.",true);
         if(Set.of("own","admin","link","time","tagApply","tagReset","rootTime").contains(a.op()) || a.op().startsWith("do:")) actions.remove(data);
@@ -40,21 +44,27 @@ final class TelegramGuardMenu {
             case "history" -> view=history(user,a.page(),false);
             case "historySearch" -> {guard.requireAdmin(user);view=prompt(user,"historySearch","Отправьте часть ника владельца/участника, название предмета, координаты или номер события.");}
             case "historyFiltered" -> view=history(user,a.page(),false,a.value());
-            case "customNumber" -> {guard.requireSuper(user);view=prompt(user,"number:"+a.value(),"Отправьте своё значение от 0.1 до 20. Например: 1.25. 1 — стандартное значение.");}
-            case "teleportCoords" -> {guard.requireSuper(user);view=prompt(user,"coords:"+a.value(),"Отправьте x y z, например: 223 200 1004. Используется текущий мир перемещаемого игрока.");}
-            case "teleportPlayers" -> view=teleportPlayers(user,a.value(),a.page());
+            case "customNumber" -> {guard.requireCapability(user,a.value().split("\\|",2)[0]);view=prompt(user,"number:"+a.value(),"Отправьте своё значение от 0.1 до 20. Например: 1.25. 1 — стандартное значение.");}
+            case "teleportCoords" -> {guard.requireCapability(user,"teleportCoords");view=prompt(user,"coords:"+a.value(),"Отправьте x y z, например: 223 200 1004. Используется текущий мир перемещаемого игрока.");}
+            case "teleportPlayers" -> {String[] parts=a.value().split("\\|",2);view=teleportPlayers(user,parts[0],a.page(),parts.length>1?parts[1]:"");}
+            case "teleportSearch" -> {guard.requireCapability(user,"teleport");view=prompt(user,"teleportSearch:"+a.value(),"Отправьте часть ника игрока назначения.");}
             case "ownHistory" -> view=history(user,a.page(),true);
             case "event" -> view=detail(user,Long.parseLong(a.value()),a.page(),false);
             case "ownEvent" -> view=detail(user,Long.parseLong(a.value()),a.page(),true);
             case "superHome" -> view=superHome(user);
-            case "admins" -> view=admins(user,a.page());
+            case "admins" -> view=admins(user,a.page(),a.value());
+            case "searchAdmins" -> {guard.requireSuper(user);view=prompt(user,"adminSearch","Отправьте часть имени, @тега, Telegram ID или игрового ника администратора.");}
+            case "capabilities" -> view=capabilities(user);
+            case "toggleCapability" -> {guard.requireSuper(user);guard.capability(user,a.value(),!guard.capability(a.value())).get();view=capabilities(user);}
             case "addAdmin" -> {guard.requireSuper(user);view=prompt(user,"addAdmin","Отправьте Telegram ID нового администратора (положительное число).");}
-            case "chat" -> {guard.requireSuper(user);view=prompt(user,"chat","Отправьте текст для игрового чата: одна строка, до 500 символов. Перед отправкой будет подтверждение.");}
+            case "addSuper" -> {guard.requireSuper(user);view=prompt(user,"addSuper","Отправьте Telegram ID нового супер администратора. Он получит все права управления сервером.");}
+            case "removeSuper" -> {guard.requireSuper(user);view=prompt(user,"removeSuper","Отправьте Telegram ID супер администратора, которого нужно удалить.");}
+            case "chat" -> {guard.requireCapability(user,"chat");view=prompt(user,"chat","Отправьте текст для игрового чата: одна строка, до 500 символов. Перед отправкой будет подтверждение.");}
             case "rootSettings" -> view=settings(user,true);
             case "rootTime" -> {guard.superDelay(user,Long.parseLong(a.value())).get();view=settings(user,true);}
             case "rootCustom" -> {guard.requireSuper(user);view=prompt(user,"rootTime","Отправьте число секунд от 0 до 31536000 для ваших администраторских уведомлений.");}
-            case "players" -> {guard.requireSuper(user);view=new TelegramCommands.View("Список игроков",List.of(b(user,"🟢 Онлайн","browse:online","",0,0),b(user,"👥 Все","browse:all","",0,1),homeButton(2)));}
-            case "searchPlayers" -> {guard.requireSuper(user);view=prompt(user,"playerSearch:"+a.value(),"Отправьте часть ника игрока для поиска.");}
+            case "players" -> view=players(user,"online",0);
+            case "searchPlayers" -> {guard.requireAdmin(user);view=prompt(user,"playerSearch:"+a.value(),"Отправьте часть ника игрока для поиска.");}
             default -> {
                 if(a.op().startsWith("browse:")) view=players(user,a.op().substring(7),a.page());
                 else if(a.op().startsWith("browseSearch:")) view=players(user,a.op().substring(13),a.page(),a.value());
@@ -72,7 +82,16 @@ final class TelegramGuardMenu {
         }
         return answer(view);
     }
-    private static TelegramCommands.Callback answer(TelegramCommands.View view) {return new TelegramCommands.Callback(view,"",false);}
+    private static TelegramCommands.Callback answer(TelegramCommands.View view) {return new TelegramCommands.Callback(navigation(view),"",false);}
+    private static TelegramCommands.View navigation(TelegramCommands.View view) {
+        if(view==null || view.buttons().stream().anyMatch(b->b.data().equals("vg:menu")) || view.text().equals("Главное меню")) return view;
+        return withHome(view);
+    }
+    TelegramCommands.View mainMenu(long user) {
+        cancelInput(user);
+        actions.entrySet().removeIf(e->e.getValue().user()==user && e.getValue().op().startsWith("do:"));
+        return new TelegramCommands.View("Главное меню",List.of(new TelegramCommands.Button("🔎 Поиск","vg:search",0),new TelegramCommands.Button("👤 Личный кабинет","vg:home",1)));
+    }
     TelegramCommands.View home(long user) throws Exception {
         cancelInput(user);
         actions.entrySet().removeIf(e->e.getValue().user()==user && e.getValue().op().startsWith("do:"));
@@ -82,25 +101,25 @@ final class TelegramGuardMenu {
         else {
             buttons.add(b(user,"📦 Мои ресурсы","resources","",0,0));
             buttons.add(b(user,"📜 Мои события · 2 дня","ownHistory","",0,1));
-            buttons.add(b(user,"⚙️ Настройки","settings","",0,2));
+            buttons.add(b(user,"⚙️ Настройки игрока","settings","",0,2));
         }
         if(guard.admin(user)) {
-            buttons.add(b(user,"🛠 Настройки администратора","adminHome","",0,3));
-            buttons.add(b(user,"🗂 События администраторов · 30 дней","history","",0,4));
+            buttons.add(b(user,"🛠 Функции администратора","adminHome","",0,3));
         }
         if(guard.superAdmin(user)) buttons.add(b(user,"👑 Супер администратор","superHome","",0,5));
-        buttons.add(new TelegramCommands.Button("🔎 Поиск","vg:search",6));
+        buttons.add(homeButton(6));
         if(!guard.enabled()) text+="\nОхрана отключена в guard.yml.";
         return new TelegramCommands.View(text,List.copyOf(buttons));
     }
     private TelegramCommands.View adminHome(long user) throws Exception {
-        guard.requireAdmin(user);boolean on=guard.adminAlerts(user).get();
-        return new TelegramCommands.View("🛠 Настройки администратора\nУведомления администратора: "+(on ? "включены" : "выключены"),List.of(
-                b(user,(on ? "🔔 Отключить" : "🔕 Включить")+" уведомления администратора","admin","",0,0),
-                b(user,"⏳ Временный бан · 5 минут","banMenu","",0,1),b(user,"🚪 Кикнуть игрока","browse:kick","",0,2),homeButton(3)));
+        guard.requireAdmin(user);boolean on=guard.adminAlerts(user).get();List<TelegramCommands.Button> buttons=new ArrayList<>();
+        buttons.add(b(user,(on ? "🔔 Отключить" : "🔕 Включить")+" уведомления администратора","admin","",0,0));
+        buttons.add(b(user,"👥 Список игроков","browse:online","",0,1));
+        buttons.add(b(user,"🗂 События администраторов","history","",0,2));
+        buttons.add(new TelegramCommands.Button("↩ Назад","vg:home",3));buttons.add(homeButton(4));return new TelegramCommands.View("🛠 Функции администратора\nУведомления администратора: "+(on ? "включены" : "выключены"),List.copyOf(buttons));
     }
     private TelegramCommands.View banMenu(long user) {
-        guard.requireAdmin(user);
+        guard.requireCapability(user,"ban");
         return new TelegramCommands.View("⏳ Временный бан · 5 минут\nКаких игроков показать?",List.of(
                 b(user,"🟢 Игроки онлайн","browse:banOnline","",0,0),
                 b(user,"👥 Все игроки","browse:banAll","",0,1),
@@ -109,31 +128,37 @@ final class TelegramGuardMenu {
     private TelegramCommands.View superHome(long user) {
         guard.requireSuper(user);
         return new TelegramCommands.View("👑 Супер администратор",List.of(
-                b(user,"➕ Добавить администратора","addAdmin","",0,0),b(user,"👮 Список администраторов / удалить","admins","",0,1),
-                b(user,"👥 Список игроков","players","",0,2),b(user,"⛔ Забаненные / разбан","browse:banned","",0,3),
-                b(user,"💬 Сообщение в игровой чат","chat","",0,4),b(user,"⏱ Мой срок админских уведомлений","rootSettings","",0,5),homeButton(6)));
+                b(user,"👮 Администраторы бота","admins","",0,0),
+                b(user,"👥 Список игроков","browse:online","",0,1),
+                b(user,"⏱ Личный срок админских супер уведомлений","rootSettings","",0,2),new TelegramCommands.Button("↩ Назад","vg:home",3),homeButton(4)));
+    }
+    private TelegramCommands.View capabilities(long user) {
+        guard.requireSuper(user);List<TelegramCommands.Button> buttons=new ArrayList<>();int row=0;
+        Map<String,String> labels=Map.ofEntries(Map.entry("ban","Бан на 5 минут"),Map.entry("kick","Кик"),Map.entry("players","Список игроков"),Map.entry("inventory","Инвентарь"),Map.entry("ender","Эндер-сундук"),Map.entry("unban","Разбан"),Map.entry("heal","Лечение"),Map.entry("kill","Убийство"),Map.entry("repair","Ремонт предметов"),Map.entry("scale","Размер игрока"),Map.entry("flySpeed","Скорость полёта"),Map.entry("walkSpeed","Скорость движения"),Map.entry("teleport","Телепорт к игроку"),Map.entry("teleportCoords","Телепорт на координаты"),Map.entry("luckPerms","LuckPerms admin"),Map.entry("op","Выдать OP"),Map.entry("deop","Забрать OP"),Map.entry("chat","Игровой чат"),Map.entry("manageAdmins","Управление администраторами"));
+        for(String capability:GuardService.ADMIN_CAPABILITIES) {boolean enabled=guard.capability(capability);buttons.add(b(user,(enabled?"✅ ":"❌ ")+labels.get(capability),"toggleCapability",capability,0,row++));}
+        buttons.add(b(user,"↩ Администраторы бота","admins","",0,row++));buttons.add(homeButton(row));
+        return new TelegramCommands.View("🧩 Возможности обычных администраторов\nУведомления доступны всегда и здесь не отключаются.",List.copyOf(buttons));
     }
     private TelegramCommands.View settings(long user,boolean root) throws Exception {
         if(root) guard.requireSuper(user);else if(guard.account(user).get()==null) return home(user);
         Long personal=root ? Long.valueOf(guard.superDelay(user)) : guard.offlineSeconds(user).get();
         String text=(root ? "👑 Ваши администраторские уведомления" : "⚙️ Настройки игрока")+"\nВремя отсутствия: "+duration(personal==null ? guard.defaultOfflineSeconds() : personal)+(personal==null ? " (по настройке сервера)" : " (личное)")
-                +"\nВремя отсчитывается от выхода из игры. «В том числе в игре» включает сообщения и во время игры.";
+                +"\n«Всегда» — в том числе во время игры. «После выхода» — сразу после выхода. «2 дня» — после двух дней отсутствия.";
         List<TelegramCommands.Button> buttons=new ArrayList<>();int row=0;
         if(!root) {
             boolean on=guard.account(user).get().notifications(),tag=guard.tag(user,false).get();
-            text+="\nВаши уведомления: "+(on ? "включены" : "выключены")+"\nTelegram-тег: "+(tag ? "успешно применён во всех настроенных чатах" : "сброшен, ещё не применялся или применился не во всех чатах")+".";
+            text+="\nВаши уведомления: "+(on ? "включены" : "выключены")+".";
             buttons.add(b(user,(on ? "🔔 Отключить" : "🔕 Включить")+" мои уведомления","own","",0,row++));
         }
-        long[] values={-1,0,120,300,900,3600,21600,86400,172800,604800};
-        for(long value:values) buttons.add(b(user,duration(value),root ? "rootTime" : "time",Long.toString(value),0,row++));
-        buttons.add(b(user,"✏️ Своё время",root ? "rootCustom" : "custom","",0,row++));
-        buttons.add(b(user,"Как на сервере",root ? "rootTime" : "time","-2",0,row++));
+        long[] values=root ? new long[]{-1,0,120,300,900,3600,21600,86400,172800,604800} : new long[]{-1,0,172800};
+        for(long value:values) buttons.add(b(user,!root?(value<0?"Всегда":value==0?"После выхода":"2 дня"):duration(value),root ? "rootTime" : "time",Long.toString(value),0,row++));
+        if(root) {buttons.add(b(user,"✏️ Своё время","rootCustom","",0,row++));buttons.add(b(user,"Как на сервере","rootTime","-2",0,row++));}
         if(!root) {
             String nickname=guard.account(user).get().name();
             buttons.add(b(user,"🏷 Применить тег «"+nickname+"»","tagApply","",0,row++));
             buttons.add(b(user,"♻️ Сбросить тег","tagReset","",0,row++));
         }
-        buttons.add(homeButton(row));return new TelegramCommands.View(text,List.copyOf(buttons));
+        buttons.add(root?b(user,"↩ Назад","superHome","",0,row++):new TelegramCommands.Button("↩ Назад","vg:home",row++));buttons.add(homeButton(row));return new TelegramCommands.View(text,List.copyOf(buttons));
     }
     private TelegramCommands.View tag(long user,boolean apply) throws Exception {
         var account=guard.account(user).get();
@@ -144,7 +169,7 @@ final class TelegramGuardMenu {
         return new TelegramCommands.View(result.text(),List.of(b(user,"⚙️ Назад в настройки","settings","",0,0),homeButton(1)));
     }
     private static String duration(long seconds) {
-        if(seconds<0) return "В том числе в игре";if(seconds==0) return "Сразу после выхода";
+        if(seconds<0) return "Всегда";if(seconds==0) return "Сразу после выхода";
         if(seconds%86400==0) return seconds/86400+" дн.";if(seconds%3600==0) return seconds/3600+" ч.";
         if(seconds%60==0) return seconds/60+" мин.";return seconds+" сек.";
     }
@@ -154,39 +179,52 @@ final class TelegramGuardMenu {
         return withHome(new TelegramCommands.View(text+"\nВвод действует 10 минут. Отмена: /cancel."));
     }
     TelegramCommands.View input(long user,String text) throws Exception {
+        return navigation(inputValue(user,text));
+    }
+    private TelegramCommands.View inputValue(long user,String text) throws Exception {
         Input pending=waiting.get(user);if(pending==null) return null;
         if(pending.expires()<System.currentTimeMillis()) {waiting.remove(user);return withHome(new TelegramCommands.View("Время ввода истекло. Откройте настройки снова."));}
+        if(pending.kind().startsWith("teleportSearch:")) {guard.requireCapability(user,"teleport");String query=text.trim();if(query.isEmpty()||query.length()>64) return withHome(new TelegramCommands.View("Введите от 1 до 64 символов."));waiting.remove(user);return teleportPlayers(user,pending.kind().substring(15),0,query);}
         if(pending.kind().equals("historySearch")) {
             guard.requireAdmin(user);String query=text.trim();
             if(query.isEmpty() || query.length()>100) return new TelegramCommands.View("Введите запрос от 1 до 100 символов. Отмена: /cancel.");
             waiting.remove(user);return history(user,0,false,query);
         }
+        if(pending.kind().equals("adminSearch")) {guard.requireSuper(user);String query=text.trim();if(query.isBlank()||query.length()>64) return new TelegramCommands.View("Введите часть имени длиной от 1 до 64 символов.");waiting.remove(user);return admins(user,0,query);}
         if(pending.kind().startsWith("number:")) {
-            guard.requireSuper(user);double value;
+            String capability=pending.kind().substring(7).split("\\|",2)[0];guard.requireCapability(user,capability);double value;
             try {value=Double.parseDouble(text.trim().replace(',','.'));if(!Double.isFinite(value) || value<0.1 || value>20) throw new NumberFormatException();}
             catch(NumberFormatException e) {return new TelegramCommands.View("Введите число от 0.1 до 20. Например: 1.25. Отмена: /cancel.");}
             String[] parts=pending.kind().substring(7).split("\\|",2);waiting.remove(user);return confirm(user,parts[0],parts[1]+"|"+value);
         }
         if(pending.kind().startsWith("coords:")) {
-            guard.requireSuper(user);
+            guard.requireCapability(user,"teleportCoords");
             try {TelegramModeration.coordinates(text);} catch(IllegalArgumentException e) {return new TelegramCommands.View(e.getMessage()+" Отмена: /cancel.");}
             waiting.remove(user);return confirm(user,"teleportCoords",pending.kind().substring(7)+"|"+text.trim());
         }
         if(pending.kind().startsWith("playerSearch:")) {
-            guard.requireSuper(user);String query=text==null ? "" : text.trim();
+            guard.requireAdmin(user);String query=text==null ? "" : text.trim();
             if(query.isBlank() || query.length()>64) return withHome(new TelegramCommands.View("Введите часть ника длиной от 1 до 64 символов."));
             String mode=pending.kind().substring("playerSearch:".length());
-            if(!Set.of("online","all","banned","kick","banOnline","banAll").contains(mode)) {waiting.remove(user);return home(user);}
+            if(!Set.of("online","all","offline","banned","kick","banOnline","banAll").contains(mode)) {waiting.remove(user);return home(user);}
             waiting.remove(user);return players(user,mode,0,query);
         }
         if(pending.kind().equals("chat")) {
-            guard.requireSuper(user);if(text.isBlank() || text.length()>500 || text.contains("\n") || text.contains("\r")) return withHome(new TelegramCommands.View("Нужна одна строка до 500 символов."));
+            guard.requireCapability(user,"chat");if(text.isBlank() || text.length()>500 || text.contains("\n") || text.contains("\r")) return withHome(new TelegramCommands.View("Нужна одна строка до 500 символов."));
             waiting.remove(user);return confirm(user,"chat",text);
         }
         long value;
-        try {value=Long.parseLong(text.trim());if(value<0 || (!pending.kind().equals("addAdmin") && value>GuardService.MAX_OFFLINE_SECONDS)) throw new NumberFormatException();}
-        catch(NumberFormatException e) {return new TelegramCommands.View("Введите целое число"+(pending.kind().equals("addAdmin") ? " Telegram ID." : " секунд от 0 до 31536000.")+" Отмена: /cancel.");}
+        boolean roleInput=Set.of("addAdmin","addSuper","removeSuper").contains(pending.kind());
+        try {value=Long.parseLong(text.trim());if(value<0 || (!roleInput && value>GuardService.MAX_OFFLINE_SECONDS)) throw new NumberFormatException();}
+        catch(NumberFormatException e) {return new TelegramCommands.View(roleInput?"Введите положительное целое число Telegram ID. Отмена: /cancel.":"Введите целое число секунд от 0 до 31536000. Отмена: /cancel.");}
         if(pending.kind().equals("addAdmin")) {guard.requireSuper(user);if(value==0) return new TelegramCommands.View("Telegram ID должен быть больше 0.");waiting.remove(user);return confirm(user,"addAdmin",Long.toString(value));}
+        if(pending.kind().equals("addSuper")) {guard.requireSuper(user);if(value==0) return new TelegramCommands.View("Telegram ID должен быть больше 0.");waiting.remove(user);return confirm(user,"addSuper",Long.toString(value));}
+        if(pending.kind().equals("removeSuper")) {
+            guard.requireSuper(user);
+            if(value==0 || !guard.superAdmin(value)) return new TelegramCommands.View("Супер администратор с таким Telegram ID не найден. Введите другой ID.");
+            if(!guard.canRemoveSuper(user,value)) return new TelegramCommands.View("Основного супер администратора и собственную роль удалить нельзя. Введите другой ID.");
+            waiting.remove(user);return confirm(user,"removeSuper",Long.toString(value));
+        }
         if(pending.kind().equals("rootTime")) guard.superDelay(user,value).get();else guard.offlineSeconds(user,value).get();
         waiting.remove(user);return settings(user,pending.kind().equals("rootTime"));
     }
@@ -201,56 +239,67 @@ final class TelegramGuardMenu {
         if(page>0) buttons.add(b(user,"◀ Назад",op,filter,page-1,6));
         if(events.size()==6) buttons.add(b(user,"Вперёд ▶",op,filter,page+1,6));
         if(!own) {buttons.add(b(user,"🔎 Поиск событий","historySearch","",0,7));if(!filter.isBlank()) {text+="\nПоиск: "+filter;buttons.add(b(user,"Сбросить поиск","history","",0,8));}}
-        buttons.add(homeButton(9));return new TelegramCommands.View(text,List.copyOf(buttons));
+        buttons.add(own?new TelegramCommands.Button("↩ Назад","vg:home",9):b(user,"↩ Назад","adminHome","",0,9));buttons.add(homeButton(10));return new TelegramCommands.View(text,List.copyOf(buttons));
     }
     private TelegramCommands.View detail(long user,long id,int page,boolean own) throws Exception {
         var event=own ? guard.ownEvent(user,id).get() : guard.event(user,id).get();
         if(event==null) return withHome(new TelegramCommands.View("Событие недоступно или срок хранения истёк."));
-        int pages=Math.max(1,(event.changes().size()+7)/8);page=Math.max(0,Math.min(page,pages-1));List<TelegramCommands.Button> buttons=new ArrayList<>();
+        int pages=Math.max(1,(event.changes().size()+PAGE_SIZE-1)/PAGE_SIZE);page=Math.max(0,Math.min(page,pages-1));List<TelegramCommands.Button> buttons=new ArrayList<>();
         if(page>0) buttons.add(b(user,"◀ Назад",own ? "ownEvent" : "event",Long.toString(id),page-1,0));
         if(page+1<pages) buttons.add(b(user,"Вперёд ▶",own ? "ownEvent" : "event",Long.toString(id),page+1,0));
         buttons.add(b(user,"📜 История",own ? "ownHistory" : "history","",0,1));buttons.add(homeButton(2));
-        return new TelegramCommands.View("Событие #"+id+" • "+(page+1)+"/"+pages+"\n"+GuardService.eventText(event,page*8,8,!own),List.copyOf(buttons));
+        return new TelegramCommands.View("Событие #"+id+" • "+(page+1)+"/"+pages+"\n"+GuardService.eventText(event,page*PAGE_SIZE,PAGE_SIZE,!own),List.copyOf(buttons));
     }
-    private TelegramCommands.View admins(long user,int page) {
-        guard.requireSuper(user);var ids=guard.adminIds().stream().sorted().toList();List<TelegramCommands.Button> buttons=new ArrayList<>();
-        for(int i=page*6;i<Math.min(ids.size(),page*6+6);i++) {
-            long id=ids.get(i);if(guard.superAdmin(id)) continue;
-            buttons.add(b(user,"Убрать администратора "+id,"confirm:removeAdmin",Long.toString(id),0,i-page*6));
+    private TelegramCommands.View admins(long user,int page,String filter) {
+        guard.requireSuper(user);var ids=guard.adminIds().stream().sorted().toList();List<String> labels=new ArrayList<>();
+        for(long id:ids) {String telegram=guard.telegramProfile(id);String game="не привязан";try {var account=guard.account(id).get();if(account!=null) game=account.name();} catch(Exception ignored) {}labels.add(game+" · "+telegram+" · ID "+id+(guard.superAdmin(id)?" · 👑":""));}
+        if(filter!=null && !filter.isBlank()) {String needle=searchKey(filter);List<Long> filteredIds=new ArrayList<>();List<String> filteredLabels=new ArrayList<>();for(int i=0;i<ids.size();i++) if(searchKey(labels.get(i)).contains(needle)) {filteredIds.add(ids.get(i));filteredLabels.add(labels.get(i));}ids=List.copyOf(filteredIds);labels=List.copyOf(filteredLabels);}
+        page=Math.max(0,Math.min(page,Math.max(0,(ids.size()-1)/PAGE_SIZE)));List<TelegramCommands.Button> buttons=new ArrayList<>();
+        for(int i=page*PAGE_SIZE;i<Math.min(ids.size(),page*PAGE_SIZE+PAGE_SIZE);i++) {
+            long id=ids.get(i);buttons.add(b(user,labels.get(i),guard.superAdmin(id)?"confirm:removeSuper":"confirm:removeAdmin",Long.toString(id),0,i-page*PAGE_SIZE));
         }
-        if(page>0) buttons.add(b(user,"◀ Назад","admins","",page-1,6));if((page+1)*6<ids.size()) buttons.add(b(user,"Вперёд ▶","admins","",page+1,6));
-        buttons.add(homeButton(7));return new TelegramCommands.View("Администраторов (включая супер администратора): "+ids.size()+"\nСупер администратор: "+user+"\nВыберите ID для удаления.",List.copyOf(buttons));
+        if(page>0) buttons.add(b(user,"◀ Назад","admins",filter,page-1,PAGE_SIZE));if((page+1)*PAGE_SIZE<ids.size()) buttons.add(b(user,"Вперёд ▶","admins",filter,page+1,PAGE_SIZE));
+        buttons.add(b(user,"🔎 Поиск","searchAdmins","",0,PAGE_SIZE+1));buttons.add(b(user,"➕ Добавить администратора","addAdmin","",0,PAGE_SIZE+2));buttons.add(b(user,"👑 Добавить супер администратора","addSuper","",0,PAGE_SIZE+3));buttons.add(b(user,"❌ Удалить супер администратора","removeSuper","",0,PAGE_SIZE+4));buttons.add(b(user,"🧩 Возможности администратора","capabilities","",0,PAGE_SIZE+5));buttons.add(b(user,"↩ Назад","superHome","",0,PAGE_SIZE+6));buttons.add(homeButton(PAGE_SIZE+7));return new TelegramCommands.View("👮 Администраторы бота · страница "+(page+1)+" · всего "+ids.size()+(filter==null||filter.isBlank()?"":"\nПоиск: "+filter),List.copyOf(buttons));
     }
     private TelegramCommands.View players(long user,String mode,int page) throws Exception { return players(user,mode,page,""); }
     private TelegramCommands.View players(long user,String mode,int page,String filter) throws Exception {
-        guard.requireAdmin(user);if(Set.of("online","all","banned").contains(mode)) guard.requireSuper(user);
+        if(mode.equals("kick")) guard.requireCapability(user,"kick");
+        else if(mode.equals("banOnline") || mode.equals("banAll")) guard.requireCapability(user,"ban");
+        else if(mode.equals("banned")) guard.requireCapability(user,"unban");
+        else if(Set.of("online","all","offline").contains(mode)) requirePlayerAccess(user);
+        else guard.requireAdmin(user);
         if(moderation==null) return withHome(new TelegramCommands.View("Управление сервером недоступно."));
-        String source=switch(mode) {case "kick","banOnline" -> "online";case "banAll" -> "all";default -> mode;};
+        String source=switch(mode) {case "kick","banOnline" -> "online";case "banAll","offline" -> "all";default -> mode;};
         String operation=Set.of("banOnline","banAll").contains(mode) ? "ban" : mode;
-        var people=moderation.players(user,source).get();
+        var people=moderation.players(user,source).get();if(mode.equals("offline")) people=people.stream().filter(p->!p.online()).toList();
         if(!filter.isBlank()) {String needle=searchKey(filter);people=people.stream().filter(p->searchKey(p.name()).contains(needle)).toList();}
+        page=Math.max(0,Math.min(page,Math.max(0,(people.size()-1)/PAGE_SIZE)));
         List<TelegramCommands.Button> buttons=new ArrayList<>();
-        for(int i=page*6;i<Math.min(people.size(),page*6+6);i++) {var p=people.get(i);buttons.add(b(user,(p.online() ? "🟢 " : "👤 ")+p.name(),Set.of("ban","kick").contains(operation) ? "confirm:"+operation : "person",p.uuid().toString(),0,i-page*6));}
+        for(int i=page*PAGE_SIZE;i<Math.min(people.size(),page*PAGE_SIZE+PAGE_SIZE);i++) {var p=people.get(i);buttons.add(b(user,(p.online() ? "🟢 " : "👤 ")+p.name(),Set.of("ban","kick").contains(operation) ? "confirm:"+operation : "person",p.uuid().toString(),0,i-page*PAGE_SIZE));}
         String pageOp=filter.isBlank() ? "browse:"+mode : "browseSearch:"+mode;
-        if(page>0) buttons.add(b(user,"◀ Назад",pageOp,filter,page-1,6));if((page+1)*6<people.size()) buttons.add(b(user,"Вперёд ▶",pageOp,filter,page+1,6));
-        if(Set.of("banOnline","banAll").contains(mode)) buttons.add(b(user,"↩ Выбор списка","banMenu","",0,7));
-        buttons.add(b(user,"🔎 Поиск","searchPlayers",mode,0,8));buttons.add(homeButton(9));
+        if(page>0) buttons.add(b(user,"◀ Назад",pageOp,filter,page-1,PAGE_SIZE));if((page+1)*PAGE_SIZE<people.size()) buttons.add(b(user,"Вперёд ▶",pageOp,filter,page+1,PAGE_SIZE));
+        if(Set.of("banOnline","banAll").contains(mode)) buttons.add(b(user,"↩ Выбор списка","banMenu","",0,PAGE_SIZE+1));
+        if(mode.equals("online")) buttons.add(b(user,"👤 Игроки офлайн","browse:offline","",0,PAGE_SIZE+1));
+        if(mode.equals("offline")) buttons.add(b(user,"🟢 Игроки онлайн","browse:online","",0,PAGE_SIZE+1));
+        buttons.add(b(user,"🔎 Поиск","searchPlayers",mode,0,PAGE_SIZE+2));buttons.add(b(user,"↩ Назад",guard.superAdmin(user)?"superHome":"adminHome","",0,PAGE_SIZE+3));buttons.add(homeButton(PAGE_SIZE+4));
         String title=mode.equals("banOnline") ? "Игроки онлайн" : mode.equals("banAll") ? "Все игроки" : "Игроки";
         if(!filter.isBlank()) title+=" • поиск «"+filter.trim()+"»";
         return new TelegramCommands.View(title+" • страница "+(page+1)+" • всего "+people.size(),List.copyOf(buttons));
     }
     private static String searchKey(String value) {return value.toLowerCase(Locale.ROOT).replace('ё','е').replace('_',' ').replace('-',' ').trim().replaceAll("\\s+"," ");}
+    private boolean allowed(long user,String capability) {return guard.superAdmin(user)||guard.capability(capability);}
+    private boolean hasPlayerTools(long user) {return guard.superAdmin(user)||GuardService.ADMIN_CAPABILITIES.stream().filter(c->!Set.of("chat","manageAdmins").contains(c)).anyMatch(guard::capability);}
+    private void requirePlayerAccess(long user) {
+        guard.requireAdmin(user);
+    }
+    private boolean hasDirectPlayerActions(long user) {
+        return guard.superAdmin(user)||List.of("ban","kick","unban","heal","kill","repair","scale","flySpeed","walkSpeed","teleport","op").stream().anyMatch(guard::capability);
+    }
     private TelegramCommands.View person(long user,UUID uuid) throws Exception {
-        guard.requireSuper(user);var p=moderation.info(user,uuid).get();String id=uuid.toString();
-        var adminFuture=moderation.adminGroup(user,uuid);
-        boolean admin=adminFuture!=null && Boolean.TRUE.equals(adminFuture.get());
-        return new TelegramCommands.View("👤 "+p.name()+"\n"+p.details(),List.of(
-                b(user,(admin ? "❌ Забрать" : "✅ Выдать")+" группу LuckPerms admin","confirm:toggleLp",id,0,0),
-                b(user,"🎒 Инвентарь","inventory",id+"|main",0,1),b(user,"🧰 Эндер-сундук","inventory",id+"|ender",0,2),
-                b(user,"🛠 Действия игрока","playerActions",id,0,3),homeButton(4)));
+        return playerActions(user,uuid);
     }
     private TelegramCommands.View inventory(long user,UUID uuid,boolean ender,int page) throws Exception {
-        guard.requireSuper(user);List<TelegramModeration.ItemView> items;
+        guard.requireCapability(user,ender?"ender":"inventory");List<TelegramModeration.ItemView> items;
         try {items=moderation.inventory(user,uuid,ender).get();}
         catch(java.util.concurrent.ExecutionException e) {
             Throwable cause=e;while(cause.getCause()!=null) cause=cause.getCause();
@@ -260,18 +309,18 @@ final class TelegramGuardMenu {
         String title=ender ? "🧰 Эндер-сундук" : "🎒 Инвентарь";
         var info=moderation.info(user,uuid).get();if(info!=null && !info.online()) title+=" · офлайн, последнее сохранение";
         if(items.isEmpty()) return new TelegramCommands.View(title+"\nИнвентарь пуст.",List.of(b(user,"↩ Карточка игрока","person",uuid.toString(),0,0),homeButton(1)));
-        int pages=Math.max(1,(items.size()+7)/8);page=Math.max(0,Math.min(page,pages-1));List<TelegramCommands.Button> buttons=new ArrayList<>();StringBuilder text=new StringBuilder(title+" • страница "+(page+1)+"/"+pages+"\n");
-        for(int i=page*8;i<Math.min(items.size(),page*8+8);i++) {var item=items.get(i);text.append(item.label()).append(": ").append(item.amount()).append(" шт.\n");if(item.shulker()) buttons.add(b(user,item.label()+" · открыть","shulker",uuid+"|"+(ender?"ender":"main")+"|"+i,0,buttons.size()));}
-        if(page>0) buttons.add(b(user,"◀ Назад","inventory",uuid+"|"+(ender?"ender":"main"),page-1,8));if(page+1<pages) buttons.add(b(user,"Вперёд ▶","inventory",uuid+"|"+(ender?"ender":"main"),page+1,8));
-        buttons.add(b(user,"↩ Карточка игрока","person",uuid.toString(),0,9));buttons.add(homeButton(10));return new TelegramCommands.View(text.toString().stripTrailing(),List.copyOf(buttons));
+        int pages=Math.max(1,(items.size()+PAGE_SIZE-1)/PAGE_SIZE);page=Math.max(0,Math.min(page,pages-1));List<TelegramCommands.Button> buttons=new ArrayList<>();StringBuilder text=new StringBuilder(title+" • страница "+(page+1)+"/"+pages+"\n");
+        for(int i=page*PAGE_SIZE;i<Math.min(items.size(),page*PAGE_SIZE+PAGE_SIZE);i++) {var item=items.get(i);text.append(item.label()).append(": ").append(item.amount()).append(" шт.\n");if(item.shulker()) buttons.add(b(user,item.label()+" · открыть","shulker",uuid+"|"+(ender?"ender":"main")+"|"+i,0,buttons.size()));}
+        if(page>0) buttons.add(b(user,"◀ Назад","inventory",uuid+"|"+(ender?"ender":"main"),page-1,PAGE_SIZE));if(page+1<pages) buttons.add(b(user,"Вперёд ▶","inventory",uuid+"|"+(ender?"ender":"main"),page+1,PAGE_SIZE));
+        buttons.add(b(user,"↩ Карточка игрока","person",uuid.toString(),0,PAGE_SIZE+1));buttons.add(homeButton(PAGE_SIZE+2));return new TelegramCommands.View(text.toString().stripTrailing(),List.copyOf(buttons));
     }
     private TelegramCommands.View shulker(long user,UUID uuid,boolean ender,String path,int page) throws Exception {
         var items=moderation.inventory(user,uuid,ender).get();String title="📦 Содержимое шалкера";
         var container=itemAt(items,path);
         if(container==null || !container.shulker()) return inventory(user,uuid,ender,0);
-        var nested=container.contents();int pages=Math.max(1,(nested.size()+7)/8);page=Math.max(0,Math.min(page,pages-1));List<TelegramCommands.Button> buttons=new ArrayList<>();StringBuilder text=new StringBuilder(title+" • страница "+(page+1)+"/"+pages+"\n");
-        if(nested.isEmpty()) text.append("Шалкер пуст."); else for(int i=page*8;i<Math.min(nested.size(),page*8+8);i++) {var item=nested.get(i);text.append(item.label()).append(": ").append(item.amount()).append(" шт.\n");if(item.shulker()) buttons.add(b(user,item.label()+" · открыть","shulker",uuid+"|"+(ender?"ender":"main")+"|"+path+"."+i,0,buttons.size()));}
-        String mode=ender?"ender":"main";if(page>0) buttons.add(b(user,"◀ Назад","shulker",uuid+"|"+mode+"|"+path,page-1,8));if(page+1<pages) buttons.add(b(user,"Вперёд ▶","shulker",uuid+"|"+mode+"|"+path,page+1,8));buttons.add(b(user,"↩ К инвентарю","inventory",uuid+"|"+mode,0,9));buttons.add(homeButton(10));return new TelegramCommands.View(text.toString().stripTrailing(),List.copyOf(buttons));
+        var nested=container.contents();int pages=Math.max(1,(nested.size()+PAGE_SIZE-1)/PAGE_SIZE);page=Math.max(0,Math.min(page,pages-1));List<TelegramCommands.Button> buttons=new ArrayList<>();StringBuilder text=new StringBuilder(title+" • страница "+(page+1)+"/"+pages+"\n");
+        if(nested.isEmpty()) text.append("Шалкер пуст."); else for(int i=page*PAGE_SIZE;i<Math.min(nested.size(),page*PAGE_SIZE+PAGE_SIZE);i++) {var item=nested.get(i);text.append(item.label()).append(": ").append(item.amount()).append(" шт.\n");if(item.shulker()) buttons.add(b(user,item.label()+" · открыть","shulker",uuid+"|"+(ender?"ender":"main")+"|"+path+"."+i,0,buttons.size()));}
+        String mode=ender?"ender":"main";if(page>0) buttons.add(b(user,"◀ Назад","shulker",uuid+"|"+mode+"|"+path,page-1,PAGE_SIZE));if(page+1<pages) buttons.add(b(user,"Вперёд ▶","shulker",uuid+"|"+mode+"|"+path,page+1,PAGE_SIZE));buttons.add(b(user,"↩ К инвентарю","inventory",uuid+"|"+mode,0,PAGE_SIZE+1));buttons.add(homeButton(PAGE_SIZE+2));return new TelegramCommands.View(text.toString().stripTrailing(),List.copyOf(buttons));
     }
     private static TelegramModeration.ItemView itemAt(List<TelegramModeration.ItemView> items,String path) {
         if(path==null || path.isBlank()) return null;
@@ -283,34 +332,41 @@ final class TelegramGuardMenu {
         return result;
     }
     private TelegramCommands.View playerActions(long user,UUID uuid) throws Exception {
-        guard.requireSuper(user);String id=uuid.toString();
-        return new TelegramCommands.View("🛠 Действия игрока",List.of(
-                b(user,"⏳ Бан на 5 минут","confirm:ban",id,0,0),b(user,"🚪 Кик","confirm:kick",id,0,1),
-                b(user,"🔓 Разбан","confirm:unban",id,0,2),b(user,"💚 Вылечить игрока","confirm:heal",id,0,3),
-                b(user,"☠️ Убить игрока","confirm:kill",id,0,4),b(user,"🔧 Починить предметы","confirm:repair",id,0,5),
-                b(user,"📏 Размер персонажа","scaleMenu",id,0,6),b(user,"✈️ Скорость полёта","flySpeedMenu",id,0,7),
-                b(user,"🏃 Скорость передвижения","walkSpeedMenu",id,0,8),
-                b(user,"📍 Телепортировать к игроку","teleportPlayers",id,0,9),b(user,"📍 Телепортировать на координаты","teleportCoords",id,0,10),
-                b(user,"↩ Карточка игрока","person",id,0,11),homeButton(12)));
+        requirePlayerAccess(user);String id=uuid.toString();List<TelegramCommands.Button> buttons=new ArrayList<>();int row=0;
+        var p=moderation.info(user,uuid).get();
+        if(allowed(user,"inventory")) buttons.add(b(user,"🎒 Инвентарь","inventory",id+"|main",0,row++));
+        if(allowed(user,"ender")) buttons.add(b(user,"🧰 Эндер-сундук","inventory",id+"|ender",0,row++));
+        if(allowed(user,"ban")) buttons.add(b(user,"⏳ Бан на 5 минут","confirm:ban",id,0,row++));if(allowed(user,"kick")) buttons.add(b(user,"🚪 Кик","confirm:kick",id,0,row++));if(allowed(user,"unban")) buttons.add(b(user,"🔓 Разбан","confirm:unban",id,0,row++));
+        if(allowed(user,"heal")) buttons.add(b(user,"💚 Вылечить игрока","confirm:heal",id,0,row++));if(allowed(user,"kill")) buttons.add(b(user,"☠️ Убить игрока","confirm:kill",id,0,row++));if(allowed(user,"repair")) buttons.add(b(user,"🔧 Починить предметы","confirm:repair",id,0,row++));
+        if(allowed(user,"scale")) buttons.add(b(user,"📏 Размер персонажа","scaleMenu",id,0,row++));if(allowed(user,"flySpeed")) buttons.add(b(user,"✈️ Скорость полёта","flySpeedMenu",id,0,row++));if(allowed(user,"walkSpeed")) buttons.add(b(user,"🏃 Скорость передвижения","walkSpeedMenu",id,0,row++));
+        if(allowed(user,"teleport")) buttons.add(b(user,"📍 Телепортировать к игроку","teleportPlayers",id,0,row++));
+        if(allowed(user,"teleportCoords")) buttons.add(b(user,"📍 Телепортировать на координаты","teleportCoords",id,0,row++));
+        if(allowed(user,"chat")) buttons.add(b(user,"💬 Отправить сообщение в игровой чат","chat","",0,row++));
+        if(allowed(user,"luckPerms")) {boolean admin=Boolean.TRUE.equals(moderation.adminGroup(user,uuid).get());buttons.add(b(user,(admin?"❌ Забрать":"✅ Выдать")+" группу admin в LP","confirm:toggleLp",id,0,row++));}
+        if(allowed(user,"op")) buttons.add(b(user,"⭐ Выдать OP","confirm:op",id,0,row++));
+        if(allowed(user,"deop")) buttons.add(b(user,"☆ Забрать OP","confirm:deop",id,0,row++));
+        buttons.add(b(user,"↩ Назад к игрокам","browse:"+(p.online()?"online":"offline"),"",0,row++));buttons.add(homeButton(row));return new TelegramCommands.View("👤 "+p.name()+"\n"+p.details()+"\n\nДействия игрока",List.copyOf(buttons));
     }
-    private TelegramCommands.View teleportPlayers(long user,String source,int page) throws Exception {
-        guard.requireSuper(user);var people=moderation.players(user,"online").get().stream().filter(p->!p.uuid().toString().equals(source)).toList();
+    private TelegramCommands.View teleportPlayers(long user,String source,int page,String filter) throws Exception {
+        guard.requireCapability(user,"teleport");var people=moderation.players(user,"online").get().stream().filter(p->!p.uuid().toString().equals(source)).toList();
+        if(!filter.isBlank()) people=people.stream().filter(p->searchKey(p.name()).contains(searchKey(filter))).toList();
+        page=Math.max(0,Math.min(page,Math.max(0,(people.size()-1)/PAGE_SIZE)));
         List<TelegramCommands.Button> buttons=new ArrayList<>();
-        for(int i=page*6;i<Math.min(people.size(),page*6+6);i++) {var p=people.get(i);buttons.add(b(user,p.name(),"confirm:teleportPlayer",source+"|"+p.uuid(),0,i-page*6));}
-        if(page>0) buttons.add(b(user,"◀ Назад","teleportPlayers",source,page-1,6));
-        if((page+1)*6<people.size()) buttons.add(b(user,"Вперёд ▶","teleportPlayers",source,page+1,6));
-        buttons.add(b(user,"↩ Действия игрока","playerActions",source,0,7));buttons.add(homeButton(8));
+        for(int i=page*PAGE_SIZE;i<Math.min(people.size(),page*PAGE_SIZE+PAGE_SIZE);i++) {var p=people.get(i);buttons.add(b(user,p.name(),"confirm:teleportPlayer",source+"|"+p.uuid(),0,i-page*PAGE_SIZE));}
+        if(page>0) buttons.add(b(user,"◀ Назад","teleportPlayers",source+"|"+filter,page-1,PAGE_SIZE));
+        if((page+1)*PAGE_SIZE<people.size()) buttons.add(b(user,"Вперёд ▶","teleportPlayers",source+"|"+filter,page+1,PAGE_SIZE));
+        buttons.add(b(user,"🔎 Поиск","teleportSearch",source,0,PAGE_SIZE+1));buttons.add(b(user,"↩ Действия игрока","playerActions",source,0,PAGE_SIZE+2));buttons.add(homeButton(PAGE_SIZE+3));
         return new TelegramCommands.View("К какому игроку телепортировать?"+(people.isEmpty()?"\nДругих игроков онлайн нет.":""),List.copyOf(buttons));
     }
     private TelegramCommands.View scaleMenu(long user,UUID uuid) {
-        guard.requireSuper(user);String id=uuid.toString();double[] values={0.1,0.5,0.65,0.75,0.85,1,1.5,2,5,10,15,20};List<TelegramCommands.Button> buttons=new ArrayList<>();
+        guard.requireCapability(user,"scale");String id=uuid.toString();double[] values={0.1,0.5,0.65,0.75,0.85,1,1.5,2,5,10,15,20};List<TelegramCommands.Button> buttons=new ArrayList<>();
         for(int i=0;i<values.length;i++) buttons.add(b(user,"📏 "+values[i],"confirm:scale",id+"|"+values[i],0,i/2));
         buttons.add(b(user,"✏️ Своё значение","customNumber","scale|"+id,0,6));
         buttons.add(b(user,"↩ Действия игрока","playerActions",id,0,7));buttons.add(homeButton(7));
         return new TelegramCommands.View("📏 Установить размер персонажа",List.copyOf(buttons));
     }
     private TelegramCommands.View speedMenu(long user,UUID uuid,String kind) {
-        guard.requireSuper(user);String id=uuid.toString();double[] values={0.1,0.5,0.65,0.75,0.85,1,1.5,2,5,10,15,20};
+        guard.requireCapability(user,kind.equals("fly")?"flySpeed":"walkSpeed");String id=uuid.toString();double[] values={0.1,0.5,0.65,0.75,0.85,1,1.5,2,5,10,15,20};
         String title=kind.equals("fly") ? "✈️ Скорость полёта" : "🏃 Скорость передвижения";
         List<TelegramCommands.Button> buttons=new ArrayList<>();
         for(int i=0;i<values.length;i++) {double value=values[i];String label=title+" "+value+(value==1.0 ? " (по умолчанию)" : "");buttons.add(b(user,label,"confirm:"+(kind.equals("fly")?"flySpeed":"walkSpeed"),id+"|"+value,0,i/2));}
@@ -321,7 +377,8 @@ final class TelegramGuardMenu {
     }
     private TelegramCommands.View confirm(long user,String operation,String value) throws Exception {
         actions.entrySet().removeIf(e->e.getValue().user()==user && e.getValue().op().startsWith("do:"));
-        if(Set.of("ban","kick").contains(operation)) guard.requireAdmin(user);else guard.requireSuper(user);
+        requireOperation(user,operation);
+        if(Set.of("addSuper","removeSuper").contains(operation)) return new TelegramCommands.View((operation.equals("addSuper")?"Выдать все права супер администратора":"Удалить супер администратора")+"\nTelegram ID: "+value,List.of(b(user,"✅ Подтвердить","do:"+operation,value,0,0),b(user,"↩ Назад","admins","",0,1),homeButton(2)));
         if(operation.equals("teleportPlayer") || operation.equals("teleportCoords")) {
             String[] parts=value.split("\\|",2);String source=moderation.info(user,UUID.fromString(parts[0])).get().name();
             String destination=operation.equals("teleportPlayer")?moderation.info(user,UUID.fromString(parts[1])).get().name():parts[1]+" (текущий мир игрока)";
@@ -329,14 +386,16 @@ final class TelegramGuardMenu {
         }
         String target=value;
         String lookup=(operation.equals("scale") || operation.equals("flySpeed") || operation.equals("walkSpeed")) ? value.substring(0,value.indexOf('|')) : value;
-        if(Set.of("ban","kick","unban","toggleLp","heal","kill","repair","scale","flySpeed","walkSpeed","addLp","removeLp").contains(operation)) target=moderation.info(user,UUID.fromString(lookup)).get().name()+"\nUUID: "+lookup;
-        String label=switch(operation) {case "ban" -> "Бан на 5 минут: пока идёт расследование";case "kick" -> "Кик: пока идёт расследование";case "unban" -> "Снять бан";case "toggleLp" -> "Изменить группу LuckPerms admin";case "addLp" -> "Выдать группу LuckPerms admin";case "removeLp" -> "Удалить группу LuckPerms admin";case "heal" -> "Вылечить игрока";case "kill" -> "Убить игрока";case "repair" -> "Починить предметы";case "scale" -> "Установить размер "+value.substring(value.indexOf('|')+1);case "flySpeed" -> "Установить скорость полёта "+value.substring(value.indexOf('|')+1)+"x";case "walkSpeed" -> "Установить скорость передвижения "+value.substring(value.indexOf('|')+1)+"x";case "addAdmin" -> "Добавить Telegram-администратора";case "removeAdmin" -> "Убрать Telegram-администратора";case "chat" -> "Отправить в игровой чат";default -> throw new IllegalArgumentException();};
-        return new TelegramCommands.View(label+"\n\n"+target+"\n\nПодтвердите действие.",List.of(b(user,"✅ Подтвердить","do:"+operation,value,0,0),homeButton(1)));
+        if(Set.of("ban","kick","unban","toggleLp","heal","kill","repair","scale","flySpeed","walkSpeed","addLp","removeLp","op","deop").contains(operation)) target=moderation.info(user,UUID.fromString(lookup)).get().name()+"\nUUID: "+lookup;
+        String label=switch(operation) {case "ban" -> "Бан на 5 минут: пока идёт расследование";case "kick" -> "Кик: пока идёт расследование";case "unban" -> "Снять бан";case "toggleLp" -> "Изменить группу LuckPerms admin";case "addLp" -> "Выдать группу LuckPerms admin";case "removeLp" -> "Удалить группу LuckPerms admin";case "heal" -> "Вылечить игрока";case "kill" -> "Убить игрока";case "repair" -> "Починить предметы";case "scale" -> "Установить размер "+value.substring(value.indexOf('|')+1);case "flySpeed" -> "Установить скорость полёта "+value.substring(value.indexOf('|')+1)+"x";case "walkSpeed" -> "Установить скорость передвижения "+value.substring(value.indexOf('|')+1)+"x";case "op" -> "Выдать OP";case "deop" -> "Забрать OP";case "addAdmin" -> "Добавить Telegram-администратора";case "removeAdmin" -> "Убрать Telegram-администратора";case "chat" -> "Отправить в игровой чат";default -> throw new IllegalArgumentException();};
+        TelegramCommands.Button back=Set.of("addAdmin","removeAdmin").contains(operation)?b(user,"↩ Назад","admins","",0,1):operation.equals("chat")?b(user,"↩ Назад",guard.superAdmin(user)?"superHome":"adminHome","",0,1):b(user,"↩ Назад","playerActions",lookup,0,1);
+        return new TelegramCommands.View(label+"\n\n"+target+"\n\nПодтвердите действие.",List.of(b(user,"✅ Подтвердить","do:"+operation,value,0,0),back,homeButton(2)));
     }
     private TelegramCommands.View perform(long user,String operation,String value) throws Exception {
         String result;
-        if(Set.of("ban","kick").contains(operation)) guard.requireAdmin(user);else guard.requireSuper(user);
-        if(operation.equals("addAdmin") || operation.equals("removeAdmin")) {guard.changeAdmin(user,Long.parseLong(value),operation.equals("addAdmin")).get();result="Список администраторов обновлён.";}
+        requireOperation(user,operation);
+        if(operation.equals("addSuper") || operation.equals("removeSuper")) {guard.changeSuper(user,Long.parseLong(value),operation.equals("addSuper")).get();return admins(user,0,"");}
+        else if(operation.equals("addAdmin") || operation.equals("removeAdmin")) {guard.changeAdmin(user,Long.parseLong(value),operation.equals("addAdmin")).get();result="Список администраторов обновлён.";}
         else if(operation.equals("chat")) result=moderation.broadcast(user,value).get();
         else if(operation.equals("teleportPlayer") || operation.equals("teleportCoords")) {String[] parts=value.split("\\|",2);result=moderation.teleport(user,UUID.fromString(parts[0]),operation.equals("teleportPlayer")?UUID.fromString(parts[1]):null,operation.equals("teleportCoords")?parts[1]:null).get();}
         else if(operation.equals("scale")) {int split=value.indexOf('|');result=moderation.scale(user,UUID.fromString(value.substring(0,split)),Double.parseDouble(value.substring(split+1))).get();}
@@ -344,13 +403,26 @@ final class TelegramGuardMenu {
         else result=moderation.act(user,operation,UUID.fromString(value)).get();
         List<TelegramCommands.Button> buttons=new ArrayList<>();
         if(operation.startsWith("teleport")) buttons.add(b(user,"↩ Назад к действиям игрока","playerActions",value.split("\\|",2)[0],0,0));
-        if(Set.of("ban","kick","unban","toggleLp","addLp","removeLp","heal","kill","repair","scale","flySpeed","walkSpeed").contains(operation)) {
+        if(Set.of("ban","kick","unban","toggleLp","addLp","removeLp","heal","kill","repair","scale","flySpeed","walkSpeed","op","deop").contains(operation)) {
             String raw=operation.equals("scale") || operation.equals("flySpeed") || operation.equals("walkSpeed") ? value.substring(0,value.indexOf('|')) : value;
             buttons.add(b(user,"↩ Назад к действиям игрока","playerActions",raw,0,0));
         } else if(Set.of("addAdmin","removeAdmin").contains(operation)) buttons.add(b(user,"↩ Назад к администраторам","admins","",0,0));
-        else if(operation.equals("chat")) buttons.add(b(user,"↩ Назад в супер-админку","superHome","",0,0));
+        else if(operation.equals("chat")) buttons.add(b(user,"↩ Назад",guard.superAdmin(user)?"superHome":"adminHome","",0,0));
         buttons.add(homeButton(1));
         return new TelegramCommands.View(result,List.copyOf(buttons));
+    }
+    private void requireOperation(long user,String operation) {
+        if(Set.of("addSuper","removeSuper","addAdmin","removeAdmin").contains(operation)) {guard.requireSuper(user);return;}
+        String capability=switch(operation) {
+            case "ban" -> "ban";case "kick" -> "kick";case "unban" -> "unban";
+            case "toggleLp","addLp","removeLp" -> "luckPerms";
+            case "heal" -> "heal";case "kill" -> "kill";case "repair" -> "repair";
+            case "scale" -> "scale";case "flySpeed" -> "flySpeed";case "walkSpeed" -> "walkSpeed";
+            case "teleportPlayer" -> "teleport";case "teleportCoords" -> "teleportCoords";case "op" -> "op";case "deop" -> "deop";
+            case "chat" -> "chat";case "addAdmin","removeAdmin" -> "manageAdmins";
+            default -> throw new IllegalArgumentException("Неизвестное действие");
+        };
+        guard.requireCapability(user,capability);
     }
     private TelegramCommands.Button b(long user,String label,String op,String value,int page,int row) {
         String key="vg:"+UUID.randomUUID().toString().replace("-","");actions.put(key,new Action(user,op,value,page,System.currentTimeMillis()));
@@ -360,9 +432,9 @@ final class TelegramGuardMenu {
                 .min(Comparator.comparingLong(entry->entry.getValue().createdAt())).ifPresent(entry->actions.remove(entry.getKey()));
         return new TelegramCommands.Button(label,key,row);
     }
-    private static TelegramCommands.Button homeButton(int row) {return new TelegramCommands.Button("👤 Кабинет","vg:home",row);}
+    private static TelegramCommands.Button homeButton(int row) {return new TelegramCommands.Button("⌂ Меню","vg:menu",row);}
     static TelegramCommands.View withHome(TelegramCommands.View view) {
         if(view==null) return new TelegramCommands.View("Откройте кабинет заново.",List.of(homeButton(0)));
-        var buttons=new ArrayList<>(view.buttons());buttons.add(homeButton(1));return new TelegramCommands.View(view.text(),List.copyOf(buttons));
+        var buttons=new ArrayList<>(view.buttons());int row=buttons.stream().mapToInt(TelegramCommands.Button::row).max().orElse(-1)+1;buttons.add(new TelegramCommands.Button("↩ В кабинет","vg:home",row));buttons.add(homeButton(row+1));return new TelegramCommands.View(view.text(),List.copyOf(buttons));
     }
 }

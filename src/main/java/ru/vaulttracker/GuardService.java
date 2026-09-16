@@ -11,6 +11,7 @@ import java.util.logging.Logger;
 
 /** Dedicated disk worker: region threads only enqueue immutable snapshots and presence changes. */
 final class GuardService implements AutoCloseable {
+    static final List<String> ADMIN_CAPABILITIES=List.of("ban","kick","inventory","ender","unban","heal","kill","repair","scale","flySpeed","walkSpeed","teleport","teleportCoords","luckPerms","op","deop","chat");
     static final long RETENTION=30L*24*60*60*1000, CODE_TTL=10*60*1000L;
     static final long MAX_OFFLINE_SECONDS=31_536_000;
     record Account(UUID uuid,String name,boolean notifications) {}
@@ -35,7 +36,10 @@ final class GuardService implements AutoCloseable {
     private volatile GuardConfig config;
     private volatile Set<Long> admins=Set.of();
     private final Map<Long,Boolean> adminOverrides=new ConcurrentHashMap<>();
+    private final Set<Long> extraSupers=ConcurrentHashMap.newKeySet();
+    private final Map<Long,String> telegramProfiles=new ConcurrentHashMap<>();
     private final Map<Long,Long> superDelays=new ConcurrentHashMap<>();
+    private final Map<String,Boolean> adminCapabilities=new ConcurrentHashMap<>();
     private long lastPrune;
 
     GuardService(Path path,GuardConfig config,Logger log) throws Exception { this(path,config,log,System::currentTimeMillis); }
@@ -48,7 +52,10 @@ final class GuardService implements AutoCloseable {
             s.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS offline_seconds BIGINT");
             s.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS telegram_tag BOOLEAN NOT NULL DEFAULT FALSE");
             s.execute("CREATE TABLE IF NOT EXISTS guard_admins (tg BIGINT PRIMARY KEY, enabled BOOLEAN NOT NULL)");
+            s.execute("CREATE TABLE IF NOT EXISTS guard_supers (tg BIGINT PRIMARY KEY)");
+            s.execute("CREATE TABLE IF NOT EXISTS telegram_profiles (tg BIGINT PRIMARY KEY, label VARCHAR(512) NOT NULL)");
             s.execute("CREATE TABLE IF NOT EXISTS super_delays (tg BIGINT PRIMARY KEY, seconds BIGINT NOT NULL)");
+            s.execute("CREATE TABLE IF NOT EXISTS admin_capabilities (capability VARCHAR(64) PRIMARY KEY, enabled BOOLEAN NOT NULL)");
             s.execute("CREATE TABLE IF NOT EXISTS guard_worlds (uuid VARCHAR(36) PRIMARY KEY, world_name VARCHAR(256) NOT NULL)");
             s.execute("CREATE TABLE IF NOT EXISTS preferences (tg BIGINT PRIMARY KEY, alerts BOOLEAN NOT NULL)");
             s.execute("CREATE TABLE IF NOT EXISTS presence (uuid VARCHAR(36) PRIMARY KEY, departed BIGINT NOT NULL)");
@@ -73,23 +80,46 @@ final class GuardService implements AutoCloseable {
         }
         execute("UPDATE presence SET departed=? WHERE departed<0",started);
         try(var s=db.createStatement();var rs=s.executeQuery("SELECT tg,enabled FROM guard_admins")) {while(rs.next()) adminOverrides.put(rs.getLong(1),rs.getBoolean(2));}
+        try(var s=db.createStatement();var rs=s.executeQuery("SELECT tg FROM guard_supers")) {while(rs.next()) extraSupers.add(rs.getLong(1));}
+        try(var s=db.createStatement();var rs=s.executeQuery("SELECT tg,label FROM telegram_profiles")) {while(rs.next()) telegramProfiles.put(rs.getLong(1),rs.getString(2));}
         try(var s=db.createStatement();var rs=s.executeQuery("SELECT tg,seconds FROM super_delays")) {while(rs.next()) superDelays.put(rs.getLong(1),rs.getLong(2));}
+        try(var s=db.createStatement();var rs=s.executeQuery("SELECT capability,enabled FROM admin_capabilities")) {while(rs.next()) adminCapabilities.put(rs.getString(1),rs.getBoolean(2));}
         disk.scheduleWithFixedDelay(()-> {try {prune();} catch(Exception e) {log.warning("Не удалось очистить историю охраны.");}},1,60,TimeUnit.MINUTES);
     }
     void configure(GuardConfig config,Set<Long> admins) { this.config=config; this.admins=Set.copyOf(admins); }
-    boolean superAdmin(long user) {return user>0 && config.superAdminUserId()==user;}
+    boolean superAdmin(long user) {return user>0 && (config.superAdminUserId()==user || extraSupers.contains(user));}
     boolean admin(long user) { return superAdmin(user) || adminOverrides.getOrDefault(user,admins.contains(user)); }
     Set<Long> adminIds() {
         Set<Long> ids=new TreeSet<>(admins);adminOverrides.forEach((id,enabled)-> {if(enabled) ids.add(id);else ids.remove(id);});
-        if(config.superAdminUserId()>0) ids.add(config.superAdminUserId());return ids;
+        ids.addAll(extraSupers);if(config.superAdminUserId()>0) ids.add(config.superAdminUserId());return ids;
     }
     void requireAdmin(long user) {if(!admin(user)) throw new SecurityException("Требуются права администратора");}
+    String telegramProfile(long user) {return telegramProfiles.getOrDefault(user,"Telegram-пользователь");}
+    void rememberTelegram(long user,String label) {
+        if(user<=0 || label==null || label.isBlank()) return;
+        String bounded=label.substring(0,Math.min(label.length(),512));
+        if(bounded.equals(telegramProfiles.put(user,bounded))) return;
+        enqueue(()->execute("MERGE INTO telegram_profiles KEY(tg) VALUES(?,?)",user,bounded));
+    }
     void requireSuper(long user) {if(!superAdmin(user)) throw new SecurityException("Требуются права супер администратора");}
+    boolean capability(String name) {return adminCapabilities.getOrDefault(name, false);}
+    void requireCapability(long user,String name) {if(superAdmin(user)) return;requireAdmin(user);if(!capability(name)) throw new SecurityException("Эта функция отключена супер администратором");}
+    void requireAnyCapability(long user,Collection<String> names) {if(superAdmin(user)) return;requireAdmin(user);if(names.stream().noneMatch(this::capability)) throw new SecurityException("Действия с игроками отключены супер администратором");}
+    CompletableFuture<Void> capability(long user,String name,boolean enabled) {return submit(()-> {requireSuper(user);if(!ADMIN_CAPABILITIES.contains(name)) throw new IllegalArgumentException("Неизвестная функция");execute("MERGE INTO admin_capabilities KEY(capability) VALUES(?,?)",name,enabled);adminCapabilities.put(name,enabled);return null;});}
     CompletableFuture<Void> changeAdmin(long user,long target,boolean enabled) {return submit(()-> {
         requireSuper(user);if(target<=0 || superAdmin(target)) throw new IllegalArgumentException("Нельзя изменить эту роль");
         execute("MERGE INTO guard_admins KEY(tg) VALUES(?,?)",target,enabled);adminOverrides.put(target,enabled);
         return null;
     });}
+    CompletableFuture<Void> changeSuper(long user,long target,boolean enabled) {return submit(()-> {
+        requireSuper(user);
+        if(target<=0 || target==config.superAdminUserId() || target==user) throw new IllegalArgumentException("Основного супер администратора и собственную роль изменить нельзя");
+        if(!enabled && !extraSupers.contains(target)) throw new IllegalArgumentException("Супер администратор не найден");
+        if(enabled) {execute("MERGE INTO guard_supers KEY(tg) VALUES(?)",target);extraSupers.add(target);}
+        else {execute("DELETE FROM guard_supers WHERE tg=?",target);extraSupers.remove(target);execute("MERGE INTO guard_admins KEY(tg) VALUES(?,?)",target,false);adminOverrides.put(target,false);}
+        return null;
+    });}
+    boolean canRemoveSuper(long user,long target) {return superAdmin(user) && extraSupers.contains(target) && target!=user && target!=config.superAdminUserId();}
     CompletableFuture<Boolean> tag(long user,boolean toggle) {return submit(()-> {
         if(accountNow(user)==null) throw new SecurityException("Сначала привяжите персонажа");
         if(toggle) execute("UPDATE accounts SET telegram_tag=NOT telegram_tag WHERE tg=?",user);
@@ -170,8 +200,10 @@ final class GuardService implements AutoCloseable {
         boolean adminEligible=departed>=0 && now-departed>=settings.absenceMillis();
         long root=settings.superAdminUserId(),rootDelay=superDelays.getOrDefault(root,settings.absenceMillis()/1000)*1000;
         boolean rootEligible=root>0 && (rootDelay<0 || (departed>=0 && now-departed>=rootDelay));
-        if(ownEligible || adminEligible || rootEligible) enqueue(()->observe(old,snapshot,now,ownEligible,adminEligible,actor,rootEligible,root));
+        boolean extraEligible=extraSupers.stream().anyMatch(id->eligibleSuper(id,departed,now));
+        if(ownEligible || adminEligible || rootEligible || extraEligible) enqueue(()->observe(old,snapshot,now,ownEligible,adminEligible,actor,rootEligible,root));
     }
+    private boolean eligibleSuper(long user,long departed,long now) {long delay=superDelays.getOrDefault(user,defaultOfflineSeconds())*1000;return delay<0 || (departed>=0 && now-departed>=delay);}
     private void observe(Snapshot old,Snapshot current,long now,boolean ownEligible,boolean adminEligible,String actor,boolean rootEligible,long root) throws Exception {
         Map<String,Long> changes=new TreeMap<>();
         if(current.active()) {
@@ -197,7 +229,7 @@ final class GuardService implements AutoCloseable {
                 s.setString(1,old.owner().toString()); try(var rs=s.executeQuery()) {if(rs.next() && ownEligible) {ownerRecipient=rs.getLong(1);recipients.add(ownerRecipient);}}
             }
             Set<Long> adminRecipients=new HashSet<>();
-            for(long admin:adminIds()) if((admin==root ? rootEligible : adminEligible) && adminAlertsNow(admin)) {recipients.add(admin);adminRecipients.add(admin);}
+            for(long admin:adminIds()) if((superAdmin(admin) ? eligibleSuper(admin,presence.getOrDefault(old.owner(),started),now) : adminEligible) && adminAlertsNow(admin)) {recipients.add(admin);adminRecipients.add(admin);}
             for(long recipient:recipients) {
                 boolean adminChannel=adminRecipients.contains(recipient);
                 queueNotification(id,recipient,old.owner(),now,Objects.equals(ownerRecipient,recipient),adminChannel,

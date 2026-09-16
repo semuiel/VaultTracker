@@ -21,19 +21,21 @@ final class TelegramTagManager {
         List<String> lines=new ArrayList<>();int success=0;
         for(long chat:chats) {
             try {
+                String title;
+                try {title=api.chatTitle(chat);} catch(Exception ignored) {title="Группа Telegram";}
+                if(title==null || title.isBlank()) title="Группа Telegram";
                 String status=api.memberStatus(chat,user);
                 if("creator".equals(status)) throw new IllegalStateException("владелец группы меняет свой титул вручную");
                 if("administrator".equals(status)) api.setAdministratorTitle(chat,user,tag);
                 else if(Set.of("left","kicked").contains(status)) throw new IllegalStateException("игрок не состоит в этом чате");
                 else api.setMemberTag(chat,user,tag);
-                success++;lines.add("✅ "+chat);
+                success++;lines.add("✅ "+title+" — "+(reset?"очищен":"применён"));
             } catch(Exception e) {
-                lines.add("❌ "+chat+" — "+shortError(api.safe(e)));
+                // Ошибки отдельных групп намеренно не раскрываются игроку.
             }
         }
         String action=reset ? "Тег сброшен" : "Применён тег «"+tag+"»";
-        String text="🏷 "+action+"\nУспешно: "+success+" из "+chats.size()+" чатов.\n\n"+String.join("\n",lines);
-        if(success<chats.size()) text+="\n\nДля обычного игрока боту нужно право «Управление тегами». Тег администратора бот может менять только если сам назначил этого администратора.";
+        String text=lines.isEmpty()?"🏷 Тег не изменён.":"🏷 "+action+"\n\n"+String.join("\n",lines);
         return new Result(text,success==chats.size(),success>0);
     }
 

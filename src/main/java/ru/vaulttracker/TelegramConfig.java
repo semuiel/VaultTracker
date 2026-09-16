@@ -8,6 +8,7 @@ import java.util.*;
 
 record TelegramConfig(boolean enabled, String token, Set<Long> allowedChatIds, Set<Long> adminUserIds, List<Chat> chats, int pageSize,
                       int pollTimeoutSeconds, int messageLifetimeSeconds, String botApiUrl, Proxy proxy, Retry retry, Path offsetFile) {
+    static final int LIST_PAGE_SIZE=20;
     enum ProxyType { NONE, SOCKS5, HTTP }
     record Proxy(ProxyType type,String host,int port,String username,String password) {
         boolean enabled() { return type != ProxyType.NONE; }
@@ -67,7 +68,7 @@ record TelegramConfig(boolean enabled, String token, Set<Long> allowedChatIds, S
         if(type!=ProxyType.NONE && (!host.matches("[A-Za-z0-9.:-]+") || port<1 || port>65535))
             throw new IllegalArgumentException("Проверьте host и port прокси в telegram.yml");
         if(username.isBlank()!=password.isBlank()) throw new IllegalArgumentException("Укажите одновременно username и password прокси");
-        int pageSize=bounded(y.getInt("pageSize",8),4,15,"pageSize");
+        int pageSize=LIST_PAGE_SIZE;
         int poll=bounded(integer(y,"pollTimeoutSeconds","poll-timeout-seconds",30),5,50,"pollTimeoutSeconds");
         int lifetime=bounded(y.getInt("messageLifetimeSeconds",300),30,86400,"messageLifetimeSeconds");
         int attempts=integer(y,"advanced.connectionRetry.maxAttempts","advanced.connection-retry.max-attempts",10);

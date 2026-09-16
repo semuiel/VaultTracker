@@ -12,6 +12,15 @@ import static org.mockito.Mockito.*;
 
 class TelegramResilienceTest {
     @TempDir Path path;
+    @Test void keepsReconnectingPastLegacyAttemptLimit() throws Exception {
+        var config=mock(TelegramConfig.class);when(config.pageSize()).thenReturn(8);when(config.offsetFile()).thenReturn(path.resolve("offset"));when(config.retry()).thenReturn(new TelegramConfig.Retry(1,1,1));
+        try(var apis=mockConstruction(TelegramApi.class);var service=new TelegramBotService(config,new Catalogue(v->{}),mock(StorageEngine.class),Logger.getAnonymousLogger())) {
+            var api=apis.constructed().getFirst();AtomicInteger attempts=new AtomicInteger();
+            when(api.verify()).thenAnswer(call->{if(attempts.incrementAndGet()<4) throw new IOException("proxy unavailable");return "TestBot";});
+            when(api.updates(anyLong())).thenAnswer(call->{var field=TelegramBotService.class.getDeclaredField("stopping");field.setAccessible(true);((AtomicBoolean)field.get(service)).set(true);return List.of();});
+            var run=TelegramBotService.class.getDeclaredMethod("run");run.setAccessible(true);run.invoke(service);assertEquals(4,attempts.get());verify(api).updates(0);
+        }
+    }
     @Test void expiredCallbacksDoNotStopPollingAndOffsetsAdvanceBeforeProcessing() throws Exception {
         var config=mock(TelegramConfig.class);when(config.pageSize()).thenReturn(8);when(config.offsetFile()).thenReturn(path.resolve("offset"));
         when(config.retry()).thenReturn(new TelegramConfig.Retry(10,1,2));when(config.chats()).thenReturn(List.of());when(config.allowedChatIds()).thenReturn(Set.of());

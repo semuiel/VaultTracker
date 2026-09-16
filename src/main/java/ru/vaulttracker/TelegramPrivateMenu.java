@@ -166,7 +166,7 @@ final class TelegramPrivateMenu {
                     String label="👤 Личный кабинет / привязка";
                     try {var account=guard.account(state.user).join();if(account!=null) label="👤 "+account.name();}
                     catch(java.util.concurrent.CompletionException ignored) {}
-                    buttons.add(new TelegramCommands.Button(label,"vg:home",1));
+                    buttons.add(new TelegramCommands.Button("👤 Личный кабинет","vg:home",1));
                 }
             }
             case SEARCH -> {

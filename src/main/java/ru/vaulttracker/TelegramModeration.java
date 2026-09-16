@@ -15,6 +15,7 @@ import net.kyori.adventure.text.Component;
 
 /** Executes only fixed, authorized actions. Telegram text is never a console command. */
 class TelegramModeration {
+    private static final List<String> PLAYER_CAPABILITIES=GuardService.ADMIN_CAPABILITIES.stream().filter(c->!Set.of("chat","manageAdmins").contains(c)).toList();
     record Person(UUID uuid,String name,boolean online,String details) {}
     record ItemView(String label,int amount,List<ItemView> contents,boolean container) {
         ItemView(String label,int amount,List<ItemView> contents) { this(label,amount,contents,!contents.isEmpty()); }
@@ -30,8 +31,7 @@ class TelegramModeration {
         catch(Exception e) {result.completeExceptionally(e);}return result.orTimeout(15,TimeUnit.SECONDS);
     }
     CompletableFuture<List<Person>> players(long user,String mode) {return global(()-> {
-        guard.requireAdmin(user);
-        if(mode.equals("banned")) guard.requireSuper(user);
+        if(mode.equals("banned")) guard.requireCapability(user,"unban");else guard.requireAdmin(user);
         Map<UUID,Person> people=new HashMap<>();
         if(mode.equals("banned")) {
             ProfileBanList bans=plugin.getServer().getBanList(BanList.Type.PROFILE);
@@ -70,12 +70,12 @@ class TelegramModeration {
         });
     }
     CompletableFuture<List<ItemView>> inventory(long user,UUID uuid,boolean ender) {
-        return global(()-> { guard.requireSuper(user); return plugin.getServer().getPlayer(uuid); }).thenCompose(player -> {
-            if(player==null) return global(()-> {guard.requireSuper(user);return plugin.getServer().getWorlds().stream().map(w->w.getWorldFolder().toPath()).toList();})
-                .thenApplyAsync(folders-> {try {guard.requireSuper(user);return OfflineInventory.read(folders,uuid,ender);} catch(java.io.IOException e) {throw new CompletionException(e);}})
-                .thenCompose(saved->global(()-> {guard.requireSuper(user);return plugin.getServer().getPlayer(uuid)!=null;}).thenCompose(joined->joined?inventory(user,uuid,ender):CompletableFuture.completedFuture(saved)));
+        return global(()-> { guard.requireCapability(user,ender?"ender":"inventory"); return plugin.getServer().getPlayer(uuid); }).thenCompose(player -> {
+            if(player==null) return global(()-> {guard.requireCapability(user,ender?"ender":"inventory");return plugin.getServer().getWorlds().stream().map(w->w.getWorldFolder().toPath()).toList();})
+                .thenApplyAsync(folders-> {try {guard.requireCapability(user,ender?"ender":"inventory");return OfflineInventory.read(folders,uuid,ender);} catch(java.io.IOException e) {throw new CompletionException(e);}})
+                .thenCompose(saved->global(()-> {guard.requireCapability(user,ender?"ender":"inventory");return plugin.getServer().getPlayer(uuid)!=null;}).thenCompose(joined->joined?inventory(user,uuid,ender):CompletableFuture.completedFuture(saved)));
             CompletableFuture<List<ItemView>> result=new CompletableFuture<>();
-            player.getScheduler().run(plugin,task -> { try { guard.requireSuper(user); result.complete(readItems(ender ? player.getEnderChest() : player.getInventory())); } catch(Exception e) { result.completeExceptionally(e); } },()->result.complete(List.of()));
+            player.getScheduler().run(plugin,task -> { try { guard.requireCapability(user,ender?"ender":"inventory"); result.complete(readItems(ender ? player.getEnderChest() : player.getInventory())); } catch(Exception e) { result.completeExceptionally(e); } },()->result.complete(List.of()));
             return result.orTimeout(15,TimeUnit.SECONDS);
         });
     }
@@ -101,19 +101,19 @@ class TelegramModeration {
     }
     CompletableFuture<String> act(long user,String operation,UUID uuid) {
         if(operation.equals("kick")) return global(()-> {
-            guard.requireAdmin(user);OfflinePlayer offline=plugin.getServer().getOfflinePlayer(uuid);return offline.getPlayer();
+            guard.requireCapability(user,"kick");OfflinePlayer offline=plugin.getServer().getOfflinePlayer(uuid);return offline.getPlayer();
         }).thenCompose(player-> {
             if(player==null) return CompletableFuture.completedFuture("Игрок уже не в сети.");
             CompletableFuture<String> result=new CompletableFuture<>();
             player.getScheduler().run(plugin,task-> {
                 if(result.isDone()) return;
-                try {guard.requireAdmin(user);player.kick(Component.text("Пока идёт расследование"));audit(user,operation,uuid.toString());result.complete("Игрок отключён от сервера.");}
+                try {guard.requireCapability(user,"kick");player.kick(Component.text("Пока идёт расследование"));audit(user,operation,uuid.toString());result.complete("Игрок отключён от сервера.");}
                 catch(Exception e) {result.completeExceptionally(e);}
             },()->result.complete("Игрок уже не в сети."));return result.orTimeout(15,TimeUnit.SECONDS);
         });
         if(Set.of("heal","kill","repair").contains(operation)) return onlineAction(user,operation,uuid);
         return global(()-> {
-            guard.requireAdmin(user);if(operation.equals("unban") || operation.equals("toggleLp") || operation.equals("addLp") || operation.equals("removeLp")) guard.requireSuper(user);
+            requireOperation(user,operation);
             OfflinePlayer target=plugin.getServer().getOfflinePlayer(uuid);
             ProfileBanList bans=plugin.getServer().getBanList(BanList.Type.PROFILE);
             if(operation.equals("ban")) {
@@ -124,6 +124,7 @@ class TelegramModeration {
                 audit(user,operation,uuid.toString());return "Бан на 5 минут: пока идёт расследование.";
             }
             if(operation.equals("unban")) {bans.pardon(target.getPlayerProfile());audit(user,operation,uuid.toString());return "Бан снят.";}
+            if(operation.equals("op") || operation.equals("deop")) {boolean enabled=operation.equals("op");target.setOp(enabled);audit(user,operation,uuid.toString());return enabled?"Игроку выдан OP.":"OP у игрока снят.";}
             if(operation.equals("toggleLp") || operation.equals("addLp") || operation.equals("removeLp")) {
                 if(plugin.getServer().getPluginManager().getPlugin("LuckPerms")==null) return "LuckPerms не установлен.";
                 boolean current=lpAdminState.containsKey(uuid) ? lpAdminState.get(uuid) : luckPermsAdmin(uuid);
@@ -139,7 +140,7 @@ class TelegramModeration {
         });
     }
     CompletableFuture<Boolean> adminGroup(long user,UUID uuid) {
-        return global(()-> { guard.requireSuper(user); return lpAdminState.containsKey(uuid) ? lpAdminState.get(uuid) : luckPermsAdmin(uuid); });
+        return global(()-> { guard.requireCapability(user,"luckPerms"); return lpAdminState.containsKey(uuid) ? lpAdminState.get(uuid) : luckPermsAdmin(uuid); });
     }
     CompletableFuture<String> scale(long user,UUID uuid,double value) {
         if(!Double.isFinite(value) || value<0.1 || value>20) return CompletableFuture.failedFuture(new IllegalArgumentException("Размер должен быть от 0.1 до 20."));
@@ -152,13 +153,13 @@ class TelegramModeration {
     }
     private CompletableFuture<String> onlineAction(long user,String operation,UUID uuid) { return onlineAction(user,operation,uuid,0); }
     private CompletableFuture<String> onlineAction(long user,String operation,UUID uuid,double scale) {
-        return global(()-> { guard.requireSuper(user); return plugin.getServer().getPlayer(uuid); }).thenCompose(player -> {
+        return global(()-> { requireOperation(user,operation); return plugin.getServer().getPlayer(uuid); }).thenCompose(player -> {
             if(player==null) return CompletableFuture.completedFuture("Игрок должен быть онлайн для этого действия.");
             CompletableFuture<String> result=new CompletableFuture<>();
             player.getScheduler().run(plugin,task -> {
                 if(result.isDone()) return;
                 try {
-                    guard.requireSuper(user);
+                    requireOperation(user,operation);
                     switch(operation) {
                         case "heal" -> { player.setHealth(player.getAttribute(Attribute.MAX_HEALTH).getValue()); player.setFireTicks(0); result.complete("Игрок полностью вылечен."); }
                         case "kill" -> { player.setHealth(0); result.complete("Игрок убит."); }
@@ -192,20 +193,20 @@ class TelegramModeration {
         return values;
     }
     CompletableFuture<String> teleport(long user,UUID source,UUID destination,String coordinates) {
-        return global(()-> {guard.requireSuper(user);return plugin.getServer().getPlayer(destination==null?source:destination);}).thenCompose(anchor-> {
+        return global(()-> {guard.requireCapability(user,destination==null?"teleportCoords":"teleport");return plugin.getServer().getPlayer(destination==null?source:destination);}).thenCompose(anchor-> {
             if(anchor==null) return CompletableFuture.completedFuture("Игрок должен быть онлайн для телепортации.");
             CompletableFuture<Location> location=new CompletableFuture<>();
             anchor.getScheduler().run(plugin,t-> {try {
-                guard.requireSuper(user);Location loc=anchor.getLocation().clone();
+                guard.requireCapability(user,destination==null?"teleportCoords":"teleport");Location loc=anchor.getLocation().clone();
                 if(destination==null) {double[] xyz=coordinates(coordinates);loc.setX(xyz[0]);loc.setY(xyz[1]);loc.setZ(xyz[2]);}
                 if(loc.getY()<loc.getWorld().getMinHeight() || loc.getY()>=loc.getWorld().getMaxHeight() || !loc.getWorld().getWorldBorder().isInside(loc)) throw new IllegalArgumentException("Координаты за пределами высоты или границы мира.");
                 location.complete(loc);
             } catch(Exception e) {location.completeExceptionally(e);}},()->location.completeExceptionally(new IllegalStateException("Игрок вышел с сервера.")));
-            return location.orTimeout(15,TimeUnit.SECONDS).thenCompose(loc->global(()-> {guard.requireSuper(user);return plugin.getServer().getPlayer(source);}).thenCompose(player-> {
+            return location.orTimeout(15,TimeUnit.SECONDS).thenCompose(loc->global(()-> {guard.requireCapability(user,destination==null?"teleportCoords":"teleport");return plugin.getServer().getPlayer(source);}).thenCompose(player-> {
                 if(player==null) return CompletableFuture.completedFuture("Перемещаемый игрок уже не в сети.");
                 CompletableFuture<String> result=new CompletableFuture<>();
                 player.getScheduler().run(plugin,t-> {try {
-                    if(result.isDone()) return;guard.requireSuper(user);
+                    if(result.isDone()) return;guard.requireCapability(user,destination==null?"teleportCoords":"teleport");
                     player.teleportAsync(loc).whenComplete((ok,error)-> {if(error!=null) result.completeExceptionally(error);else result.complete(Boolean.TRUE.equals(ok)?"Игрок телепортирован: "+loc.getWorld().getName()+" · "+loc.getX()+" "+loc.getY()+" "+loc.getZ():"Телепортация отменена сервером.");});
                 } catch(Exception e) {result.completeExceptionally(e);}},()->result.complete("Игрок вышел с сервера."));
                 return result.orTimeout(30,TimeUnit.SECONDS);
@@ -240,10 +241,20 @@ class TelegramModeration {
         }
     }
     CompletableFuture<String> broadcast(long user,String text) {return global(()-> {
-        guard.requireSuper(user);if(text.isBlank() || text.length()>500 || text.contains("\n") || text.contains("\r")) throw new IllegalArgumentException("Сообщение: одна строка, до 500 символов");
+        guard.requireCapability(user,"chat");if(text.isBlank() || text.length()>500 || text.contains("\n") || text.contains("\r")) throw new IllegalArgumentException("Сообщение: одна строка, до 500 символов");
         Component message=Component.text("[Консоль] "+text);
         for(Player p:plugin.getServer().getOnlinePlayers()) p.getScheduler().run(plugin,t->p.sendMessage(message),null);
         plugin.getServer().getConsoleSender().sendMessage(message);audit(user,"chat",text);return "Сообщение отправлено в игровой чат.";
     });}
     private void audit(long user,String action,String target) {if(guard.superAdmin(user)) return;plugin.getLogger().info("Telegram "+user+": "+action+" → "+target);}
+    private void requireOperation(long user,String operation) {
+        String capability=switch(operation) {
+            case "ban" -> "ban";case "kick" -> "kick";case "unban" -> "unban";
+            case "toggleLp","addLp","removeLp" -> "luckPerms";case "op" -> "op";case "deop" -> "deop";
+            case "heal" -> "heal";case "kill" -> "kill";case "repair" -> "repair";
+            case "scale" -> "scale";case "flySpeed" -> "flySpeed";case "walkSpeed" -> "walkSpeed";
+            default -> throw new IllegalArgumentException("Неизвестное действие");
+        };
+        guard.requireCapability(user,capability);
+    }
 }

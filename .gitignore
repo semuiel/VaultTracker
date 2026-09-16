@@ -1,4 +1,7 @@
 .gradle/
+.gradle-user/
+gcm-diagnose.log
+telegram-proxies.txt
 build/
 .idea/
 *.iml

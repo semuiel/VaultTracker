@@ -13,7 +13,7 @@ class TelegramTagManagerTest {
         when(config.allowedChatIds()).thenReturn(Set.of(-1001L,-1002L));
         when(api.memberStatus(anyLong(),eq(42L))).thenReturn("member");
         var result=new TelegramTagManager(config,api).apply(42,"Alex");
-        assertTrue(result.complete());assertTrue(result.text().contains("2 из 2"));
+        assertTrue(result.complete());assertTrue(result.text().contains("применён"));assertFalse(result.text().contains("-1001"));
         verify(api).setMemberTag(-1001,42,"Alex");verify(api).setMemberTag(-1002,42,"Alex");
         verify(api,never()).setAdministratorTitle(anyLong(),anyLong(),anyString());
     }
@@ -34,6 +34,6 @@ class TelegramTagManagerTest {
         when(config.allowedChatIds()).thenReturn(Set.of());when(api.memberStatus(-1001,42)).thenReturn("left");
         when(api.memberStatus(-1002,42)).thenThrow(new IOException("missing can_manage_tags"));when(api.safe(any())).thenAnswer(i->i.getArgument(0,Exception.class).getMessage());
         var result=new TelegramTagManager(config,api).apply(42,"Alex");
-        assertFalse(result.complete());assertFalse(result.anySuccess());assertTrue(result.text().contains("-1001"));assertTrue(result.text().contains("-1002"));
+        assertFalse(result.complete());assertFalse(result.anySuccess());assertFalse(result.text().contains("-1001"));assertFalse(result.text().contains("-1002"));assertEquals("🏷 Тег не изменён.",result.text());
     }
 }

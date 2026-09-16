@@ -25,16 +25,14 @@ class TelegramGuardMenuTest {
     @AfterEach void close() {guard.close();}
     String button(TelegramCommands.View view,String contains) {return view.buttons().stream().filter(b->b.text().contains(contains)).findFirst().orElseThrow().data();}
     TelegramCommands.View click(long user,TelegramCommands.View view,String contains) throws Exception {return menu.callback(user,button(view,contains)).view();}
-    @Test void personalSettingsSupportPresetsCustomInputAndDefaultWithoutCrossUserAccess() throws Exception {
+    @Test void personalSettingsOfferOnlyThreePresetsAndAreOwnerBound() throws Exception {
         guard.link(UUID.randomUUID(),"Alex",guard.generate(42).get().split("/vtrack link ")[1].substring(0,32)).get();
-        var settings=click(42,menu.home(42),"Настройки");String day=button(settings,"1 дн.");
+        var settings=click(42,menu.home(42),"Настройки");String day=button(settings,"2 дня");
         assertTrue(menu.callback(43,day).alert());assertNull(guard.offlineSeconds(42).get());
-        settings=menu.callback(42,day).view();assertTrue(settings.text().contains("1 дн. (личное)"));assertEquals(86400L,guard.offlineSeconds(42).get());
-        click(42,settings,"Своё время");assertNull(menu.input(43,"300"));
-        assertTrue(menu.input(42,"-1").text().contains("Введите целое"));assertEquals(86400L,guard.offlineSeconds(42).get());
-        settings=menu.input(42,"7200");assertTrue(settings.text().contains("2 ч. (личное)"));
-        settings=click(42,settings,"Как на сервере");assertNull(guard.offlineSeconds(42).get());
-        click(42,settings,"Своё время");menu.cancelInput(42);assertNull(menu.input(42,"900"));
+        settings=menu.callback(42,day).view();assertEquals(172800L,guard.offlineSeconds(42).get());
+        assertFalse(settings.buttons().stream().anyMatch(b->b.text().contains("Своё время") || b.text().contains("1 дн.")));
+        settings=click(42,settings,"Всегда");assertEquals(-1L,guard.offlineSeconds(42).get());
+        click(42,settings,"После выхода");assertEquals(0L,guard.offlineSeconds(42).get());
     }
     @Test void customTimeInputOnlyCapturesPersonalChatAndCancelEndsIt() throws Exception {
         guard.link(UUID.randomUUID(),"Alex",guard.generate(42).get().split("/vtrack link ")[1].substring(0,32)).get();
@@ -44,18 +42,20 @@ class TelegramGuardMenuTest {
             var service=new TelegramBotService(config,catalogue,storage,Logger.getAnonymousLogger(),guard)) {
             var field=TelegramBotService.class.getDeclaredField("guardMenu");field.setAccessible(true);
             var actual=(TelegramGuardMenu)field.get(service);var api=apis.constructed().getFirst();
-            var settings=actual.callback(42,button(actual.home(42),"Настройки")).view();
+            guard.configure(new GuardConfig(true,0,42),Set.of(99L));
+            var root=actual.callback(42,button(actual.home(42),"Супер")).view();
+            var settings=actual.callback(42,button(root,"Личный срок")).view();
             String custom=button(settings,"Своё время");
             process.invoke(service,new TelegramApi.Incoming(1,42,0,42,1,null,"cb",custom,true));
             clearInvocations(api);
             process.invoke(service,new TelegramApi.Incoming(2,-100,20,42,2,"86400",null,null,false));verifyNoInteractions(api);
             process.invoke(service,new TelegramApi.Incoming(3,42,0,42,3,"86400",null,null,true));
-            verify(api).send(eq(42L),eq(0),any());assertEquals(86400L,guard.offlineSeconds(42).get());
+            verify(api).send(eq(42L),eq(0),any());assertEquals(86400L,guard.superDelay(42));
             process.invoke(service,new TelegramApi.Incoming(4,42,0,42,1,null,"cb2",custom,true));
             process.invoke(service,new TelegramApi.Incoming(5,42,0,42,4,"/cancel",null,null,true));
             clearInvocations(api);
             process.invoke(service,new TelegramApi.Incoming(6,42,0,42,5,"900",null,null,true));
-            verifyNoInteractions(api);assertEquals(86400L,guard.offlineSeconds(42).get());
+            verifyNoInteractions(api);assertEquals(86400L,guard.superDelay(42));
         }
     }
     @Test void bindingAndAccountButtonsWorkAndCannotBeUsedByAnotherUser() throws Exception {
@@ -91,11 +91,11 @@ class TelegramGuardMenuTest {
         }
     }
     @Test void adminWithoutCharacterCanToggleAndReadPaginatedHistory() throws Exception {
-        var home=click(99,menu.home(99),"Настройки администратора");assertTrue(home.text().contains("Уведомления администратора: включены"));
+        var home=click(99,menu.home(99),"Функции администратора");assertTrue(home.text().contains("Уведомления администратора: включены"));
         assertTrue(click(99,home,"Отключить уведомления администратора").text().contains("Уведомления администратора: выключены"));
         var snapshot=CatalogueTest.fixture(1,20);guard.restore(List.of(snapshot));clock.incrementAndGet();
         for(int i=1;i<=9;i++) guard.accept(CatalogueTest.fixture(i+1,20-i));
-        var history=click(99,menu.home(99),"События");assertTrue(history.buttons().stream().anyMatch(b->b.text().contains("Вперёд")));
+        var history=click(99,click(99,menu.home(99),"Функции администратора"),"События");assertTrue(history.buttons().stream().anyMatch(b->b.text().contains("Вперёд")));
         var detail=click(99,history,"#9");assertTrue(detail.text().contains("-1 шт."));
         guard.configure(new GuardConfig(true,0),Set.of());
         assertThrows(Exception.class,()->click(99,detail,"История"));

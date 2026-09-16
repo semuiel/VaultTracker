@@ -46,6 +46,7 @@ class TelegramModerationTest {
     }
     @AfterEach void close() {guard.close();}
     @Test void temporaryBanUsesFiveMinuteNativeProfileBanAndDoesNotShortenExistingBan() throws Exception {
+        guard.capability(500,"ban",true).get();
         assertTrue(moderation.act(99,"ban",uuid).get().contains("5 минут"));
         verify(bans).addBan(eq(profile),eq("Пока идёт расследование"),eq(java.time.Duration.ofMinutes(5)),eq("Telegram 99"));
         when(bans.isBanned(profile)).thenReturn(true);moderation.act(99,"ban",uuid).get();
@@ -71,6 +72,7 @@ class TelegramModerationTest {
         verify(server,never()).dispatchCommand(any(),anyString());
     }
     @Test void kickRechecksPermissionOnPlayerScheduler() throws Exception {
+        guard.capability(500,"kick",true).get();
         var online=mock(Player.class);when(player.getPlayer()).thenReturn(online);var scheduler=mock(EntityScheduler.class);when(online.getScheduler()).thenReturn(scheduler);
         AtomicReference<Consumer<ScheduledTask>> deferred=new AtomicReference<>();
         doAnswer(call-> {deferred.set(call.getArgument(1));return mock(ScheduledTask.class);}).when(scheduler).run(eq(plugin),any(),any());
@@ -101,6 +103,7 @@ class TelegramModerationTest {
     @Test void superActionsHaveNoPluginConsoleAuditButAdminActionsStillDo() throws Exception {
         Logger logger=mock(Logger.class);when(plugin.getLogger()).thenReturn(logger);
         moderation.act(500,"unban",uuid).get();verify(logger,never()).info(anyString());
+        guard.capability(500,"ban",true).get();
         moderation.act(99,"ban",uuid).get();verify(logger).info(contains("Telegram 99"));
     }
     @Test void inventoryViewKeepsEmptyShulkersOpenable() throws Exception {

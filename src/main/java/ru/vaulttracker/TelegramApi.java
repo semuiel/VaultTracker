@@ -10,8 +10,10 @@ import java.time.Duration;
 import java.util.*;
 
 final class TelegramApi implements AutoCloseable {
+    private static final class ApiError extends IOException {ApiError(String message) {super(message);}}
     record Incoming(long updateId,long chatId,int topicId,long userId,int messageId,String text,
-                    String callbackId,String callbackData,boolean privateChat) {
+                    String callbackId,String callbackData,boolean privateChat,String profile) {
+        Incoming(long updateId,long chatId,int topicId,long userId,int messageId,String text,String callbackId,String callbackData,boolean privateChat) {this(updateId,chatId,topicId,userId,messageId,text,callbackId,callbackData,privateChat,"");}
         Incoming(long updateId,long chatId,int topicId,long userId,int messageId,String text,
                  String callbackId,String callbackData) {
             this(updateId,chatId,topicId,userId,messageId,text,callbackId,callbackData,false);
@@ -22,36 +24,37 @@ final class TelegramApi implements AutoCloseable {
     private final TelegramConfig config;
     private final String baseUrl;
     private final Gson gson=new Gson();
-    private final OkHttpClient client;
-    private final java.net.Authenticator previousAuthenticator, socksAuthenticator;
+    private final List<OkHttpClient> clients;
+    private final List<TelegramConfig.Proxy> proxies;
+    private final java.util.concurrent.atomic.AtomicInteger route=new java.util.concurrent.atomic.AtomicInteger();
 
     TelegramApi(TelegramConfig config) {
         this.config=config; this.baseUrl=config.botApiUrl()+"/bot"+config.token()+"/";
+        try {proxies=TelegramProxies.load(config);} catch(IOException e) {throw new java.io.UncheckedIOException(e);}
+        clients=proxies.stream().map(this::client).toList();
+    }
+    private OkHttpClient client(TelegramConfig.Proxy proxy) {
         OkHttpClient.Builder builder=new OkHttpClient.Builder()
                 .connectTimeout(Duration.ofSeconds(15)).writeTimeout(Duration.ofSeconds(15))
+                .callTimeout(Duration.ofSeconds(config.pollTimeoutSeconds()+35L))
                 .readTimeout(Duration.ofSeconds(config.pollTimeoutSeconds()+20L));
-        java.net.Authenticator previous=null, installed=null;
-        if(config.proxy().enabled()) {
-            java.net.Proxy.Type javaType=config.proxy().type()==TelegramConfig.ProxyType.SOCKS5
-                    ? java.net.Proxy.Type.SOCKS : java.net.Proxy.Type.HTTP;
-            builder.proxy(new java.net.Proxy(javaType,InetSocketAddress.createUnresolved(config.proxy().host(),config.proxy().port())));
-            if(config.proxy().authenticated() && config.proxy().type()==TelegramConfig.ProxyType.HTTP)
-                builder.proxyAuthenticator((route,response) -> response.request().newBuilder()
-                        .header("Proxy-Authorization",Credentials.basic(config.proxy().username(),config.proxy().password())).build());
-            if(config.proxy().authenticated() && config.proxy().type()==TelegramConfig.ProxyType.SOCKS5) {
-                previous=java.net.Authenticator.getDefault();
-                TelegramConfig.Proxy proxy=config.proxy();
-                installed=new java.net.Authenticator() {
-                    @Override protected PasswordAuthentication getPasswordAuthentication() {
-                        if(getRequestingPort()==proxy.port() && proxy.host().equalsIgnoreCase(getRequestingHost()))
-                            return new PasswordAuthentication(proxy.username(),proxy.password().toCharArray());
-                        return null;
-                    }
-                };
-                java.net.Authenticator.setDefault(installed);
+        builder.proxy(java.net.Proxy.NO_PROXY);
+        if(proxy.enabled()) {
+            if(proxy.type()==TelegramConfig.ProxyType.SOCKS5) {
+                // Do not configure OkHttp SOCKS proxy: it uses the JVM global client.
+                // This factory performs the complete SOCKS5 handshake per socket.
+                builder.proxy(java.net.Proxy.NO_PROXY)
+                        .socketFactory(new Socks5SocketFactory(proxy))
+                        .dns(host->List.of(InetAddress.getByAddress(host,new byte[]{0,0,0,1})));
+            } else {
+                builder.proxy(new java.net.Proxy(java.net.Proxy.Type.HTTP,
+                        new InetSocketAddress(proxy.host(),proxy.port())));
+                if(proxy.authenticated())
+                    builder.proxyAuthenticator((route,response) -> response.request().header("Proxy-Authorization")!=null ? null : response.request().newBuilder()
+                            .header("Proxy-Authorization",Credentials.basic(proxy.username(),proxy.password())).build());
             }
         }
-        previousAuthenticator=previous; socksAuthenticator=installed; client=builder.build();
+        return builder.retryOnConnectionFailure(false).build();
     }
     String verify() throws IOException { return call("getMe",new JsonObject()).getAsJsonObject("result").get("username").getAsString(); }
     void registerCommands() throws IOException {
@@ -90,7 +93,7 @@ final class TelegramApi implements AutoCloseable {
             return new Incoming(id,message.getAsJsonObject("chat").get("id").getAsLong(),
                     message.has("message_thread_id") ? message.get("message_thread_id").getAsInt() : 0,
                     userId(callback),message.get("message_id").getAsInt(),null,callback.get("id").getAsString(),
-                    callback.has("data") ? callback.get("data").getAsString() : null,isPrivate(message));
+                    callback.has("data") ? callback.get("data").getAsString() : null,isPrivate(message),profile(callback));
         }
         return new Incoming(id,0,0,0,0,null,null,null);
     }
@@ -98,7 +101,12 @@ final class TelegramApi implements AutoCloseable {
         return new Incoming(updateId,message.getAsJsonObject("chat").get("id").getAsLong(),
                 message.has("message_thread_id") ? message.get("message_thread_id").getAsInt() : 0,
                 userId(message),message.get("message_id").getAsInt(),message.has("text") ? message.get("text").getAsString() : null,
-                null,null,isPrivate(message));
+                null,null,isPrivate(message),profile(message));
+    }
+    private static String profile(JsonObject object) {
+        if(!object.has("from")) return "";JsonObject from=object.getAsJsonObject("from");List<String> parts=new ArrayList<>();
+        for(String key:List.of("first_name","last_name","username")) if(from.has(key)) parts.add((key.equals("username")?"@":"")+from.get(key).getAsString());
+        return String.join(" ",parts);
     }
     private static boolean isPrivate(JsonObject message) {
         JsonObject chat=message.getAsJsonObject("chat");
@@ -135,6 +143,18 @@ final class TelegramApi implements AutoCloseable {
         JsonObject body=new JsonObject();body.addProperty("chat_id",chatId);body.addProperty("user_id",userId);
         return call("getChatMember",body).getAsJsonObject("result").get("status").getAsString();
     }
+    String chatTitle(long chatId) throws IOException {
+        JsonObject chat=call("getChat",chatIdBody(chatId)).getAsJsonObject("result");
+        for(String key:List.of("title","username","first_name")) if(chat.has(key) && !chat.get(key).getAsString().isBlank()) return (key.equals("username")?"@":"")+chat.get(key).getAsString();
+        return "Группа Telegram";
+    }
+    String userLabel(long userId) throws IOException {
+        JsonObject user=call("getChat",chatIdBody(userId)).getAsJsonObject("result");StringBuilder label=new StringBuilder();
+        if(user.has("first_name")) label.append(user.get("first_name").getAsString());if(user.has("last_name")) label.append(label.isEmpty()?"":" ").append(user.get("last_name").getAsString());
+        if(user.has("username")) label.append(label.isEmpty()?"":" · ").append('@').append(user.get("username").getAsString());
+        return label.isEmpty()?"Telegram-пользователь":label.toString();
+    }
+    private static JsonObject chatIdBody(long chatId) {JsonObject body=new JsonObject();body.addProperty("chat_id",chatId);return body;}
     void setMemberTag(long chatId,long userId,String tag) throws IOException {
         JsonObject body=new JsonObject();body.addProperty("chat_id",chatId);body.addProperty("user_id",userId);
         if(tag!=null && !tag.isBlank()) body.addProperty("tag",tag);
@@ -163,13 +183,20 @@ final class TelegramApi implements AutoCloseable {
     }
     private JsonObject call(String method,JsonObject body) throws IOException {
         Request request=new Request.Builder().url(baseUrl+method).post(RequestBody.create(gson.toJson(body),JSON)).build();
+        int current=route.get();OkHttpClient client=clients.get(current);
         try(Response response=client.newCall(request).execute()) {
             String raw=response.body()==null ? "" : response.body().string(); JsonObject json;
             try { json=JsonParser.parseString(raw).getAsJsonObject(); }
             catch(RuntimeException e) { throw new IOException("Telegram вернул некорректный ответ (HTTP "+response.code()+")"); }
             if(!response.isSuccessful() || !json.has("ok") || !json.get("ok").getAsBoolean())
-                throw new IOException("Telegram API: "+(json.has("description") ? json.get("description").getAsString() : "HTTP "+response.code()));
+                throw new ApiError("Telegram API: "+(json.has("description") ? json.get("description").getAsString() : "HTTP "+response.code()));
             return json;
+        } catch(IOException failure) {
+            if(failure instanceof ApiError) throw failure;
+            // Do not replay a possibly accepted send/action. The next request uses the next route.
+            route.compareAndSet(current,(current+1)%clients.size());
+            client.connectionPool().evictAll();
+            throw failure;
         }
     }
     static List<String> split(String text,int limit) {
@@ -186,13 +213,13 @@ final class TelegramApi implements AutoCloseable {
     String safe(Throwable error) {
         String message=error.getMessage()==null ? error.getClass().getSimpleName() : error.getMessage();
         message=message.replace(config.token(),"<скрытый токен>");
-        if(!config.proxy().password().isBlank()) message=message.replace(config.proxy().password(),"<скрытый пароль>");
+        for(var proxy:proxies) if(!proxy.password().isBlank()) message=message.replace(proxy.password(),"<скрытый пароль>");
         return message;
     }
     @Override public void close() {
+        for(OkHttpClient client:clients) {
         client.dispatcher().cancelAll();
         client.dispatcher().executorService().shutdownNow(); client.connectionPool().evictAll();
-        if(socksAuthenticator!=null && java.net.Authenticator.getDefault()==socksAuthenticator)
-            java.net.Authenticator.setDefault(previousAuthenticator);
+        }
     }
 }
