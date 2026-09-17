@@ -33,6 +33,7 @@ final class TelegramChatBridge implements Listener,AutoCloseable {
     private final Thread sender,receiver;
     private volatile String username;
     private volatile long lastQueueWarning;
+    private volatile long lastCommandDeleteWarning;
     private GuardService guard;
     private volatile LinkedChatIdentity identity;
     private volatile long lastIdentityWarning;
@@ -121,6 +122,15 @@ final class TelegramChatBridge implements Listener,AutoCloseable {
         if(update.text()==null || !config.listTarget(update)) return false;
         String text=update.text().trim();String first=text.split("\\s+",2)[0];
         if(first.startsWith("/")) {
+            // Delete the incoming command, never the response. Keep routing even if deletion fails.
+            if(update.messageId()>0) try {api.delete(update.chatId(),update.messageId());}
+            catch(Exception failure) {
+                long now=System.currentTimeMillis();
+                if(now-lastCommandDeleteWarning>=60000) {
+                    lastCommandDeleteWarning=now;
+                    plugin.getLogger().warning("Не удалось удалить команду Telegram-чата: "+api.safe(failure)+". Боту нужно право администратора «Удаление сообщений».");
+                }
+            }
             String[] command=first.split("@",2);
             if(!command[0].equalsIgnoreCase("/list") || (command.length==2 && (username==null || !command[1].equalsIgnoreCase(username)))) return false;
             if(config.flag("list.enabled",true)) currentPlayerPages().thenAccept(pages->enqueueList(new TelegramChatConfig.Target(update.chatId(),update.topicId()),pages));

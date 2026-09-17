@@ -144,7 +144,7 @@ class TelegramChatBridgeTest {
             verify(api,timeout(1500)).answerCallback("callback","",false);
             var expiryField=TelegramChatBridge.class.getDeclaredField("expiry");expiryField.setAccessible(true);
             var expiry=(TelegramListExpiry)expiryField.get(bridge);
-            expiry.deleteDue(System.currentTimeMillis()+299000);verify(api,never()).delete(anyLong(),anyInt());
+            expiry.deleteDue(System.currentTimeMillis()+299000);verify(api,never()).delete(-100123L,77);
             expiry.deleteDue(System.currentTimeMillis()+301000);verify(api).delete(-100123L,77);
         }
     }
@@ -168,6 +168,31 @@ class TelegramChatBridgeTest {
         try(var apis=mockConstruction(TelegramApi.class);var bridge=new TelegramChatBridge(plugin,config,catalogue)) {
             bridge.start(true);bridge.consume(message(-100123,486,"/list"));
             verify(apis.constructed().getFirst(),timeout(1500)).sendHtml(eq(-100123L),eq(486),contains("Никакой конкуренции"),eq(false),eq(List.of()));
+        }
+    }
+
+    @Test void slashCommandsAreDeletedImmediatelyOnlyInBridgeTopics() throws Exception {
+        try(var apis=mockConstruction(TelegramApi.class);var bridge=new TelegramChatBridge(plugin,config,catalogue)) {
+            bridge.username("ChatBot");bridge.start(true);var api=apis.constructed().getFirst();
+            for(String text:List.of("/list","/unknown","/item diamond","/list@OtherBot","  /hello args")) {
+                bridge.consume(message(-100123,486,text));
+            }
+            verify(api,times(5)).delete(-100123L,1);
+            bridge.consume(message(-100123,123,"/unknown"));verify(api,times(6)).delete(-100123L,1);
+            bridge.consume(message(-100123,999,"/unknown"));
+            bridge.consume(message(-100999,486,"/unknown"));
+            bridge.consume(message(-100123,486,"normal message"));
+            verify(api,times(6)).delete(anyLong(),anyInt());
+            verify(api,timeout(1500)).sendHtml(eq(-100123L),eq(486),contains("Alex"),eq(false),anyList());
+        }
+    }
+
+    @Test void deniedCommandDeletionDoesNotBreakListReply() throws Exception {
+        try(var apis=mockConstruction(TelegramApi.class);var bridge=new TelegramChatBridge(plugin,config,catalogue)) {
+            bridge.start(true);var api=apis.constructed().getFirst();
+            doThrow(new java.io.IOException("not enough rights")).when(api).delete(anyLong(),anyInt());
+            assertTrue(bridge.consume(message(-100123,486,"/list")));
+            verify(api,timeout(1500)).sendHtml(eq(-100123L),eq(486),contains("Alex"),eq(false),anyList());
         }
     }
 }
