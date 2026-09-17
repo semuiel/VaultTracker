@@ -10,8 +10,9 @@ final class OfflineInventory {
  static List<TelegramModeration.ItemView> read(List<Path> folders,UUID uuid,boolean ender) throws IOException {
   Path file=null;long newest=Long.MIN_VALUE;
   for(Path folder:folders) {
-   Path candidate=folder.resolve("playerdata").resolve(uuid+".dat");
-   if(Files.isRegularFile(candidate)) {long time=Files.getLastModifiedTime(candidate).toMillis();if(time>newest) {file=candidate;newest=time;}}
+   for(Path candidate:playerFiles(folder,uuid)) {
+    if(Files.isRegularFile(candidate)) {long time=Files.getLastModifiedTime(candidate).toMillis();if(time>newest) {file=candidate;newest=time;}}
+   }
   }
   if(file==null) throw new IOException("Сохранённые данные игрока не найдены (playerdata). Это не означает пустой инвентарь.");
   try(InputStream raw=Files.newInputStream(file);InputStream zip=new GZIPInputStream(raw)) {
@@ -22,6 +23,15 @@ final class OfflineInventory {
    in.readUTF();Map<?,?> root=map(tag(in,10,0,new int[]{0}));
    return items(root.get(ender?"EnderItems":"Inventory"),0);
   } catch(EOFException e) {throw new IOException("Файл игрока неполный. Повторите просмотр после сохранения.",e);}
+ }
+ private static List<Path> playerFiles(Path folder,UUID uuid) {
+  Path root=folder;
+  // 26.2 World#getWorldPath is <save>/dimensions/<namespace>/<dimension>.
+  // Find the dimensions ancestor, including namespaced dimensions with nested paths.
+  for(Path parent=folder.getParent();parent!=null;parent=parent.getParent()) {
+   if(parent.getFileName()!=null && parent.getFileName().toString().equals("dimensions")) {root=parent.getParent();break;}
+  }
+  return List.of(root.resolve("players/data").resolve(uuid+".dat"),folder.resolve("playerdata").resolve(uuid+".dat"));
  }
  private static Object tag(DataInputStream in,int type,int depth,int[] nodes) throws IOException {
   if(depth>64 || ++nodes[0]>200000) throw new IOException("Слишком сложный NBT игрока.");

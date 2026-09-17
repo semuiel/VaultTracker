@@ -36,7 +36,7 @@ class PlayerItemsTest {
         List<String> values=new ArrayList<>();
         if (component.clickEvent()!=null) {
             assertEquals(ClickEvent.Action.RUN_COMMAND,component.clickEvent().action());
-            values.add(component.clickEvent().value());
+            values.add(((ClickEvent.Payload.Text)component.clickEvent().payload()).value());
         }
         component.children().forEach(child -> values.addAll(clicks(child))); return values;
     }

@@ -80,5 +80,6 @@ class TelegramChatConfigTest {
         var text=new TelegramChatText(folder);assertEquals("Доктор для зомби",text.plain(Component.translatable("advancements.story.cure_zombie_villager.title")));
         Files.writeString(folder.resolve("telegramchat-lang.json"),"{\"custom.title\":\"Герой %s\"}");
         assertEquals("Герой Alex",new TelegramChatText(folder).plain(Component.translatable("custom.title",Component.text("Alex"))));
+        assertEquals("Count 3 true",text.plain(Component.translatable("custom.arguments").fallback("Count %s %s").arguments(net.kyori.adventure.text.TranslationArgument.numeric(3),net.kyori.adventure.text.TranslationArgument.bool(true))));
     }
 }

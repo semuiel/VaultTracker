@@ -22,7 +22,7 @@ final class TelegramChatText {
             String value=overrides.getOrDefault(translated.key(),RussianItems.translation(translated.key()));
             if(value.equals(translated.key()) && translated.fallback()!=null) value=translated.fallback();
             Matcher m=ARG.matcher(value);int position=0;StringBuilder rendered=new StringBuilder();
-            var args=translated.args();
+            var args=translated.arguments().stream().map(argument->argument.value() instanceof Component component?component:Component.text(String.valueOf(argument.value()))).toList();
             while(m.find()) {int index=m.group().equals("%%")?-1:m.group(1)==null?position++:Integer.parseInt(m.group(1))-1;String replacement=index<0?"%":index<args.size()?plain(args.get(index)):m.group();m.appendReplacement(rendered,Matcher.quoteReplacement(replacement));}
             m.appendTail(rendered);text.append(rendered);
         }

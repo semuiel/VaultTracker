@@ -38,6 +38,13 @@ class OfflineInventoryTest {
   assertEquals(6,OfflineInventory.read(List.of(folder),id,false).getFirst().contents().getFirst().amount());assertTrue(OfflineInventory.read(List.of(folder),id,true).isEmpty());
   Files.write(file,new byte[]{1,2,3});assertThrows(IOException.class,()->OfflineInventory.read(List.of(folder),id,false));
  }
+ @Test void readsNewPlayerStorageFromDimensionPaths() throws Exception {
+  Path old=save(Map.of("Inventory",List.of(item("diamond",12)),"EnderItems",List.of(item("emerald",3))));
+  Path modern=folder.resolve("players/data").resolve(id+".dat");Files.createDirectories(modern.getParent());Files.move(old,modern);
+  Path dimension=folder.resolve("dimensions/minecraft/overworld");
+  assertEquals(12,OfflineInventory.read(List.of(dimension),id,false).getFirst().amount());
+  assertEquals(3,OfflineInventory.read(List.of(dimension),id,true).getFirst().amount());
+ }
  @Test void categoriesDoNotConfuseBlocksFoodAndResources() {
   assertEquals("🧱",TelegramItemIcons.icon("DIAMOND_BLOCK"));assertEquals("🧱",TelegramItemIcons.icon("COPPER_BLOCK"));
   assertEquals("💎",TelegramItemIcons.icon("IRON_INGOT"));assertEquals("💎",TelegramItemIcons.icon("EMERALD"));
