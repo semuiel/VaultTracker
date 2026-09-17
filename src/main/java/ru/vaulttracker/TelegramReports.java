@@ -140,7 +140,7 @@ final class TelegramReports implements AutoCloseable {
         } catch(Exception failure) {execute("UPDATE reports SET state='failed' WHERE id=?",report.id());throw failure;}
         api.editHtml(update.chatId(),update.messageId(),reportText(report)+"\n\n✅ "+esc(result),List.of());api.answerCallback(update.callbackId(),result,false);
     }
-    private void notice(TelegramApi.Incoming update,String text) throws Exception {int id=api.sendHtml(update.chatId(),update.topicId(),esc(text),true);expiry.track(update.chatId(),id,System.currentTimeMillis()+300000);}
+    private void notice(TelegramApi.Incoming update,String text) throws Exception {int id=api.sendHtml(update.chatId(),update.topicId(),esc(text),true);expiry.track(update.chatId(),id,System.currentTimeMillis()+30000);}
     private static String esc(String s) {return TelegramChatFormat.escape(s);}
     private static String cut(String value,int length) {return value==null?"":value.substring(0,Math.min(value.length(),length));}
     private void execute(String sql,Object... args) throws Exception {try(var s=db.prepareStatement(sql)){for(int i=0;i<args.length;i++)s.setObject(i+1,args[i]);s.executeUpdate();}}
