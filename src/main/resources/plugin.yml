@@ -1,5 +1,5 @@
 name: VaultTracker
-version: 0.11.1
+version: 0.11.2
 softdepend: [flexity]
 main: ru.vaulttracker.VaultTrackerPlugin
 api-version: '1.21.11'

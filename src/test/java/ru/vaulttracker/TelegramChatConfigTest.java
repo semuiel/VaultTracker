@@ -57,6 +57,20 @@ class TelegramChatConfigTest {
             String hidden=TelegramChatFormat.playerList(config,people).getFirst();assertTrue(hidden.endsWith("🌍 Alex"));assertFalse(hidden.contains("84"));assertFalse(hidden.contains("{ping}"));
         }
     }
+    @Test void pingColumnAlignsAcrossPagesAndKeepsCustomEmojiOutsideCode() throws Exception {
+        var config=TelegramChatConfig.parse(SETTINGS+"\nlist:\n  showPing: true\n  dimensions:\n    overworld:\n      emoji: '🌍'\n      customEmojiId: '5339573139900735019'\nformats:\n  listRow: '{emoji} {name}'\n");
+        var people=new ArrayList<TelegramChatFormat.PlayerRow>();
+        for(int i=0;i<20;i++) people.add(new TelegramChatFormat.PlayerRow("A"+i,"x","world","overworld",31));
+        people.add(new TelegramChatFormat.PlayerRow("LongestPlayerName","x","world","overworld",236));
+        var pages=TelegramChatFormat.playerList(config,people);
+        assertEquals(2,pages.size());
+        assertTrue(pages.getFirst().contains("</tg-emoji> <code>A0"));
+        var columns=pages.stream().flatMap(p->p.lines().skip(1)).map(line->line.substring(line.indexOf("<code>")+6)).map(line->line.indexOf("· ")).distinct().toList();
+        assertEquals(1,columns.size());
+        assertTrue(pages.getLast().contains("LongestPlayerName   · 236 мс</code>"));
+        config.yaml.set("list.alignPing",false);
+        assertTrue(TelegramChatFormat.playerList(config,people).getFirst().contains("</tg-emoji> A0 · 31 мс"));
+    }
     @Test void requiredPrefixAndSinglePassPlaceholdersDoNotChangeMessageContent() throws Exception {
         var config=TelegramChatConfig.parse(SETTINGS+"\nmessages:\n  requirePrefixInMinecraft: ''\n");
         assertNull(TelegramChatFormat.chatText(config,"private chat"));assertEquals("Hello",TelegramChatFormat.chatText(config,"Hello"));

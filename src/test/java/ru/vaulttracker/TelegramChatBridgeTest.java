@@ -154,9 +154,9 @@ class TelegramChatBridgeTest {
         try(var apis=mockConstruction(TelegramApi.class);var bridge=new TelegramChatBridge(plugin,settings,catalogue)) {
             bridge.start(true);var api=apis.constructed().getFirst();
             bridge.consume(message(-100123,486,"/list"));
-            verify(api,timeout(1500)).sendHtml(eq(-100123L),eq(486),contains("🔥 Alex · 42 мс"),eq(false),eq(List.of()));
+            verify(api,timeout(1500)).sendHtml(eq(-100123L),eq(486),contains("🔥 <code>Alex   · 42 мс</code>"),eq(false),eq(List.of()));
             when(player.getPing()).thenReturn(123);bridge.consume(message(-100123,486,"/list"));
-            verify(api,timeout(1500)).sendHtml(eq(-100123L),eq(486),contains("🔥 Alex · 123 мс"),eq(false),eq(List.of()));
+            verify(api,timeout(1500)).sendHtml(eq(-100123L),eq(486),contains("🔥 <code>Alex   · 123 мс</code>"),eq(false),eq(List.of()));
             when(player.isOnline()).thenReturn(false);bridge.consume(message(-100123,486,"/list"));
             verify(api,timeout(1500)).sendHtml(eq(-100123L),eq(486),contains("Никакой конкуренции"),eq(false),eq(List.of()));
         }
