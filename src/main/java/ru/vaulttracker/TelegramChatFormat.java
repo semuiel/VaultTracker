@@ -4,7 +4,9 @@ import java.util.*;
 import java.util.regex.*;
 
 final class TelegramChatFormat {
-    record PlayerRow(String username,String displayName,String world,String dimension) {}
+    record PlayerRow(String username,String displayName,String world,String dimension,int ping) {
+        PlayerRow(String username,String displayName,String world,String dimension) {this(username,displayName,world,dimension,0);}
+    }
     private static final Pattern VARIABLE=Pattern.compile("\\{([a-zA-Z]+)}");
     static String escape(String value) {return value==null?"":value.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;").replace("\"","&quot;");}
     static String template(String format,Map<String,String> escapedValues) {
@@ -24,7 +26,11 @@ final class TelegramChatFormat {
         List<String> pages=new ArrayList<>();int count=people.size();StringBuilder current=new StringBuilder();int lines=0;
         for(int i=0;i<count;i++) {
             var player=people.get(i);String name=config.flag("list.useRealUsername",true)?player.username():player.displayName();
-            String row=template(config.format("listRow","{emoji} {name}"),Map.of("emoji",config.dimensions.getOrDefault(player.dimension(),config.dimensions.get("other")).html(),"name",escape(name),"username",escape(player.username()),"world",escape(player.world()),"number",Integer.toString(i+1)));
+            String ping=config.flag("list.showPing",false)?template(config.format("listPing"," · {ping} мс"),Map.of("ping",Integer.toString(Math.max(0,player.ping())))):"";
+            String rowFormat=config.format("listRow","{emoji} {name}{ping}");
+            // Old listRow templates also gain ping when the switch is enabled.
+            if(!rowFormat.contains("{ping}")) rowFormat+="{ping}";
+            String row=template(rowFormat,Map.of("emoji",config.dimensions.getOrDefault(player.dimension(),config.dimensions.get("other")).html(),"name",escape(name),"username",escape(player.username()),"world",escape(player.world()),"number",Integer.toString(i+1),"ping",ping));
             if(lines==20 || (!current.isEmpty() && current.length()+row.length()>3000)) {pages.add(current.toString());current.setLength(0);lines=0;}
             current.append(row).append('\n');lines++;
         }

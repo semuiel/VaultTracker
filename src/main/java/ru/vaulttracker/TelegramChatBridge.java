@@ -16,21 +16,19 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /** No network I/O on Minecraft region threads. Shared tokens have exactly one polling owner. */
 final class TelegramChatBridge implements Listener,AutoCloseable {
-    private sealed interface Job permits Outbound,ListSend,ListEdit,ListDelete {}
+    private sealed interface Job permits Outbound,ListSend,ListEdit {}
     private record Outbound(TelegramChatConfig.Target target,String html,boolean silent,boolean merge,long created) implements Job {}
     private record ListSend(String token,TelegramChatConfig.Target target,List<String> pages,boolean silent,long created) implements Job {}
-    private record ListEdit(String token,TelegramChatConfig.Target target,int messageId,int page,String callbackId) implements Job {}
-    private record ListDelete(String token,TelegramChatConfig.Target target,int messageId) implements Job {}
-    private record ListSession(TelegramChatConfig.Target target,List<String> pages,long expires) {}
+    private record ListEdit(String token,TelegramChatConfig.Target target,int messageId,int page,String callbackId,List<String> pages) implements Job {}
+    private record ListSession(TelegramChatConfig.Target target,int messageId,long expires) {}
     private final JavaPlugin plugin;
     private final TelegramChatConfig config;
     private final TelegramConfig transport;
     private final TelegramApi api;
     private final TelegramChatText translations;
-    private final Map<UUID,TelegramChatFormat.PlayerRow> players=new ConcurrentHashMap<>();
     private final LinkedBlockingDeque<Job> outgoing=new LinkedBlockingDeque<>(1000);
     private final Map<String,ListSession> lists=new ConcurrentHashMap<>();
-    private final ScheduledExecutorService expiry=Executors.newSingleThreadScheduledExecutor(Thread.ofVirtual().name("VaultTracker-chat-expiry").factory());
+    private final TelegramListExpiry expiry;
     private final AtomicBoolean stopping=new AtomicBoolean();
     private final Thread sender,receiver;
     private volatile String username;
@@ -42,6 +40,7 @@ final class TelegramChatBridge implements Listener,AutoCloseable {
     TelegramChatBridge(JavaPlugin plugin,TelegramChatConfig config,TelegramConfig catalogue) throws Exception {
         this.plugin=plugin;this.config=config;transport=config.transport(catalogue);api=new TelegramApi(transport);
         translations=new TelegramChatText(plugin.getDataFolder().toPath());
+        expiry=new TelegramListExpiry(transport.offsetFile().resolveSibling("telegramchat-"+config.token.split(":",2)[0]+"-lists.properties"),api,plugin.getLogger());
         sender=Thread.ofVirtual().name("VaultTracker-chat-send").unstarted(this::sendLoop);
         receiver=Thread.ofVirtual().name("VaultTracker-chat-poll").unstarted(this::pollLoop);
     }
@@ -51,14 +50,35 @@ final class TelegramChatBridge implements Listener,AutoCloseable {
             if(stopping.get()) return;
             var flexity=plugin.getServer().getPluginManager().getPlugin("flexity");
             if(flexity!=null&&flexity.isEnabled()) try {identity=new LinkedChatIdentity(flexity);} catch(Exception e) {plugin.getLogger().warning("Оформление Flexity недоступно: используется игровой ник с [TG].");}
-            for(Player p:plugin.getServer().getOnlinePlayers()) p.getScheduler().run(plugin,task->{if(!stopping.get()) remember(p);},null);
         });
-        sender.start();if(!shared) receiver.start();
+        expiry.start();sender.start();if(!shared) receiver.start();
     }
     void username(String value) {username=value;}
-    private void remember(Player player) {
+    private TelegramChatFormat.PlayerRow playerRow(Player player) {
         String dimension=switch(player.getWorld().getEnvironment()) {case NORMAL->"overworld";case NETHER->"nether";case THE_END->"end";default->"other";};
-        players.put(player.getUniqueId(),new TelegramChatFormat.PlayerRow(player.getName(),limit(plain(player.displayName()),100),player.getWorld().getName(),dimension));
+        return new TelegramChatFormat.PlayerRow(player.getName(),limit(plain(player.displayName()),100),player.getWorld().getName(),dimension,player.getPing());
+    }
+    /** Read on each player's entity thread, including after cross-region teleports on Folia. */
+    private CompletableFuture<List<String>> currentPlayerPages() {
+        var result=new CompletableFuture<List<String>>();
+        plugin.getServer().getGlobalRegionScheduler().run(plugin,task->{
+            if(stopping.get()) {result.cancel(false);return;}
+            List<CompletableFuture<TelegramChatFormat.PlayerRow>> rows=new ArrayList<>();
+            for(Player p:plugin.getServer().getOnlinePlayers()) {
+                var row=new CompletableFuture<TelegramChatFormat.PlayerRow>();rows.add(row);
+                try {
+                    var scheduled=p.getScheduler().run(plugin,t->{
+                        try {row.complete(!stopping.get()&&p.isOnline()?playerRow(p):null);}
+                        catch(Exception failure) {row.complete(null);}
+                    },()->row.complete(null));
+                    if(scheduled==null) row.complete(null);
+                } catch(Exception retired) {row.complete(null);}
+                row.completeOnTimeout(null,5,TimeUnit.SECONDS);
+            }
+            CompletableFuture.allOf(rows.toArray(CompletableFuture[]::new)).thenRun(()->
+                result.complete(TelegramChatFormat.playerList(config,rows.stream().map(CompletableFuture::join).filter(Objects::nonNull).toList())));
+        });
+        return result;
     }
     static String plain(Component c) {return c==null?"":PlainTextComponentSerializer.plainText().serialize(c);}
     static String limit(String value,int length) {return value.length()<=length?value:value.substring(0,length)+"…";}
@@ -69,11 +89,10 @@ final class TelegramChatBridge implements Listener,AutoCloseable {
         enqueue(config.chat,TelegramChatFormat.template(config.format("minecraftChat","<b>[{username}]</b> {text}"),Map.of("username",TelegramChatFormat.escape(name(event.getPlayer())),"text",TelegramChatFormat.escape(limit(text,1000)))),config.flag("messages.silent",false),true);
     }
     @EventHandler(priority=EventPriority.MONITOR) public void joined(PlayerJoinEvent event) {
-        Player p=event.getPlayer();remember(p);
+        Player p=event.getPlayer();
         if(config.flag("events.join",false) && (!config.flag("events.firstJoinOnly",false)||!p.hasPlayedBefore())) playerEvent(p.hasPlayedBefore()?"join":"firstJoin",p,"");
     }
-    @EventHandler(priority=EventPriority.MONITOR) public void left(PlayerQuitEvent event) {players.remove(event.getPlayer().getUniqueId());if(config.flag("events.leave",false)) playerEvent("leave",event.getPlayer(),"");}
-    @EventHandler(priority=EventPriority.MONITOR) public void world(PlayerChangedWorldEvent event) {remember(event.getPlayer());}
+    @EventHandler(priority=EventPriority.MONITOR) public void left(PlayerQuitEvent event) {if(config.flag("events.leave",false)) playerEvent("leave",event.getPlayer(),"");}
     @EventHandler(priority=EventPriority.MONITOR) public void died(PlayerDeathEvent event) {if(config.flag("events.death",false) && event.deathMessage()!=null) playerEvent("death",event.getPlayer(),translations.plain(event.deathMessage()));}
     private void playerEvent(String type,Player player,String text) {
         enqueue(config.chat,TelegramChatFormat.template(config.format(type,"{username} {text}"),Map.of("username",TelegramChatFormat.escape(name(player)),"text",TelegramChatFormat.escape(limit(text,1000)))),config.flag("events.silent",true),false);
@@ -104,7 +123,7 @@ final class TelegramChatBridge implements Listener,AutoCloseable {
         if(first.startsWith("/")) {
             String[] command=first.split("@",2);
             if(!command[0].equalsIgnoreCase("/list") || (command.length==2 && (username==null || !command[1].equalsIgnoreCase(username)))) return false;
-            if(config.flag("list.enabled",true)) enqueueList(new TelegramChatConfig.Target(update.chatId(),update.topicId()),TelegramChatFormat.playerList(config,players.values()));
+            if(config.flag("list.enabled",true)) currentPlayerPages().thenAccept(pages->enqueueList(new TelegramChatConfig.Target(update.chatId(),update.topicId()),pages));
             return true;
         }
         if(!config.chat.matches(update)) return false;
@@ -143,13 +162,13 @@ final class TelegramChatBridge implements Listener,AutoCloseable {
         String data=update.callbackData();if(data==null||!data.startsWith("vcl:")) return false;
         String[] parts=data.split(":",3);if(parts.length!=3||!config.listTarget(update)) return false;
         int page;try {page=Integer.parseInt(parts[2]);} catch(NumberFormatException ignored) {return false;}
-        outgoing.offer(new ListEdit(parts[1],new TelegramChatConfig.Target(update.chatId(),update.topicId()),update.messageId(),page,update.callbackId()));
+        currentPlayerPages().thenAccept(pages->{if(!stopping.get()) outgoing.offer(new ListEdit(parts[1],new TelegramChatConfig.Target(update.chatId(),update.topicId()),update.messageId(),page,update.callbackId(),pages));});
         return true;
     }
     private void enqueueList(TelegramChatConfig.Target target,List<String> pages) {
+        if(stopping.get()) return;
         String token=UUID.randomUUID().toString().replace("-","").substring(0,16);long now=System.currentTimeMillis();
-        lists.put(token,new ListSession(target,pages,now+config.listLifetimeSeconds()*1000L));
-        if(!outgoing.offer(new ListSend(token,target,pages,config.flag("list.silent",false),now))) lists.remove(token);
+        outgoing.offer(new ListSend(token,target,pages,config.flag("list.silent",false),now));
     }
     private static List<TelegramCommands.Button> listButtons(String token,int page,int pages) {
         if(pages<=1) return List.of();List<TelegramCommands.Button> buttons=new ArrayList<>();
@@ -165,10 +184,10 @@ final class TelegramChatBridge implements Listener,AutoCloseable {
     private void sendLoop() {
         while(!stopping.get()) {
             try {
+                lists.entrySet().removeIf(entry->System.currentTimeMillis()>=entry.getValue().expires());
                 Job job=outgoing.poll(1,TimeUnit.SECONDS);if(job==null) continue;
                 if(job instanceof ListSend item) {sendList(item);continue;}
                 if(job instanceof ListEdit item) {editList(item);continue;}
-                if(job instanceof ListDelete item) {deleteList(item);continue;}
                 Outbound item=(Outbound)job;
                 if(System.currentTimeMillis()-item.created()>600000) continue;
                 if(item.merge() && config.mergeSeconds()>0) {
@@ -190,18 +209,16 @@ final class TelegramChatBridge implements Listener,AutoCloseable {
     private void sendList(ListSend item) throws Exception {
         if(System.currentTimeMillis()-item.created()>600000) {lists.remove(item.token());return;}
         int messageId=api.sendHtml(item.target().chatId(),item.target().topicId(),item.pages().getFirst(),item.silent(),listButtons(item.token(),0,item.pages().size()));
-        expiry.schedule(()->outgoing.offer(new ListDelete(item.token(),item.target(),messageId)),config.listLifetimeSeconds(),TimeUnit.SECONDS);
+        long expires=System.currentTimeMillis()+config.listLifetimeSeconds()*1000L;
+        lists.put(item.token(),new ListSession(item.target(),messageId,expires));
+        expiry.track(item.target().chatId(),messageId,expires);
     }
     private void editList(ListEdit item) throws Exception {
         ListSession session=lists.get(item.token());
-        if(session==null||System.currentTimeMillis()>=session.expires()||!session.target().equals(item.target())) {api.answerCallback(item.callbackId(),"Список уже удалён или устарел.",false);return;}
-        int page=Math.max(0,Math.min(item.page(),session.pages().size()-1));
-        api.editHtml(item.target().chatId(),item.messageId(),session.pages().get(page),listButtons(item.token(),page,session.pages().size()));
+        if(session==null||System.currentTimeMillis()>=session.expires()||!session.target().equals(item.target())||session.messageId()!=item.messageId()) {api.answerCallback(item.callbackId(),"Список уже удалён или устарел.",false);return;}
+        int page=Math.max(0,Math.min(item.page(),item.pages().size()-1));
+        api.editHtml(item.target().chatId(),item.messageId(),item.pages().get(page),listButtons(item.token(),page,item.pages().size()));
         api.answerCallback(item.callbackId(),"",false);
-    }
-    private void deleteList(ListDelete item) {
-        if(lists.remove(item.token())==null) return;
-        try {api.delete(item.target().chatId(),item.messageId());} catch(Exception ignored) {}
     }
     private void pollLoop() {
         long offset=TelegramApi.loadOffset(transport.offsetFile());int failures=0;boolean initialized=false;
@@ -221,7 +238,7 @@ final class TelegramChatBridge implements Listener,AutoCloseable {
     }
     @Override public void close() {
         if(!stopping.compareAndSet(false,true)) return;
-        HandlerList.unregisterAll(this);receiver.interrupt();sender.interrupt();expiry.shutdownNow();api.close();players.clear();lists.clear();outgoing.clear();
+        HandlerList.unregisterAll(this);receiver.interrupt();sender.interrupt();expiry.close();api.close();lists.clear();outgoing.clear();
         try {receiver.join(2000);sender.join(2000);} catch(InterruptedException stop) {Thread.currentThread().interrupt();}
     }
 }

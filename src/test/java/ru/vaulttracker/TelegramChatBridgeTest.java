@@ -34,6 +34,7 @@ class TelegramChatBridgeTest {
         doAnswer(c->{c.getArgument(1,Consumer.class).accept(mock(ScheduledTask.class));return mock(ScheduledTask.class);}).when(global).run(eq(plugin),any());
         var entity=mock(EntityScheduler.class);when(player.getScheduler()).thenReturn(entity);
         doAnswer(c->{c.getArgument(1,Consumer.class).accept(mock(ScheduledTask.class));return mock(ScheduledTask.class);}).when(entity).run(eq(plugin),any(),any());
+        when(player.isOnline()).thenReturn(true);when(player.getPing()).thenReturn(42);
         when(player.getUniqueId()).thenReturn(UUID.randomUUID());when(player.getName()).thenReturn("Alex");when(player.displayName()).thenReturn(Component.text("DisplayAlex"));when(player.getWorld()).thenReturn(world);when(world.getEnvironment()).thenReturn(World.Environment.NETHER);when(world.getName()).thenReturn("world_nether");
     }
     TelegramApi.Incoming message(long chat,int topic,String text) {return new TelegramApi.Incoming(1,chat,topic,42,1,text,null,null,false,"Sender");}
@@ -89,14 +90,16 @@ class TelegramChatBridgeTest {
             verify(apis.constructed().getFirst(),never()).updates(anyLong());
         }
     }
-    @Test void listReflectsChangedDimensionAndQuitAndHonoursBotSuffix() throws Exception {
+    @Test void listReadsCurrentDimensionWithoutRelyingOnWorldEventsAndHonoursBotSuffix() throws Exception {
         try(var apis=mockConstruction(TelegramApi.class);var bridge=new TelegramChatBridge(plugin,config,catalogue)) {
             bridge.username("ChatBot");bridge.start(true);var api=apis.constructed().getFirst();
             assertTrue(bridge.consume(message(-100123,486,"/list@ChatBot")));
             verify(api,timeout(1500)).sendHtml(eq(-100123L),eq(486),contains("🔥 Alex"),eq(false),eq(List.of()));
-            when(world.getEnvironment()).thenReturn(World.Environment.THE_END);var change=mock(PlayerChangedWorldEvent.class);when(change.getPlayer()).thenReturn(player);bridge.world(change);
+            when(world.getEnvironment()).thenReturn(World.Environment.THE_END);
             bridge.consume(message(-100123,486,"/list"));verify(api,timeout(1500)).sendHtml(eq(-100123L),eq(486),contains("🌌 Alex"),eq(false),eq(List.of()));
-            var quit=mock(PlayerQuitEvent.class);when(quit.getPlayer()).thenReturn(player);bridge.left(quit);bridge.consume(message(-100123,486,"/list"));
+            when(world.getEnvironment()).thenReturn(World.Environment.NORMAL);
+            bridge.consume(message(-100123,486,"/list"));verify(api,timeout(1500)).sendHtml(eq(-100123L),eq(486),contains("🌍 Alex"),eq(false),eq(List.of()));
+            doReturn(List.of()).when(server).getOnlinePlayers();bridge.consume(message(-100123,486,"/list"));
             verify(api,timeout(1500)).sendHtml(eq(-100123L),eq(486),contains("Никакой конкуренции"),eq(false),eq(List.of()));
         }
     }
@@ -123,18 +126,48 @@ class TelegramChatBridgeTest {
     @Test void listIsAvailableInAdvancementTopicAndUsesOnePagedMessage() throws Exception {
         try(var apis=mockConstruction(TelegramApi.class);var bridge=new TelegramChatBridge(plugin,config,catalogue)) {
             bridge.username("ChatBot");bridge.start(true);var api=apis.constructed().getFirst();when(api.sendHtml(anyLong(),anyInt(),anyString(),anyBoolean(),anyList())).thenReturn(77);
-            var field=TelegramChatBridge.class.getDeclaredField("players");field.setAccessible(true);
-            @SuppressWarnings("unchecked") var rows=(Map<UUID,TelegramChatFormat.PlayerRow>)field.get(bridge);
-            for(int i=0;i<21;i++) rows.put(UUID.randomUUID(),new TelegramChatFormat.PlayerRow("Player"+i,"Player"+i,"world","overworld"));
+            var online=new ArrayList<Player>();
+            var scheduler=player.getScheduler();
+            for(int i=0;i<21;i++) {
+                var p=mock(Player.class);when(p.isOnline()).thenReturn(true);when(p.getName()).thenReturn("Player"+String.format("%02d",i));when(p.getWorld()).thenReturn(world);when(p.displayName()).thenReturn(Component.text("Player"+i));when(p.getScheduler()).thenReturn(scheduler);online.add(p);
+            }
+            doReturn(online).when(server).getOnlinePlayers();
             assertTrue(bridge.consume(message(-100123,123,"/list")));
             @SuppressWarnings("unchecked") var buttons=org.mockito.ArgumentCaptor.forClass((Class<List<TelegramCommands.Button>>)(Class<?>)List.class);
             verify(api,timeout(1500)).sendHtml(eq(-100123L),eq(123),contains("Player"),eq(false),buttons.capture());
             assertEquals("1/2",buttons.getValue().getFirst().text());
             String next=buttons.getValue().getLast().data();
+            when(world.getEnvironment()).thenReturn(World.Environment.NORMAL);
             var callback=new TelegramApi.Incoming(2,-100123,123,42,77,null,"callback",next,false,"Sender");
             assertTrue(bridge.consume(callback));
-            verify(api,timeout(1500)).editHtml(eq(-100123L),eq(77),anyString(),argThat(value->value.stream().anyMatch(button->button.text().equals("2/2"))));
+            verify(api,timeout(1500)).editHtml(eq(-100123L),eq(77),contains("🌍 Player20"),argThat(value->value.stream().anyMatch(button->button.text().equals("2/2"))));
             verify(api,timeout(1500)).answerCallback("callback","",false);
+            var expiryField=TelegramChatBridge.class.getDeclaredField("expiry");expiryField.setAccessible(true);
+            var expiry=(TelegramListExpiry)expiryField.get(bridge);
+            expiry.deleteDue(System.currentTimeMillis()+299000);verify(api,never()).delete(anyLong(),anyInt());
+            expiry.deleteDue(System.currentTimeMillis()+301000);verify(api).delete(-100123L,77);
+        }
+    }
+
+    @Test void listReadsCurrentPingAndSkipsPlayersWhoDisconnectDuringSnapshot() throws Exception {
+        var settings=TelegramChatConfig.parse(TelegramChatConfigTest.SETTINGS+"\nlist:\n  showPing: true\n");
+        try(var apis=mockConstruction(TelegramApi.class);var bridge=new TelegramChatBridge(plugin,settings,catalogue)) {
+            bridge.start(true);var api=apis.constructed().getFirst();
+            bridge.consume(message(-100123,486,"/list"));
+            verify(api,timeout(1500)).sendHtml(eq(-100123L),eq(486),contains("🔥 Alex · 42 мс"),eq(false),eq(List.of()));
+            when(player.getPing()).thenReturn(123);bridge.consume(message(-100123,486,"/list"));
+            verify(api,timeout(1500)).sendHtml(eq(-100123L),eq(486),contains("🔥 Alex · 123 мс"),eq(false),eq(List.of()));
+            when(player.isOnline()).thenReturn(false);bridge.consume(message(-100123,486,"/list"));
+            verify(api,timeout(1500)).sendHtml(eq(-100123L),eq(486),contains("Никакой конкуренции"),eq(false),eq(List.of()));
+        }
+    }
+
+    @Test void retiredPlayerCannotHoldUpList() throws Exception {
+        var scheduler=player.getScheduler();
+        doAnswer(c->{((Runnable)c.getArgument(2)).run();return null;}).when(scheduler).run(eq(plugin),any(),any());
+        try(var apis=mockConstruction(TelegramApi.class);var bridge=new TelegramChatBridge(plugin,config,catalogue)) {
+            bridge.start(true);bridge.consume(message(-100123,486,"/list"));
+            verify(apis.constructed().getFirst(),timeout(1500)).sendHtml(eq(-100123L),eq(486),contains("Никакой конкуренции"),eq(false),eq(List.of()));
         }
     }
 }

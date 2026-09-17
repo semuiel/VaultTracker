@@ -65,6 +65,9 @@ list:
   # Кнопки перелистывают это же сообщение. Через это число секунд оно удаляется.
   messageLifetimeSeconds: 300
   useRealUsername: true
+  # Показывать пинг после ника: «Alex · 42 мс». false — скрыть.
+  # Мир и пинг читаются заново при /list и нажатии кнопки страницы.
+  showPing: false
   silent: false
   dimensions:
     # Тип измерения определяется сервером, а не именем папки мира.
@@ -121,8 +124,12 @@ formats:
   telegramChat: "{tg}<white>{sender}<gray>:</gray> {text}</white>"
   # Список: заголовок {count}, {page}, {pages}; строка {emoji}, {name},
   # {username} (настоящий ник), {world}, {number} (порядковый номер).
+  # {ping} в listRow — весь суффикс listPing, пустой при showPing: false.
+  # Старым listRow без {ping} суффикс добавляется автоматически.
+  # {ping} внутри listPing — числовой пинг в миллисекундах.
   listHeader: "📝 <b>Вот они слева направо:</b> · {count} онлайн · {page}/{pages}"
-  listRow: "{emoji} {name}"
+  listRow: "{emoji} {name}{ping}"
+  listPing: " · {ping} мс"
   listEmpty: "<b>Идеальное время для захвата мира. Никакой конкуренции.😉</b>"
   # Достижения: {username}, {title}, {description}. Описание добавляется
   # только при showDescription: true; в остальных случаях оно пустое.

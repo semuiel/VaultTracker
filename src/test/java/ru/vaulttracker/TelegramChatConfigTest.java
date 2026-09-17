@@ -48,6 +48,15 @@ class TelegramChatConfigTest {
         assertFalse(TelegramChatFormat.withoutCustomEmoji(pages.getFirst()).contains("tg-emoji"));
         assertTrue(TelegramChatFormat.playerList(config,List.of(new TelegramChatFormat.PlayerRow("<b>&","x","world","other"))).getFirst().contains("&lt;b&gt;&amp;"));
     }
+    @Test void pingToggleWorksWithOldAndNewRowTemplatesAndCustomSuffix() throws Exception {
+        var people=List.of(new TelegramChatFormat.PlayerRow("Alex","Alex","world","overworld",84));
+        for(String row:List.of("{emoji} {name}","{emoji} {name}{ping}")) {
+            var config=TelegramChatConfig.parse(SETTINGS+"\nlist:\n  showPing: true\nformats:\n  listRow: '"+row+"'\n  listPing: ' [<code>{ping} ms</code>]'\n");
+            assertTrue(TelegramChatFormat.playerList(config,people).getFirst().contains("🌍 Alex [<code>84 ms</code>]"));
+            config.yaml.set("list.showPing",false);
+            String hidden=TelegramChatFormat.playerList(config,people).getFirst();assertTrue(hidden.endsWith("🌍 Alex"));assertFalse(hidden.contains("84"));assertFalse(hidden.contains("{ping}"));
+        }
+    }
     @Test void requiredPrefixAndSinglePassPlaceholdersDoNotChangeMessageContent() throws Exception {
         var config=TelegramChatConfig.parse(SETTINGS+"\nmessages:\n  requirePrefixInMinecraft: ''\n");
         assertNull(TelegramChatFormat.chatText(config,"private chat"));assertEquals("Hello",TelegramChatFormat.chatText(config,"Hello"));
