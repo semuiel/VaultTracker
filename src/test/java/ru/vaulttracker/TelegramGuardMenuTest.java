@@ -23,6 +23,18 @@ class TelegramGuardMenuTest {
         menu=new TelegramGuardMenu(guard,new TelegramCommands(catalogue,storage,1,id->true));
     }
     @AfterEach void close() {guard.close();}
+    @Test void childMenuIsLinkedOwnerOnlyAndSuperManagementIsProtected() throws Exception {
+        guard.configure(new GuardConfig(true,0,99),Set.of());UUID id=UUID.randomUUID();
+        guard.link(id,"Alex",guard.generate(42).get().split("/vtrack link ")[1].substring(0,32)).get();
+        var moderation=new TelegramModeration(mock(org.bukkit.plugin.java.JavaPlugin.class),guard);
+        menu=new TelegramGuardMenu(guard,new TelegramCommands(catalogue,storage,20,v->true),moderation);
+        assertFalse(menu.home(42).buttons().stream().anyMatch(b->b.text().contains("Размер")));
+        var root=click(99,menu.home(99),"Супер");var kids=click(99,root,"Дети");assertTrue(kids.buttons().stream().anyMatch(b->b.text().contains("Добавить ребёнка")));
+        assertTrue(menu.callback(42,button(root,"Дети")).alert());
+        guard.child(99,id,"Alex",true).get();var sizes=click(42,menu.home(42),"Размер");assertEquals(3,sizes.buttons().stream().filter(b->b.text().contains("Гном")||b.text().contains("Карлик")||b.text().contains("нормальный")).count());
+        assertTrue(menu.callback(43,button(sizes,"Гном")).alert());click(42,sizes,"Гном");assertEquals(0.6,guard.child(id).size());
+        guard.child(99,id,"Alex",false).get();assertThrows(Exception.class,()->click(42,sizes,"Карлик"));
+    }
     @Test void ownChestSearchPaginatesAndDoesNotExposeOtherOwners() throws Exception {
         UUID owner=UUID.randomUUID(),world=UUID.randomUUID();
         guard.link(owner,"Alex",guard.generate(42).get().split("/vtrack link ")[1].substring(0,32)).get();

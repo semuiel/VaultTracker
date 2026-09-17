@@ -15,6 +15,8 @@ final class GuardService implements AutoCloseable {
     static final long RETENTION=30L*24*60*60*1000, CODE_TTL=10*60*1000L;
     static final long MAX_OFFLINE_SECONDS=31_536_000;
     record Account(UUID uuid,String name,boolean notifications) {}
+    record Child(UUID uuid,String name,double size) {}
+    private final Map<UUID,Child> children=new ConcurrentHashMap<>();
     record Event(long id,long time,String name,String location,Map<String,Long> changes,boolean removed,String actor) {}
     record Delivery(long id,long recipient,String text) {}
     private record Code(long user,long expires) {}
@@ -49,6 +51,7 @@ final class GuardService implements AutoCloseable {
         db=DriverManager.getConnection("jdbc:h2:"+path.toAbsolutePath()+";DB_CLOSE_ON_EXIT=FALSE","sa","");
         try(var s=db.createStatement()) {
             s.execute("CREATE TABLE IF NOT EXISTS accounts (tg BIGINT PRIMARY KEY, uuid VARCHAR(36) UNIQUE NOT NULL, nickname VARCHAR(64) NOT NULL, alerts BOOLEAN NOT NULL DEFAULT TRUE)");
+            s.execute("CREATE TABLE IF NOT EXISTS children (uuid VARCHAR(36) PRIMARY KEY, nickname VARCHAR(64) NOT NULL, size DOUBLE PRECISION NOT NULL)");
             s.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS offline_seconds BIGINT");
             s.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS telegram_tag BOOLEAN NOT NULL DEFAULT FALSE");
             s.execute("CREATE TABLE IF NOT EXISTS guard_admins (tg BIGINT PRIMARY KEY, enabled BOOLEAN NOT NULL)");
@@ -85,7 +88,22 @@ final class GuardService implements AutoCloseable {
         try(var s=db.createStatement();var rs=s.executeQuery("SELECT tg,seconds FROM super_delays")) {while(rs.next()) superDelays.put(rs.getLong(1),rs.getLong(2));}
         try(var s=db.createStatement();var rs=s.executeQuery("SELECT capability,enabled FROM admin_capabilities")) {while(rs.next()) adminCapabilities.put(rs.getString(1),rs.getBoolean(2));}
         disk.scheduleWithFixedDelay(()-> {try {prune();} catch(Exception e) {log.warning("Не удалось очистить историю охраны.");}},1,60,TimeUnit.MINUTES);
+        try(var s=db.createStatement();var rs=s.executeQuery("SELECT uuid,nickname,size FROM children")) {while(rs.next()) {var child=new Child(UUID.fromString(rs.getString(1)),rs.getString(2),rs.getDouble(3));children.put(child.uuid(),child);}}
     }
+    Child child(UUID uuid) {return children.get(uuid);}
+    List<Child> children(long user) {requireSuper(user);return children.values().stream().sorted(Comparator.comparing(Child::name,String.CASE_INSENSITIVE_ORDER)).toList();}
+    CompletableFuture<Void> child(long user,UUID uuid,String name,boolean enabled) {return submit(()->{
+        requireSuper(user);
+        if(enabled) {var prior=children.get(uuid);double size=prior==null?1:prior.size();execute("MERGE INTO children KEY(uuid) VALUES(?,?,?)",uuid.toString(),name,size);children.put(uuid,new Child(uuid,name,size));}
+        else {execute("DELETE FROM children WHERE uuid=?",uuid.toString());children.remove(uuid);}
+        return null;
+    });}
+    CompletableFuture<UUID> childSize(long user,double size) {return submit(()->{
+        if(size!=0.6&&size!=0.75&&size!=1) throw new IllegalArgumentException("Недопустимый размер");
+        var account=accountNow(user);var child=account==null?null:children.get(account.uuid());
+        if(child==null) throw new SecurityException("Функция доступна только добавленным детям с привязанным персонажем");
+        execute("UPDATE children SET size=? WHERE uuid=?",size,child.uuid().toString());children.put(child.uuid(),new Child(child.uuid(),child.name(),size));return child.uuid();
+    });}
     void configure(GuardConfig config,Set<Long> admins) { this.config=config; this.admins=Set.copyOf(admins); }
     boolean superAdmin(long user) {return user>0 && (config.superAdminUserId()==user || extraSupers.contains(user));}
     boolean admin(long user) { return superAdmin(user) || adminOverrides.getOrDefault(user,admins.contains(user)); }

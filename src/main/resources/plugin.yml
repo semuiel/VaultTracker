@@ -1,5 +1,5 @@
 name: VaultTracker
-version: 0.10.8
+version: 0.11.0
 softdepend: [flexity]
 main: ru.vaulttracker.VaultTrackerPlugin
 api-version: '1.21.11'
@@ -11,7 +11,7 @@ commands:
     usage: /find <resource> [page]
   topitem:
     description: Find players with a resource
-    usage: /topitem diamond
+    usage: /topitem <all|предмет|игрок> [страница]
     aliases: [itemtop]
   vaulttracker:
     description: Chest catalogue commands

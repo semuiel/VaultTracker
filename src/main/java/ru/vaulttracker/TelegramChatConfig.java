@@ -14,12 +14,14 @@ final class TelegramChatConfig {
     final YamlConfiguration yaml;
     final boolean enabled;
     final String token;
-    final Target chat,advancements;
+    final Target chat,advancements,reports;
     final Map<String,Emoji> dimensions;
     private TelegramChatConfig(YamlConfiguration y) {
         yaml=y;enabled=y.getBoolean("enabled",false);
         String env=System.getenv("VAULT_TELEGRAM_CHAT_TOKEN");token=env==null||env.isBlank()?y.getString("token","").trim():env.trim();
         chat=target(y,"chat",null);advancements=target(y,"advancements",chat);
+        reports=target(y,"reports",new Target(-1002748891862L,34339));
+        if(flag("reports.enabled",false)&&reports.chatId()>=0) throw new IllegalArgumentException("telegramchat.yml: reports.chatId должен быть отрицательным");
         if(enabled) {
             if(!token.matches("[0-9]+:[A-Za-z0-9_-]{20,}")) throw new IllegalArgumentException("telegramchat.yml: заполните token");
             if(chat.chatId()>=0 || (advancementEnabled() && advancements.chatId()>=0)) throw new IllegalArgumentException("telegramchat.yml: укажите отрицательный chatId группы");

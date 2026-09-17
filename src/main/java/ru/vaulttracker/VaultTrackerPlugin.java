@@ -30,6 +30,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
     private TelegramChatBridge telegramChat;
     private GuardService guard;
     private SearchCompass searchCompass;
+    private ChildPlayers childPlayers;
     private final Object telegramLock=new Object();
     private final Set<BlockKey> scheduled = ConcurrentHashMap.newKeySet();
     private volatile boolean stopping;
@@ -57,6 +58,8 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
         storage = new StorageEngine(getDataFolder().toPath().resolve("cache-"+id), database, getLogger());
         catalogue = new Catalogue(snapshot-> {storage.accept(snapshot);guard.accept(snapshot);});
         searchCompass=new SearchCompass(this);
+        childPlayers=new ChildPlayers(this,guard);
+        getServer().getPluginManager().registerEvents(childPlayers,this);childPlayers.start();
         getServer().getPluginManager().registerEvents(searchCompass,this);
         getServer().getPluginManager().registerEvents(this,this);
         Objects.requireNonNull(getCommand("vaulttracker")).setExecutor(this);
@@ -89,7 +92,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
             TelegramConfig telegramConfig=TelegramConfig.load(getDataFolder().toPath(),false);
             guard.configure(GuardConfig.load(getDataFolder().toPath()),telegramConfig.adminUserIds());
             if(telegramConfig.enabled()) {
-                if(telegramConfig.token().matches("[0-9]+:[A-Za-z0-9_-]{20,}")) telegram=new TelegramBotService(telegramConfig,catalogue,storage,getLogger(),guard,new TelegramModeration(this,guard,searchCompass));
+                if(telegramConfig.token().matches("[0-9]+:[A-Za-z0-9_-]{20,}")) telegram=new TelegramBotService(telegramConfig,catalogue,storage,getLogger(),guard,new TelegramModeration(this,guard,searchCompass,childPlayers));
                 else getLogger().warning("Каталожный Telegram-бот не запущен: заполните token в telegram.yml. Чат-бот с отдельным токеном может работать независимо.");
             }
             String chatStatus="чат выключен";
@@ -131,7 +134,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
     private static BlockKey key(Block b) { return new BlockKey(b.getWorld().getUID(), b.getX(), b.getY(), b.getZ()); }
     private static Location location(BlockKey p, World w) { return new Location(w,p.x(),p.y(),p.z()); }
     private static String plain(Component c) { return c == null ? "" : PlainTextComponentSerializer.plainText().serialize(c); }
-    private static boolean marker(String text) { return "[vault]".equalsIgnoreCase(text.trim()); }
+    static boolean marker(String text) { return "[vault]".equalsIgnoreCase(text.trim())||"[v]".equalsIgnoreCase(text.trim()); }
     static void decorateOwner(Sign sign, String playerName) {
         SignSide front = sign.getSide(Side.FRONT);
         // Only replace the registration marker; players may keep their own labels.
@@ -389,7 +392,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
             tell(sender,"Ваших хранилищ: " + mine.size() + ". Первые 10:");
             mine.stream().limit(10).forEach(v->tell(sender,v.sign().x()+" "+v.sign().y()+" "+v.sign().z()+" — "+v.chests().size()+" блоков"));
         } else {
-            tell(sender,"Напишите [vault] на первой строке таблички на хранилище: появится ваш ник.");
+            tell(sender,"Напишите [vault] или [v] на первой строке таблички на хранилище: появится ваш ник.");
             tell(sender,"/vtrack mine — ваши хранилища; /topitem diamond или /vtrack find DIAMOND — у кого есть алмазы. Поиск доступен постоянно.");
             tell(sender,"/vtrack link <код> — привязать персонажа к Telegram. Получите код кнопкой в личном чате бота.");
             if (sender.hasPermission("vaulttracker.admin")) tell(sender,"/vtrack status | /vtrack rescan | /vtrack reload — управление каталогом.");
@@ -403,10 +406,14 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
             boolean explicit=args.length>1 && args[0].equalsIgnoreCase("player");
             int position=args.length-(explicit ? 1 : 0);
             String prefix=args[args.length-1].toLowerCase(Locale.ROOT);
+            if(!explicit&&position==2&&args[0].equalsIgnoreCase("all")) {
+                int pages=Math.max(1,(catalogue.allItemTotals().size()+19)/20);
+                return java.util.stream.IntStream.rangeClosed(1,pages).mapToObj(Integer::toString).filter(v->v.startsWith(prefix)).toList();
+            }
             Set<String> options=new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
             if (position==1) {
                 options.addAll(catalogue.ownerNames());
-                if (!explicit) options.add("player");
+                if (!explicit) {options.add("player");options.add("all");}
             }
             if ((!explicit && position==1) || position==2)
                 Arrays.stream(Material.values()).filter(m -> !m.name().startsWith("LEGACY_")).filter(Material::isItem)

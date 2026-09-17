@@ -24,9 +24,31 @@ class TelegramModeration {
     private final JavaPlugin plugin;
     private final GuardService guard;
     private final SearchCompass searchCompass;
+    private final ChildPlayers children;
     private final Map<UUID,Boolean> lpAdminState=new ConcurrentHashMap<>();
     TelegramModeration(JavaPlugin plugin,GuardService guard) {this(plugin,guard,null);}
-    TelegramModeration(JavaPlugin plugin,GuardService guard,SearchCompass searchCompass) {this.plugin=plugin;this.guard=guard;this.searchCompass=searchCompass;}
+    TelegramModeration(JavaPlugin plugin,GuardService guard,SearchCompass searchCompass) {this(plugin,guard,searchCompass,null);}
+    TelegramModeration(JavaPlugin plugin,GuardService guard,SearchCompass searchCompass,ChildPlayers children) {this.plugin=plugin;this.guard=guard;this.searchCompass=searchCompass;this.children=children;}
+    CompletableFuture<String> changeChild(long user,String nickname,boolean enabled) {
+        guard.requireSuper(user);
+        if(nickname.matches("[0-9]{1,20}")) {
+            long id;try {id=Long.parseLong(nickname);} catch(NumberFormatException invalid) {return CompletableFuture.failedFuture(new IllegalArgumentException("Некорректный Telegram ID"));}
+            return guard.account(id).thenCompose(account->{
+                if(account==null) return CompletableFuture.failedFuture(new IllegalArgumentException("Этот Telegram ID не привязан. Сначала свяжите аккаунт или используйте игровой ник."));
+                return guard.child(user,account.uuid(),account.name(),enabled).thenApply(v->{if(children!=null) children.refresh(account.uuid());return account.name()+(enabled?" добавлен в список детей.":" удалён из списка детей.");});
+            });
+        }
+        if(!enabled) {
+            var matches=guard.children(user).stream().filter(p->p.name().equalsIgnoreCase(nickname)).toList();
+            if(matches.size()==1) {var child=matches.getFirst();return guard.child(user,child.uuid(),child.name(),false).thenApply(v->{if(children!=null) children.refresh(child.uuid());return child.name()+" удалён из списка детей.";});}
+        }
+        return players(user,"all").thenCompose(rows->{
+            var matches=rows.stream().filter(p->p.name().equalsIgnoreCase(nickname)).toList();
+            if(matches.size()!=1) return CompletableFuture.failedFuture(new IllegalArgumentException("Укажите точный ник игрока, который уже заходил на сервер."));
+            var person=matches.getFirst();return guard.child(user,person.uuid(),person.name(),enabled).thenApply(v->{if(children!=null) children.refresh(person.uuid());return person.name()+(enabled?" добавлен в список детей.":" удалён из списка детей.");});
+        });
+    }
+    CompletableFuture<String> childSize(long user,double value) {return guard.childSize(user,value).thenApply(uuid->{if(children!=null) children.refresh(uuid);return "Размер сохранён: "+value+". Если персонаж офлайн, применится при входе.";});}
     void pointOwnCompass(long user,UUID uuid,List<OwnResourceSearch.Row> rows) {
         if(searchCompass==null) return;
         guard.account(user).thenCompose(account->{

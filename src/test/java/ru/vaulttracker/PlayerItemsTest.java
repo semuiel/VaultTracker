@@ -47,6 +47,14 @@ class PlayerItemsTest {
         assertTrue(text(run(true,true,"Alex","iron_ingot")).contains("Железный слиток: 0 шт."));
         assertFalse(text(run(true,true,"Alex")).contains("999"));
     }
+    @Test void allTopMatchesBotTotalsAndPaginatesTwentyOwners() {
+        add(alex,"Alex",Map.of("DIAMOND",864L,"STONE",864L));add(alex,"Alex",Map.of("IRON_INGOT",1728L));
+        for(int i=0;i<20;i++) add(UUID.randomUUID(),"Player"+i,Map.of("STONE",18L+i));
+        var first=run(true,true,"all");assertEquals(22,first.size());assertTrue(text(first).contains("1. Alex — 2 шалк."));assertFalse(text(first).contains("шт."));
+        assertEquals(List.of("/topitem all 2"),clicks(first.getLast()));assertEquals(3,run(true,true,"all","2").size());
+        assertTrue(text(run(true,true,"all","0")).contains("от 1 до 2"));
+        add(UUID.randomUUID(),"all",Map.of("STONE",3L));assertTrue(text(run(true,true,"player","all")).contains("ресурсы хранилищ"));
+    }
     @Test void everyPageHasEightRowsWithCorrectBoundaryButtonsAndNoMissingItems() {
         Map<String,Long> items=new HashMap<>(); for(int i=1;i<=17;i++) items.put("TEST_"+i,(long)i);
         add(alex,"Alex",items);

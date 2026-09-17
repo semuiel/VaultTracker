@@ -11,6 +11,14 @@ import java.util.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class TelegramChatApiTest {
+    @Test void replyTargetComesFromOriginalMessageAndAnonymousPostsAreRejected() {
+        var json=JsonParser.parseString("""
+            {"update_id":1,"message":{"message_id":3,"chat":{"id":-100123,"type":"supergroup"},"from":{"id":42,"first_name":"Reporter"},"text":"/report bad","reply_to_message":{"message_id":2,"from":{"id":55,"first_name":"Target"},"text":"quoted"}}}
+            """).getAsJsonObject();
+        var incoming=TelegramApi.parseUpdate(json);assertEquals(55,incoming.reply().userId());assertEquals("quoted",incoming.reply().text());assertFalse(incoming.anonymous());
+        json.getAsJsonObject("message").getAsJsonObject("reply_to_message").add("sender_chat",new JsonObject());assertNull(TelegramApi.parseUpdate(json).reply());
+        json.getAsJsonObject("message").add("sender_chat",new JsonObject());assertTrue(TelegramApi.parseUpdate(json).anonymous());
+    }
     @Test void displayNameExcludesUsernameButAdminProfilePreservesIt() {
         var update=TelegramApi.parseUpdate(JsonParser.parseString("{\"update_id\":1,\"message\":{\"message_id\":1,\"chat\":{\"id\":-100,\"type\":\"supergroup\"},\"from\":{\"id\":42,\"first_name\":\"Gaben\",\"last_name\":\"Example\",\"username\":\"GabenMax\"},\"text\":\"Hi\"}}").getAsJsonObject());
         assertEquals("Gaben Example",update.displayName());assertTrue(update.profile().contains("@GabenMax"));

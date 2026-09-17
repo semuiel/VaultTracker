@@ -27,6 +27,16 @@ final class TopItemCommand {
         boolean explicit = args.length > 1 && args[0].equalsIgnoreCase("player");
         if (explicit) args=Arrays.copyOfRange(args,1,args.length);
         if (args.length < 1 || args.length > 2) { help(sender); return true; }
+        if(!explicit && args[0].equalsIgnoreCase("all")) {
+            var rows=catalogue.allItemTotals();int pages=Math.max(1,(rows.size()+19)/20),page=1;
+            try {if(args.length==2) page=Integer.parseInt(args[1]);} catch(NumberFormatException bad) {page=0;}
+            if(page<1||page>pages) {say(sender,"Укажите страницу от 1 до "+pages+".");return true;}
+            say(sender,"Топ по всем предметам · "+page+"/"+pages+" · в шалкерах");
+            if(rows.isEmpty()) say(sender,"В каталоге пока нет предметов.");
+            for(int i=(page-1)*20;i<Math.min(page*20,rows.size());i++) {var row=rows.get(i);say(sender,(i+1)+". "+row.name()+" — "+ItemAmount.totalShulkers(row.amount()));}
+            sender.sendMessage(button("◀ Назад",page>1?"/topitem all "+(page-1):null).append(Component.text("  "+page+"/"+pages+"  ")).append(button("Вперёд ▶",page<pages?"/topitem all "+(page+1):null)));
+            return true;
+        }
         ResourceGroups.Group group=ResourceGroups.resolve(args[0]);
         if (!explicit && args.length==1 && group!=null) {
             say(sender,group.title()+" — топ владельцев, последние известные остатки:");
@@ -89,6 +99,6 @@ final class TopItemCommand {
                 .hoverEvent(HoverEvent.showText(Component.text("Открыть страницу")));
     }
     private static void help(CommandSender sender) {
-        say(sender,"/topitem предмет — топ; /topitem Ник [страница] — все ресурсы; /topitem Ник предмет — количество.");
+        say(sender,"/topitem all [страница] — суммарный топ; /topitem предмет — топ; /topitem Ник [страница] — все ресурсы; /topitem Ник предмет — количество.");
     }
 }

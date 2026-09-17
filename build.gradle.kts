@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "ru.vaulttracker"
-version = "0.10.8"
+version = "0.11.0"
 
 repositories {
     mavenCentral()

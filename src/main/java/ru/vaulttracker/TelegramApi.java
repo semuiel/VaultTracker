@@ -15,8 +15,10 @@ final class TelegramApi implements AutoCloseable {
         ApiError(int code,String message) {super(message);this.code=code;}
     }
     static boolean permanentFailure(Throwable failure) {return failure instanceof ApiError error && error.code>=400 && error.code<500 && error.code!=429;}
+    record Reply(int messageId,long userId,String name,String text,boolean bot) {}
     record Incoming(long updateId,long chatId,int topicId,long userId,int messageId,String text,
-                    String callbackId,String callbackData,boolean privateChat,String profile,boolean senderBot,boolean media,String displayName) {
+                    String callbackId,String callbackData,boolean privateChat,String profile,boolean senderBot,boolean media,String displayName,Reply reply,boolean anonymous) {
+        Incoming(long updateId,long chatId,int topicId,long userId,int messageId,String text,String callbackId,String callbackData,boolean privateChat,String profile,boolean senderBot,boolean media,String displayName) {this(updateId,chatId,topicId,userId,messageId,text,callbackId,callbackData,privateChat,profile,senderBot,media,displayName,null,false);}
         Incoming(long updateId,long chatId,int topicId,long userId,int messageId,String text,String callbackId,String callbackData,boolean privateChat,String profile,boolean senderBot,boolean media) {this(updateId,chatId,topicId,userId,messageId,text,callbackId,callbackData,privateChat,profile,senderBot,media,profile);}
         Incoming(long updateId,long chatId,int topicId,long userId,int messageId,String text,String callbackId,String callbackData,boolean privateChat,String profile) {this(updateId,chatId,topicId,userId,messageId,text,callbackId,callbackData,privateChat,profile,false,false);}
         Incoming(long updateId,long chatId,int topicId,long userId,int messageId,String text,String callbackId,String callbackData,boolean privateChat) {this(updateId,chatId,topicId,userId,messageId,text,callbackId,callbackData,privateChat,"");}
@@ -80,7 +82,11 @@ final class TelegramApi implements AutoCloseable {
         JsonObject value=new JsonObject(); value.addProperty("command",name); value.addProperty("description",description); return value;
     }
     void registerChatCommands(boolean catalogue) throws IOException {
+        registerChatCommands(catalogue,false);
+    }
+    void registerChatCommands(boolean catalogue,boolean reports) throws IOException {
         JsonArray commands=new JsonArray();if(catalogue) commands.add(command("item","Поиск ресурсов и игроков"));commands.add(command("list","Игроки онлайн и их измерения"));
+        if(reports) commands.add(command("report","Пожаловаться ответом на сообщение"));
         JsonObject body=new JsonObject(),scope=new JsonObject();scope.addProperty("type","all_group_chats");body.add("scope",scope);body.add("commands",commands);call("setMyCommands",body);
     }
     List<Incoming> updates(long offset) throws IOException {
@@ -111,7 +117,14 @@ final class TelegramApi implements AutoCloseable {
         return new Incoming(updateId,message.getAsJsonObject("chat").get("id").getAsLong(),
                 message.has("message_thread_id") ? message.get("message_thread_id").getAsInt() : 0,
                 userId(message),message.get("message_id").getAsInt(),messageText(message),
-                null,null,isPrivate(message),profile(message),message.has("from") && message.getAsJsonObject("from").has("is_bot") && message.getAsJsonObject("from").get("is_bot").getAsBoolean(),!message.has("text"),displayName(message));
+                null,null,isPrivate(message),profile(message),message.has("from") && message.getAsJsonObject("from").has("is_bot") && message.getAsJsonObject("from").get("is_bot").getAsBoolean(),!message.has("text"),displayName(message),reply(message),message.has("sender_chat"));
+    }
+    private static Reply reply(JsonObject message) {
+        if(!message.has("reply_to_message")) return null;
+        var value=message.getAsJsonObject("reply_to_message");
+        if(value.has("sender_chat")||!value.has("from")) return null;
+        var from=value.getAsJsonObject("from");
+        return new Reply(value.get("message_id").getAsInt(),userId(value),displayName(value),Objects.toString(messageText(value),"[без текста]"),from.has("is_bot")&&from.get("is_bot").getAsBoolean());
     }
     private static String messageText(JsonObject message) {
         if(message.has("text")) return message.get("text").getAsString();
@@ -186,6 +199,15 @@ final class TelegramApi implements AutoCloseable {
         JsonObject body=new JsonObject();body.addProperty("chat_id",chatId);body.addProperty("user_id",userId);
         return call("getChatMember",body).getAsJsonObject("result").get("status").getAsString();
     }
+    void banMember(long chatId,long userId,long until) throws IOException {var body=memberBody(chatId,userId);body.addProperty("until_date",until);body.addProperty("revoke_messages",false);call("banChatMember",body);}
+    void unbanMember(long chatId,long userId) throws IOException {var body=memberBody(chatId,userId);body.addProperty("only_if_banned",true);call("unbanChatMember",body);}
+    void muteMember(long chatId,long userId,long until,boolean mute) throws IOException {
+        var body=memberBody(chatId,userId);JsonObject permissions;
+        if(mute) {permissions=new JsonObject();for(String key:List.of("can_send_messages","can_send_audios","can_send_documents","can_send_photos","can_send_videos","can_send_video_notes","can_send_voice_notes","can_send_polls","can_send_other_messages","can_add_web_page_previews")) permissions.addProperty(key,false);}
+        else {var chat=call("getChat",chatIdBody(chatId)).getAsJsonObject("result");if(!chat.has("permissions")) throw new IOException("Не удалось получить стандартные разрешения группы");permissions=chat.getAsJsonObject("permissions");}
+        body.add("permissions",permissions);body.addProperty("use_independent_chat_permissions",true);body.addProperty("until_date",until);call("restrictChatMember",body);
+    }
+    private static JsonObject memberBody(long chatId,long userId) {var body=chatIdBody(chatId);body.addProperty("user_id",userId);return body;}
     String chatTitle(long chatId) throws IOException {
         JsonObject chat=call("getChat",chatIdBody(chatId)).getAsJsonObject("result");
         for(String key:List.of("title","username","first_name")) if(chat.has(key) && !chat.get(key).getAsString().isBlank()) return (key.equals("username")?"@":"")+chat.get(key).getAsString();

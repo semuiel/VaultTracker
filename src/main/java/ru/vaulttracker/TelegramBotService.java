@@ -43,7 +43,7 @@ final class TelegramBotService implements AutoCloseable {
             try {
                 if(!initialized) {
                     username=api.verify(); api.registerCommands();
-                    if(chatBridge!=null) {chatBridge.username(username);api.registerChatCommands(true);}
+                    if(chatBridge!=null) {chatBridge.username(username);if(chatBridge.reportsEnabled()) api.registerChatCommands(true,true);else api.registerChatCommands(true);}
                     initialized=true; failures=0;
                     if(guard!=null) notifications.scheduleWithFixedDelay(this::notifyGuard,2,2,TimeUnit.SECONDS);
                     log.info("Telegram-бот @"+username+" запущен внутри VaultTracker.");

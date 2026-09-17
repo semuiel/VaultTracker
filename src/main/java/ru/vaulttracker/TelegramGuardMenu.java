@@ -54,6 +54,14 @@ final class TelegramGuardMenu {
             case "event" -> view=detail(user,Long.parseLong(a.value()),a.page(),false);
             case "ownEvent" -> view=detail(user,Long.parseLong(a.value()),a.page(),true);
             case "superHome" -> view=superHome(user);
+            case "children" -> view=children(user,a.page(),a.value());
+            case "childSearch" -> {guard.requireSuper(user);view=prompt(user,"childSearch","Отправьте часть игрового ника ребёнка.");}
+            case "childAdd" -> {guard.requireSuper(user);view=prompt(user,"childAdd","Отправьте точный игровой ник или Telegram ID связанного аккаунта ребёнка.");}
+            case "childDelete" -> {guard.requireSuper(user);view=prompt(user,"childDelete","Отправьте игровой ник или Telegram ID ребёнка, которого нужно удалить.");}
+            case "childRemoveConfirm" -> {guard.requireSuper(user);view=new TelegramCommands.View("Удалить "+a.value()+" из списка детей и снять бонусы?",List.of(b(user,"Да, удалить","childRemove",a.value(),0,0),b(user,"↩ Назад","children","",0,1)));}
+            case "childRemove" -> {guard.requireSuper(user);view=childResult(user,moderation.changeChild(user,a.value(),false).get());}
+            case "childSizes" -> view=childSizes(user);
+            case "childSize" -> {String result=moderation.childSize(user,Double.parseDouble(a.value())).get();var menu=childSizes(user);view=new TelegramCommands.View(result+"\n\n"+menu.text(),menu.buttons());}
             case "admins" -> view=admins(user,a.page(),a.value());
             case "searchAdmins" -> {guard.requireSuper(user);view=prompt(user,"adminSearch","Отправьте часть имени, @тега, Telegram ID или игрового ника администратора.");}
             case "capabilities" -> view=capabilities(user);
@@ -122,6 +130,7 @@ final class TelegramGuardMenu {
             buttons.add(b(user,"📦 Мои ресурсы","resources","",0,0));
             buttons.add(b(user,"📜 Мои события · 2 дня","ownHistory","",0,1));
             buttons.add(b(user,"⚙️ Настройки игрока","settings","",0,2));
+            if(guard.child(account.uuid())!=null) buttons.add(b(user,"📏 Размер персонажа","childSizes","",0,4));
         }
         if(guard.admin(user)) {
             buttons.add(b(user,"🛠 Функции администратора","adminHome","",0,3));
@@ -150,7 +159,21 @@ final class TelegramGuardMenu {
         return new TelegramCommands.View("👑 Супер администратор",List.of(
                 b(user,"👮 Администраторы бота","admins","",0,0),
                 b(user,"👥 Список игроков","browse:online","",0,1),
-                b(user,"⏱ Личный срок админских супер уведомлений","rootSettings","",0,2),new TelegramCommands.Button("↩ Назад","vg:home",3),homeButton(4)));
+                b(user,"⏱ Личный срок админских супер уведомлений","rootSettings","",0,2),b(user,"🧒 Дети","children","",0,3),new TelegramCommands.Button("↩ Назад","vg:home",4),homeButton(5)));
+    }
+    private TelegramCommands.View children(long user,int requested,String filter) {
+        var rows=guard.children(user).stream().filter(c->c.name().toLowerCase(Locale.ROOT).contains(filter.toLowerCase(Locale.ROOT))).toList();
+        int pages=Math.max(1,(rows.size()+19)/20),page=Math.max(0,Math.min(requested,pages-1));List<TelegramCommands.Button> buttons=new ArrayList<>();
+        buttons.add(b(user,"➕ Добавить ребёнка","childAdd","",0,0));buttons.add(b(user,"➖ Удалить ребёнка","childDelete","",0,1));
+        for(int i=page*20;i<Math.min(rows.size(),(page+1)*20);i++) buttons.add(b(user,rows.get(i).name(),"childRemoveConfirm",rows.get(i).name(),0,i-page*20+2));
+        if(page>0) buttons.add(b(user,"⬅ Назад","children",filter,page-1,22));if(page+1<pages) buttons.add(b(user,"Вперёд ➡","children",filter,page+1,22));
+        buttons.add(b(user,"🔎 Поиск","childSearch","",0,23));buttons.add(b(user,"↩ Назад","superHome","",0,24));buttons.add(homeButton(25));
+        return new TelegramCommands.View("🧒 Дети · "+(page+1)+"/"+pages+"\n+2 сердца и защита 20%. Размер доступен в связанном личном кабинете."+(rows.isEmpty()?"\nСписок пуст.":""),List.copyOf(buttons));
+    }
+    private TelegramCommands.View childResult(long user,String result) {var menu=children(user,0,"");return new TelegramCommands.View(result+"\n\n"+menu.text(),menu.buttons());}
+    private TelegramCommands.View childSizes(long user) throws Exception {
+        var account=guard.account(user).get();if(account==null||guard.child(account.uuid())==null) throw new SecurityException("Функция доступна только детям с привязанным аккаунтом");
+        return new TelegramCommands.View("📏 Размер персонажа",List.of(b(user,"Гном · 0.6","childSize","0.6",0,0),b(user,"Карлик · 0.75","childSize","0.75",0,1),b(user,"Вернуть нормальный размер","childSize","1",0,2),new TelegramCommands.Button("↩ Назад","vg:home",3),homeButton(4)));
     }
     private TelegramCommands.View capabilities(long user) {
         guard.requireSuper(user);List<TelegramCommands.Button> buttons=new ArrayList<>();int row=0;
@@ -196,6 +219,7 @@ final class TelegramGuardMenu {
     void cancelInput(long user) {waiting.remove(user);}
     private TelegramCommands.View prompt(long user,String kind,String text) {
         waiting.entrySet().removeIf(e->e.getValue().expires()<System.currentTimeMillis());waiting.put(user,new Input(kind,System.currentTimeMillis()+600000));
+        if(kind.startsWith("child")) return new TelegramCommands.View(text+"\nВвод действует 10 минут. Отмена: /cancel.",List.of(b(user,"↩ Дети","children","",0,0),homeButton(1)));
         return withHome(new TelegramCommands.View(text+"\nВвод действует 10 минут. Отмена: /cancel."));
     }
     TelegramCommands.View input(long user,String text) throws Exception {
@@ -208,6 +232,15 @@ final class TelegramGuardMenu {
             waiting.remove(user);return resourceResults(user,query,0);
         }
         if(pending.expires()<System.currentTimeMillis()) {waiting.remove(user);return withHome(new TelegramCommands.View("Время ввода истекло. Откройте настройки снова."));}
+        if(Set.of("childAdd","childDelete","childSearch").contains(pending.kind())) {
+            guard.requireSuper(user);String query=text.trim();if(query.isEmpty()||query.length()>64) return new TelegramCommands.View("Введите ник или Telegram ID. Отмена: /cancel.");
+            if(pending.kind().equals("childSearch")) {waiting.remove(user);return children(user,0,query);}
+            try {String result=moderation.changeChild(user,query,pending.kind().equals("childAdd")).get();waiting.remove(user);return childResult(user,result);}
+            catch(java.util.concurrent.ExecutionException failure) {
+                if(failure.getCause() instanceof IllegalArgumentException invalid) return new TelegramCommands.View(invalid.getMessage()+"\nПопробуйте ещё раз. Отмена: /cancel.",List.of(b(user,"↩ Дети","children","",0,0),homeButton(1)));
+                throw failure;
+            }
+        }
         if(pending.kind().startsWith("teleportSearch:")) {guard.requireCapability(user,"teleport");String query=text.trim();if(query.isEmpty()||query.length()>64) return withHome(new TelegramCommands.View("Введите от 1 до 64 символов."));waiting.remove(user);return teleportPlayers(user,pending.kind().substring(15),0,query);}
         if(pending.kind().equals("historySearch")) {
             guard.requireAdmin(user);String query=text.trim();
