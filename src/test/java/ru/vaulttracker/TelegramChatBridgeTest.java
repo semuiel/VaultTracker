@@ -171,18 +171,19 @@ class TelegramChatBridgeTest {
         }
     }
 
-    @Test void slashCommandsAreDeletedImmediatelyOnlyInBridgeTopics() throws Exception {
+    @Test void slashCommandsAreDeletedInEveryTopicOfConfiguredGroups() throws Exception {
         try(var apis=mockConstruction(TelegramApi.class);var bridge=new TelegramChatBridge(plugin,config,catalogue)) {
             bridge.username("ChatBot");bridge.start(true);var api=apis.constructed().getFirst();
             for(String text:List.of("/list","/unknown","/item diamond","/list@OtherBot","  /hello args")) {
                 bridge.consume(message(-100123,486,text));
             }
-            verify(api,times(5)).delete(-100123L,1);
-            bridge.consume(message(-100123,123,"/unknown"));verify(api,times(6)).delete(-100123L,1);
-            bridge.consume(message(-100123,999,"/unknown"));
+            verify(api,timeout(1500).times(5)).delete(-100123L,1);
+            bridge.consume(message(-100123,123,"/unknown"));verify(api,timeout(1500).times(6)).delete(-100123L,1);
+            assertFalse(bridge.consume(message(-100123,999,"/unknown")));
+            verify(api,timeout(1500).times(7)).delete(-100123L,1);
             bridge.consume(message(-100999,486,"/unknown"));
             bridge.consume(message(-100123,486,"normal message"));
-            verify(api,times(6)).delete(anyLong(),anyInt());
+            verify(api,times(7)).delete(anyLong(),anyInt());
             verify(api,timeout(1500)).sendHtml(eq(-100123L),eq(486),contains("Alex"),eq(false),anyList());
         }
     }
@@ -194,5 +195,21 @@ class TelegramChatBridgeTest {
             assertTrue(bridge.consume(message(-100123,486,"/list")));
             verify(api,timeout(1500)).sendHtml(eq(-100123L),eq(486),contains("Alex"),eq(false),anyList());
         }
+    }
+
+    @Test void slowDeletionDoesNotBlockListOrSharedCatalogueCommands() throws Exception {
+        var release=new java.util.concurrent.CountDownLatch(1);
+        try(var apis=mockConstruction(TelegramApi.class);var bridge=new TelegramChatBridge(plugin,config,catalogue);
+            var bot=new TelegramBotService(catalogue,new Catalogue(v->{}),mock(StorageEngine.class),Logger.getAnonymousLogger())) {
+            var chatApi=apis.constructed().get(0);var catalogueApi=apis.constructed().get(1);
+            doAnswer(c->{release.await(5,java.util.concurrent.TimeUnit.SECONDS);return null;}).when(chatApi).delete(anyLong(),anyInt());
+            bridge.start(true);bot.chatBridge(bridge);
+            org.junit.jupiter.api.Assertions.assertTimeoutPreemptively(java.time.Duration.ofSeconds(2),()->{
+                bot.consume(message(-100123,486,"/list"));
+                verify(chatApi,timeout(1500)).sendHtml(eq(-100123L),eq(486),contains("Alex"),eq(false),anyList());
+                bot.consume(message(-100123,999,"/item diamond"));
+                verify(catalogueApi).send(eq(-100123L),eq(999),any());
+            });
+        } finally {release.countDown();}
     }
 }

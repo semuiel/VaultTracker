@@ -29,6 +29,8 @@ final class TelegramChatBridge implements Listener,AutoCloseable {
     private final LinkedBlockingDeque<Job> outgoing=new LinkedBlockingDeque<>(1000);
     private final Map<String,ListSession> lists=new ConcurrentHashMap<>();
     private final TelegramListExpiry expiry;
+    private final ExecutorService commandDeletion=new ThreadPoolExecutor(1,1,0,TimeUnit.SECONDS,
+            new ArrayBlockingQueue<>(1000),Thread.ofVirtual().name("VaultTracker-chat-command-delete").factory());
     private final AtomicBoolean stopping=new AtomicBoolean();
     private final Thread sender,receiver;
     private volatile String username;
@@ -119,18 +121,12 @@ final class TelegramChatBridge implements Listener,AutoCloseable {
     boolean consume(TelegramApi.Incoming update) {
         if(stopping.get() || update.privateChat() || update.senderBot()) return false;
         if(update.callback()) return consumeListCallback(update);
-        if(update.text()==null || !config.listTarget(update)) return false;
+        if(update.text()==null) return false;
         String text=update.text().trim();String first=text.split("\\s+",2)[0];
+        boolean group=config.chat.chatId()==update.chatId() || (config.advancementEnabled()&&config.advancements.chatId()==update.chatId());
+        if(group && first.startsWith("/") && update.messageId()>0) deleteCommand(update);
+        if(!config.listTarget(update)) return false;
         if(first.startsWith("/")) {
-            // Delete the incoming command, never the response. Keep routing even if deletion fails.
-            if(update.messageId()>0) try {api.delete(update.chatId(),update.messageId());}
-            catch(Exception failure) {
-                long now=System.currentTimeMillis();
-                if(now-lastCommandDeleteWarning>=60000) {
-                    lastCommandDeleteWarning=now;
-                    plugin.getLogger().warning("Не удалось удалить команду Telegram-чата: "+api.safe(failure)+". Боту нужно право администратора «Удаление сообщений».");
-                }
-            }
             String[] command=first.split("@",2);
             if(!command[0].equalsIgnoreCase("/list") || (command.length==2 && (username==null || !command[1].equalsIgnoreCase(username)))) return false;
             if(config.flag("list.enabled",true)) currentPlayerPages().thenAccept(pages->enqueueList(new TelegramChatConfig.Target(update.chatId(),update.topicId()),pages));
@@ -146,6 +142,21 @@ final class TelegramChatBridge implements Listener,AutoCloseable {
             plugin.getServer().getConsoleSender().sendMessage(message);
         });
         return true;
+    }
+    private void deleteCommand(TelegramApi.Incoming update) {
+        // Independent of command routing: slow Telegram/proxy requests cannot delay replies.
+        try {commandDeletion.execute(()->{
+            if(stopping.get()) return;
+            try {api.delete(update.chatId(),update.messageId());}
+            catch(Exception failure) {commandDeleteWarning(api.safe(failure));}
+        });} catch(RejectedExecutionException full) {if(!stopping.get()) commandDeleteWarning("очередь удаления заполнена");}
+    }
+    private synchronized void commandDeleteWarning(String reason) {
+        long now=System.currentTimeMillis();
+        if(now-lastCommandDeleteWarning>=60000) {
+            lastCommandDeleteWarning=now;
+            plugin.getLogger().warning("Не удалось удалить команду Telegram-чата: "+reason+". Боту нужно право администратора «Удаление сообщений».");
+        }
     }
     Component incomingMessage(long user,String sender,String text) {
         boolean showTag=config.flag("messages.showTelegramTagUnlinked",config.flag("messages.showTelegramTag",true));
@@ -248,7 +259,7 @@ final class TelegramChatBridge implements Listener,AutoCloseable {
     }
     @Override public void close() {
         if(!stopping.compareAndSet(false,true)) return;
-        HandlerList.unregisterAll(this);receiver.interrupt();sender.interrupt();expiry.close();api.close();lists.clear();outgoing.clear();
+        HandlerList.unregisterAll(this);receiver.interrupt();sender.interrupt();commandDeletion.shutdownNow();expiry.close();api.close();lists.clear();outgoing.clear();
         try {receiver.join(2000);sender.join(2000);} catch(InterruptedException stop) {Thread.currentThread().interrupt();}
     }
 }
