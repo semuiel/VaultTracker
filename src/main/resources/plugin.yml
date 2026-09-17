@@ -1,8 +1,8 @@
 name: VaultTracker
-version: 0.12.0-folia26.2
+version: 0.12.1-folia26
 softdepend: [flexity]
 main: ru.vaulttracker.VaultTrackerPlugin
-api-version: '26.2'
+api-version: '26.1.2'
 folia-supported: true
 description: Chest resource catalogue with durable MariaDB synchronization
 commands:

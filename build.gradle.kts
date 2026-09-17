@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "ru.vaulttracker"
-version = "0.12.0-folia26.2"
+version = "0.12.1-folia26"
 
 repositories {
     mavenCentral()
@@ -12,7 +12,7 @@ repositories {
 }
 
 dependencies {
-    compileOnly("dev.folia:folia-api:26.2.build.7-beta")
+    compileOnly("dev.folia:folia-api:26.1.2.build.8-stable")
     implementation("org.mariadb.jdbc:mariadb-java-client:3.5.7")
     implementation("com.h2database:h2:2.3.232")
     implementation("com.google.code.gson:gson:2.11.0")
@@ -20,7 +20,7 @@ dependencies {
     testImplementation(platform("org.junit:junit-bom:5.11.4"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
-    testImplementation("dev.folia:folia-api:26.2.build.7-beta")
+    testImplementation("dev.folia:folia-api:" + providers.gradleProperty("testFoliaApi").getOrElse("26.1.2.build.8-stable"))
     testImplementation("org.mockito:mockito-core:5.23.0")
 }
 

@@ -32,11 +32,11 @@ class PlayerItemsTest {
     private String text(List<Component> components) {
         return String.join("\n",components.stream().map(PlainTextComponentSerializer.plainText()::serialize).toList());
     }
-    private List<String> clicks(Component component) {
-        List<String> values=new ArrayList<>();
+    private List<ClickEvent> clicks(Component component) {
+        List<ClickEvent> values=new ArrayList<>();
         if (component.clickEvent()!=null) {
             assertEquals(ClickEvent.Action.RUN_COMMAND,component.clickEvent().action());
-            values.add(((ClickEvent.Payload.Text)component.clickEvent().payload()).value());
+            values.add(component.clickEvent());
         }
         component.children().forEach(child -> values.addAll(clicks(child))); return values;
     }
@@ -51,7 +51,7 @@ class PlayerItemsTest {
         add(alex,"Alex",Map.of("DIAMOND",864L,"STONE",864L));add(alex,"Alex",Map.of("IRON_INGOT",1728L));
         for(int i=0;i<20;i++) add(UUID.randomUUID(),"Player"+i,Map.of("STONE",18L+i));
         var first=run(true,true,"all");assertEquals(22,first.size());assertTrue(text(first).contains("1. Alex — 2 шалк."));assertFalse(text(first).contains("шт."));
-        assertEquals(List.of("/topitem all 2"),clicks(first.getLast()));assertEquals(3,run(true,true,"all","2").size());
+        assertEquals(List.of(ClickEvent.runCommand("/topitem all 2")),clicks(first.getLast()));assertEquals(3,run(true,true,"all","2").size());
         assertTrue(text(run(true,true,"all","0")).contains("от 1 до 2"));
         add(UUID.randomUUID(),"all",Map.of("STONE",3L));assertTrue(text(run(true,true,"player","all")).contains("ресурсы хранилищ"));
     }
@@ -60,9 +60,9 @@ class PlayerItemsTest {
         add(alex,"Alex",items);
         var first=run(true,true,"Alex"); var middle=run(true,true,"player","Alex","2"); var last=run(true,true,"Alex","3");
         assertEquals(10,first.size()); assertEquals(10,middle.size()); assertEquals(3,last.size());
-        assertEquals(List.of("/topitem player Alex 2"),clicks(first.getLast()));
-        assertEquals(List.of("/topitem player Alex 1","/topitem player Alex 3"),clicks(middle.getLast()));
-        assertEquals(List.of("/topitem player Alex 2"),clicks(last.getLast()));
+        assertEquals(List.of(ClickEvent.runCommand("/topitem player Alex 2")),clicks(first.getLast()));
+        assertEquals(List.of(ClickEvent.runCommand("/topitem player Alex 1"),ClickEvent.runCommand("/topitem player Alex 3")),clicks(middle.getLast()));
+        assertEquals(List.of(ClickEvent.runCommand("/topitem player Alex 2")),clicks(last.getLast()));
         assertTrue(text(first).contains("1. TEST_17 — 17 шт."));
         assertTrue(text(last).contains("17. TEST_1 — 1 шт."));
     }
