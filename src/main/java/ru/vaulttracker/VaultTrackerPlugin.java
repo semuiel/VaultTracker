@@ -29,6 +29,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
     private TelegramBotService telegram;
     private TelegramChatBridge telegramChat;
     private GuardService guard;
+    private SearchCompass searchCompass;
     private final Object telegramLock=new Object();
     private final Set<BlockKey> scheduled = ConcurrentHashMap.newKeySet();
     private volatile boolean stopping;
@@ -55,6 +56,8 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
         for(Player player:getServer().getOnlinePlayers()) guard.presence(player.getUniqueId(),player.getName(),true);
         storage = new StorageEngine(getDataFolder().toPath().resolve("cache-"+id), database, getLogger());
         catalogue = new Catalogue(snapshot-> {storage.accept(snapshot);guard.accept(snapshot);});
+        searchCompass=new SearchCompass(this);
+        getServer().getPluginManager().registerEvents(searchCompass,this);
         getServer().getPluginManager().registerEvents(this,this);
         Objects.requireNonNull(getCommand("vaulttracker")).setExecutor(this);
         Objects.requireNonNull(getCommand("vaulttracker")).setTabCompleter(this);
@@ -86,7 +89,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
             TelegramConfig telegramConfig=TelegramConfig.load(getDataFolder().toPath(),false);
             guard.configure(GuardConfig.load(getDataFolder().toPath()),telegramConfig.adminUserIds());
             if(telegramConfig.enabled()) {
-                if(telegramConfig.token().matches("[0-9]+:[A-Za-z0-9_-]{20,}")) telegram=new TelegramBotService(telegramConfig,catalogue,storage,getLogger(),guard,new TelegramModeration(this,guard));
+                if(telegramConfig.token().matches("[0-9]+:[A-Za-z0-9_-]{20,}")) telegram=new TelegramBotService(telegramConfig,catalogue,storage,getLogger(),guard,new TelegramModeration(this,guard,searchCompass));
                 else getLogger().warning("Каталожный Telegram-бот не запущен: заполните token в telegram.yml. Чат-бот с отдельным токеном может работать независимо.");
             }
             String chatStatus="чат выключен";
@@ -338,6 +341,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
         if(args.length>1&&args[args.length-1].matches("[0-9]+")) {try {requested=Integer.parseInt(args[--end]);} catch(NumberFormatException e) {tell(sender,"Слишком большой номер страницы.");return true;}}
         String query=String.join(" ",Arrays.copyOf(args,end));if(query.isBlank()||query.length()>64) {tell(sender,"Введите название предмета до 64 символов.");return true;}
         var loc=player.getLocation();var rows=OwnResourceSearch.find(catalogue,player.getUniqueId(),query,new BlockKey(loc.getWorld().getUID(),loc.getBlockX(),loc.getBlockY(),loc.getBlockZ()));
+        searchCompass.point(player,rows);
         int pages=Math.max(1,(rows.size()+19)/20),page=Math.max(1,Math.min(requested,pages));
         tell(sender,"Ваши сундуки · "+query+" · "+page+"/"+pages+". Ближайшие в вашем мире сначала.");
         if(rows.isEmpty()) tell(sender,"Не найдено в зарегистрированных хранилищах.");

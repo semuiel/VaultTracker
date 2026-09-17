@@ -23,8 +23,18 @@ class TelegramModeration {
     }
     private final JavaPlugin plugin;
     private final GuardService guard;
+    private final SearchCompass searchCompass;
     private final Map<UUID,Boolean> lpAdminState=new ConcurrentHashMap<>();
-    TelegramModeration(JavaPlugin plugin,GuardService guard) {this.plugin=plugin;this.guard=guard;}
+    TelegramModeration(JavaPlugin plugin,GuardService guard) {this(plugin,guard,null);}
+    TelegramModeration(JavaPlugin plugin,GuardService guard,SearchCompass searchCompass) {this.plugin=plugin;this.guard=guard;this.searchCompass=searchCompass;}
+    void pointOwnCompass(long user,UUID uuid,List<OwnResourceSearch.Row> rows) {
+        if(searchCompass==null) return;
+        guard.account(user).thenCompose(account->{
+            if(account==null||!account.uuid().equals(uuid)) return CompletableFuture.completedFuture(null);
+            return global(()->plugin.getServer().getPlayer(uuid));
+        }).thenAccept(player->{if(player!=null) player.getScheduler().run(plugin,t->searchCompass.point(player,rows),null);})
+            .exceptionally(error->null);
+    }
     CompletableFuture<BlockKey> ownPosition(long user,UUID uuid) {
         return guard.account(user).thenCompose(account->{
             if(account==null||!account.uuid().equals(uuid)) return CompletableFuture.failedFuture(new SecurityException("Нет доступа"));
