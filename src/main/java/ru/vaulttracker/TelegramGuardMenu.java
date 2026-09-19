@@ -57,10 +57,19 @@ final class TelegramGuardMenu {
             case "donations" -> view=donations(user);
             case "donationPay" -> view=donationPay(user);
             case "donationCode" -> {requireDonations(user);view=prompt(user,"donationCode","Введите одноразовый код из чата вашего оплаченного заказа FunPay. Не пересылайте код другим людям.");}
-            case "donationPremium" -> {requireDonations(user);view=new TelegramCommands.View("Премиум",List.of(b(user,"↩ Назад","donations","",0,0)));}
+            case "donationPremium" -> view=premiumMenu(user);
+            case "premiumBuy" -> {requireDonations(user);var account=guard.account(user).get();view=donationResult(user,moderation.donationChange(user,account.uuid(),account.name(),requestId(data),"buy",Integer.parseInt(a.value()),0),false);}
             case "donationAdmin" -> view=donationAdmin(user);
             case "donationVisibility" -> {guard.donationsVisible(user,Boolean.parseBoolean(a.value())).get();view=donationAdmin(user);}
-            case "donationPremiumAdd", "donationPremiumRemove" -> {guard.requireSuper(user);view=new TelegramCommands.View(a.op().equals("donationPremiumAdd")?"Добавить премиум":"Убрать премиум",List.of(b(user,"↩ Назад","donationAdmin","",0,0)));}
+            case "donationPremiumAdd" -> {guard.requireSuper(user);view=new TelegramCommands.View("Выберите срок премиума",List.of(b(user,"На 30 дней","donationPlayers","grant30|online|",0,0),b(user,"На 60 дней","donationPlayers","grant60|online|",0,1),b(user,"↩ Назад","donationAdmin","",0,2)));}
+            case "donationPremiumRemove" -> view=donationPlayers(user,"remove|online|",0);
+            case "donationPlayers" -> view=donationPlayers(user,a.value(),a.page());
+            case "donationPlayerSearch" -> {guard.requireSuper(user);view=prompt(user,"donationSearch:"+a.value(),"Введите часть игрового ника.");}
+            case "donationTarget" -> {guard.requireSuper(user);String[] parts=a.value().split("\\|",2);UUID target=UUID.fromString(parts[1]);
+                if(parts[0].equals("add")||parts[0].equals("subtract")) view=prompt(user,"donationAmount:"+a.value()+"|"+requestId(data),"Введите сумму "+(parts[0].equals("add")?"начисления":"списания")+". Например: 100 или 100.50.");
+                else {var person=moderation.info(user,target).get();view=new TelegramCommands.View((parts[0].equals("remove")?"Убрать премиум у ":"Выдать премиум на "+parts[0].substring(5)+" дней: ")+person.name()+"?",List.of(b(user,"Подтвердить","donationApply",a.value(),0,0),b(user,"↩ Назад","donationAdmin","",0,1)));}}
+            case "donationApply" -> {guard.requireSuper(user);String[] parts=a.value().split("\\|",2);UUID target=UUID.fromString(parts[1]);var person=moderation.info(user,target).get();view=donationResult(user,moderation.donationChange(user,target,person.name(),requestId(data),parts[0].equals("remove")?"remove":"grant",parts[0].equals("remove")?0:Integer.parseInt(parts[0].substring(5)),0),true);}
+            case "donationJournal" -> view=donationJournal(user,a.page());
             case "children" -> view=children(user,a.page(),a.value());
             case "childSearch" -> {guard.requireSuper(user);view=prompt(user,"childSearch","Отправьте часть игрового ника ребёнка.");}
             case "childAdd" -> {guard.requireSuper(user);view=prompt(user,"childAdd","Отправьте точный игровой ник или Telegram ID связанного аккаунта ребёнка.");}
@@ -195,7 +204,39 @@ final class TelegramGuardMenu {
         guard.requireSuper(user);boolean visible=guard.donationsVisible().get();
         return new TelegramCommands.View("💝 Пожертвования\nКнопка у связанных игроков: "+(visible?"включена":"выключена"),List.of(
                 b(user,visible?"Выключить кнопку у игроков":"Включить кнопку у игроков","donationVisibility",Boolean.toString(!visible),0,0),
-                b(user,"Добавить премиум","donationPremiumAdd","",0,1),b(user,"Убрать премиум","donationPremiumRemove","",0,2),b(user,"↩ Назад","superHome","",0,3),homeButton(4)));
+                b(user,"Добавить премиум","donationPremiumAdd","",0,1),b(user,"Убрать премиум","donationPremiumRemove","",0,2),
+                b(user,"Добавить пожертвования","donationPlayers","add|online|",0,3),b(user,"Отнять пожертвования","donationPlayers","subtract|online|",0,4),
+                b(user,"Журнал","donationJournal","",0,5),b(user,"↩ Назад","superHome","",0,6),homeButton(7)));
+    }
+    private static String requestId(String value) {return UUID.nameUUIDFromBytes(value.getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();}
+    private TelegramCommands.View premiumMenu(long user) throws Exception {
+        requireDonations(user);var account=guard.account(user).get();var wallet=guard.donations.wallet(account.uuid());
+        long until=moderation.premiumExpiry(account.uuid()),remaining=Math.max(0,until-java.time.Instant.now().getEpochSecond());
+        String status=until<0?"бессрочный":remaining>0?"активен · осталось "+(remaining/86400)+" дн. "+(remaining%86400/3600)+" ч. "+(remaining%3600/60)+" мин.":"не активен";
+        return new TelegramCommands.View("⭐ Премиум\nБаланс: "+DonationClient.money(wallet.get("balanceMinor").getAsLong())+"\nСтатус: "+status+
+            (wallet.has("premiumPending")&&wallet.get("premiumPending").getAsBoolean()?"\nИзменение премиума ожидает применения.":"")+"\nПокупка продлевает оставшийся срок.",List.of(
+            b(user,"Купить · 600 монет · 30 дней","premiumBuy","30",0,0),b(user,"Купить · 1000 монет · 60 дней","premiumBuy","60",0,1),b(user,"↩ Назад","donations","",0,2)));
+    }
+    private TelegramCommands.View donationResult(long user,com.google.gson.JsonObject result,boolean admin) {
+        return new TelegramCommands.View("Операция сохранена. Баланс: "+DonationClient.money(result.get("balanceMinor").getAsLong())+
+            (result.has("pending")?"\nВыдача группы ожидает повторной синхронизации; повторно платить не нужно.":""),List.of(b(user,"↩ Назад",admin?"donationAdmin":"donationPremium","",0,0)));
+    }
+    private TelegramCommands.View donationPlayers(long user,String state,int requested) throws Exception {
+        guard.requireSuper(user);String[] parts=state.split("\\|",3);String operation=parts[0],mode=parts[1],filter=parts.length>2?parts[2]:"";
+        var rows=moderation.players(user,mode.equals("online")?"online":"all").get().stream().filter(p->p.online()==mode.equals("online")&&searchKey(p.name()).contains(searchKey(filter))).toList();
+        int pages=Math.max(1,(rows.size()+19)/20),page=Math.max(0,Math.min(requested,pages-1));List<TelegramCommands.Button> buttons=new ArrayList<>();
+        for(int i=page*20;i<Math.min(rows.size(),page*20+20);i++){var person=rows.get(i);buttons.add(b(user,person.name(),"donationTarget",operation+"|"+person.uuid(),0,i-page*20));}
+        if(page>0) buttons.add(b(user,"◀ Назад","donationPlayers",state,page-1,20));if(page+1<pages) buttons.add(b(user,"Вперёд ▶","donationPlayers",state,page+1,20));
+        buttons.add(b(user,mode.equals("online")?"Игроки офлайн":"Игроки онлайн","donationPlayers",operation+"|"+(mode.equals("online")?"offline":"online")+"|"+filter,0,21));
+        buttons.add(b(user,"🔎 Поиск","donationPlayerSearch",operation+"|"+mode,0,22));buttons.add(b(user,"↩ Назад","donationAdmin","",0,23));
+        return new TelegramCommands.View("Выберите игрока · "+(mode.equals("online")?"онлайн":"офлайн")+" · "+(page+1)+"/"+pages+(rows.isEmpty()?"\nИгроков не найдено.":""),List.copyOf(buttons));
+    }
+    private TelegramCommands.View donationJournal(long user,int page) throws Exception {
+        guard.requireSuper(user);var body=new com.google.gson.JsonObject();body.addProperty("page",page);var result=guard.donations.call("donation-audit",body);
+        page=result.get("page").getAsInt();int pages=result.get("pages").getAsInt();StringBuilder text=new StringBuilder("Журнал пожертвований · "+(page+1)+"/"+pages);
+        Map<String,String> labels=Map.of("buy","покупка премиума, дней","grant","выдача премиума, дней","remove","снятие премиума","add","начисление","subtract","списание");
+        for(var element:result.getAsJsonArray("rows")){var row=element.getAsJsonObject();String action=row.get("action").getAsString();long value=row.get("amount").getAsLong();text.append("\n\n").append(java.time.Instant.ofEpochSecond(row.get("created").getAsLong()).atZone(java.time.ZoneId.systemDefault()).format(java.time.format.DateTimeFormatter.ofPattern("dd.MM HH:mm"))).append(" · ").append(row.get("actor").getAsString()).append(" → ").append(row.get("name").getAsString()).append("\n").append(labels.getOrDefault(action,action));if(!action.equals("remove"))text.append(": ").append(Set.of("buy","grant").contains(action)?Long.toString(value):DonationClient.money(value));}
+        List<TelegramCommands.Button> buttons=new ArrayList<>();if(page>0)buttons.add(b(user,"◀ Назад","donationJournal","",page-1,0));if(page+1<pages)buttons.add(b(user,"Вперёд ▶","donationJournal","",page+1,0));buttons.add(b(user,"↩ Назад","donationAdmin","",0,1));return new TelegramCommands.View(text.toString(),List.copyOf(buttons));
     }
     private TelegramCommands.View children(long user,int requested,String filter) {
         var rows=guard.children(user).stream().filter(c->c.name().toLowerCase(Locale.ROOT).contains(filter.toLowerCase(Locale.ROOT))).toList();
@@ -254,17 +295,29 @@ final class TelegramGuardMenu {
     }
     void cancelInput(long user) {waiting.remove(user);}
     private TelegramCommands.View prompt(long user,String kind,String text) {
+        if(kind.equals("donationCode")) {waiting.put(user,new Input(kind,Long.MAX_VALUE));return withHome(new TelegramCommands.View(text+"\nКод можно отправить в этот чат в любое время. Отмена: /cancel."));}
         waiting.entrySet().removeIf(e->e.getValue().expires()<System.currentTimeMillis());waiting.put(user,new Input(kind,System.currentTimeMillis()+600000));
         if(kind.startsWith("child")) return new TelegramCommands.View(text+"\nВвод действует 10 минут. Отмена: /cancel.",List.of(b(user,"↩ Дети","children","",0,0),homeButton(1)));
         return withHome(new TelegramCommands.View(text+"\nВвод действует 10 минут. Отмена: /cancel."));
     }
     TelegramCommands.View input(long user,String text) throws Exception {
-        return navigation(inputValue(user,text));
+        try {return navigation(inputValue(user,text));}
+        catch(DonationClient.Rejected rejected) {return navigation(new TelegramCommands.View(rejected.getMessage()+"\nВведите другую сумму или /cancel."));}
     }
     private TelegramCommands.View inputValue(long user,String text) throws Exception {
-        Input pending=waiting.get(user);if(pending==null) return null;
+        Input pending=waiting.get(user);
+        if(text!=null&&text.trim().matches("(?i)[A-F0-9]{32}")) pending=new Input("donationCode",Long.MAX_VALUE);
+        if(pending==null) return null;
+        if(pending.kind().startsWith("donationSearch:")) {guard.requireSuper(user);String query=text.trim();if(query.isEmpty()||query.length()>64)return new TelegramCommands.View("Введите от 1 до 64 символов.");waiting.remove(user);return donationPlayers(user,pending.kind().substring(15)+"|"+query,0);}
+        if(pending.kind().startsWith("donationAmount:")) {
+            guard.requireSuper(user);String[] parts=pending.kind().substring(15).split("\\|");long amount;
+            try {amount=new java.math.BigDecimal(text.trim().replace(',','.')).movePointRight(2).longValueExact();if(amount<=0||amount>100_000_000)throw new IllegalArgumentException();}
+            catch(IllegalArgumentException|ArithmeticException invalid){return new TelegramCommands.View("Введите сумму от 0.01 до 1000000, максимум два знака после точки.");}
+            UUID owner=UUID.fromString(parts[1]);var person=moderation.info(user,owner).get();var result=moderation.donationChange(user,owner,person.name(),parts[2],parts[0],0,amount);waiting.remove(user);return donationResult(user,result,true);
+        }
         if(pending.kind().equals("donationCode")&&pending.expires()>=System.currentTimeMillis()) {
-            requireDonations(user);String code=text.trim().toUpperCase(Locale.ROOT);
+            if(guard.account(user).get()==null) return new TelegramCommands.View("Сначала свяжите игровой аккаунт в личном кабинете, затем отправьте код снова.",List.of(new TelegramCommands.Button("Личный кабинет","vg:home")));
+            String code=text.trim().toUpperCase(Locale.ROOT);
             if(!code.matches("[A-F0-9]{32}")) return new TelegramCommands.View("Проверьте код: нужны 32 символа из сообщения FunPay. Отмена: /cancel.",List.of(b(user,"↩ Назад","donations","",0,0)));
             try {
                 var result=guard.donations.redeem(guard.account(user).get().uuid(),code);waiting.remove(user);

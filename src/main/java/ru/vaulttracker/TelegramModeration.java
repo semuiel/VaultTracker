@@ -25,10 +25,18 @@ class TelegramModeration {
     private final GuardService guard;
     private final SearchCompass searchCompass;
     private final ChildPlayers children;
+    private final DonationPremium premium;
     private final Map<UUID,Boolean> lpAdminState=new ConcurrentHashMap<>();
     TelegramModeration(JavaPlugin plugin,GuardService guard) {this(plugin,guard,null);}
     TelegramModeration(JavaPlugin plugin,GuardService guard,SearchCompass searchCompass) {this(plugin,guard,searchCompass,null);}
-    TelegramModeration(JavaPlugin plugin,GuardService guard,SearchCompass searchCompass,ChildPlayers children) {this.plugin=plugin;this.guard=guard;this.searchCompass=searchCompass;this.children=children;}
+    TelegramModeration(JavaPlugin plugin,GuardService guard,SearchCompass searchCompass,ChildPlayers children) {this.plugin=plugin;this.guard=guard;this.searchCompass=searchCompass;this.children=children;this.premium=new DonationPremium(guard.donations);}
+    long premiumExpiry(UUID owner) throws Exception {return premium.expiry(owner);}
+    void syncDonations() throws Exception {premium.sync();}
+    com.google.gson.JsonObject donationChange(long actor,UUID owner,String name,String id,String action,int days,long amount) throws Exception {
+        if(action.equals("buy")) {var account=guard.account(actor).get();if(account==null||!account.uuid().equals(owner)) throw new SecurityException("Нет доступа");}
+        else guard.requireSuper(actor);
+        return premium.change(owner,name,actor,id,action,days,amount);
+    }
     CompletableFuture<String> changeChild(long user,String nickname,boolean enabled) {
         guard.requireSuper(user);
         if(nickname.matches("[0-9]{1,20}")) {

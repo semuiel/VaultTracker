@@ -2,6 +2,7 @@
 import secrets
 import sqlite3
 import time
+import json
 from contextlib import contextmanager
 
 
@@ -23,6 +24,9 @@ class Ledger:
                 CREATE TABLE IF NOT EXISTS entries(id TEXT PRIMARY KEY, owner TEXT NOT NULL,
                     amount INTEGER NOT NULL, created INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS alerts(id TEXT PRIMARY KEY, body TEXT NOT NULL, delivered INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE IF NOT EXISTS premium(owner TEXT PRIMARY KEY, until INTEGER NOT NULL, version INTEGER NOT NULL, applied INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE IF NOT EXISTS operations(id TEXT PRIMARY KEY, payload TEXT NOT NULL, result TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS donation_audit(id INTEGER PRIMARY KEY AUTOINCREMENT, actor TEXT NOT NULL, owner TEXT NOT NULL, name TEXT NOT NULL, action TEXT NOT NULL, amount INTEGER NOT NULL, created INTEGER NOT NULL);
             ''')
 
     @contextmanager
@@ -108,7 +112,69 @@ class Ledger:
     def wallet(self, owner):
         with self.connection() as db:
             row = db.execute('SELECT * FROM wallets WHERE owner=?', (owner,)).fetchone()
-            return {'balanceMinor': row['balance'] if row else 0, 'blocked': bool(row['blocked']) if row else False, 'premium': False}
+            premium = db.execute('SELECT * FROM premium WHERE owner=?', (owner,)).fetchone()
+            until = premium['until'] if premium else 0
+            return {'balanceMinor': row['balance'] if row else 0, 'blocked': bool(row['blocked']) if row else False,
+                    'premium': until > time.time(), 'premiumUntil': until,
+                    'premiumPending': bool(premium and premium['version'] != premium['applied'])}
+
+    def change(self, owner, request_id, action, actor, name, days=0, amount=0, base_until=0):
+        if action not in ('buy', 'grant', 'remove', 'add', 'subtract', 'spend'):
+            raise ValueError('Unknown operation')
+        if action in ('buy','grant') and (type(days) is not int or days not in (30,60)):
+            raise ValueError('Invalid duration')
+        if action in ('add','subtract','spend') and (type(amount) is not int or not 0 < amount <= 100_000_000):
+            raise ValueError('Invalid amount')
+        if type(base_until) is not int or not 0 <= base_until <= 253402300799:
+            raise ValueError('Invalid expiry')
+        if not actor or len(actor)>128 or len(name)>64 or len(request_id)>128:
+            raise ValueError('Invalid actor')
+        # Exclude the live LP snapshot from the identity: retries may see the applied expiry.
+        payload=json.dumps([owner,action,actor,name,days,amount],ensure_ascii=False)
+        with self.connection() as db:
+            previous=db.execute('SELECT * FROM operations WHERE id=?',(request_id,)).fetchone()
+            if previous:
+                if previous['payload'] != payload: raise ValueError('Operation identity mismatch')
+                return json.loads(previous['result'])
+            db.execute('INSERT OR IGNORE INTO wallets(owner) VALUES(?)',(owner,))
+            wallet=db.execute('SELECT * FROM wallets WHERE owner=?',(owner,)).fetchone()
+            delta=0
+            if action=='buy':
+                cost=60000 if days==30 else 100000
+                if wallet['blocked']: raise ValueError('Покупки заблокированы после возврата. Обратитесь к администратору.')
+                if wallet['balance']<cost: raise ValueError('Недостаточно средств на балансе.')
+                delta=-cost
+            elif action in ('add','subtract','spend'):
+                if action=='spend' and wallet['blocked']: raise ValueError('Покупки заблокированы после возврата.')
+                delta=amount if action=='add' else -amount
+                if wallet['balance']+delta<0 and action!='add': raise ValueError('Нельзя списать больше текущего баланса.')
+            if delta: self.entry(db,request_id+':balance',owner,delta)
+            if action in ('buy','grant','remove'):
+                old=db.execute('SELECT * FROM premium WHERE owner=?',(owner,)).fetchone()
+                until=0 if action=='remove' else max(int(time.time()),old['until'] if old else 0,base_until)+days*86400
+                version=(old['version'] if old else 0)+1
+                db.execute('INSERT INTO premium(owner,until,version) VALUES(?,?,?) ON CONFLICT(owner) DO UPDATE SET until=excluded.until,version=excluded.version', (owner,until,version))
+            balance=db.execute('SELECT balance FROM wallets WHERE owner=?',(owner,)).fetchone()[0]
+            result={'balanceMinor':balance,'action':action}
+            db.execute('INSERT INTO operations VALUES(?,?,?)',(request_id,payload,json.dumps(result)))
+            db.execute('INSERT INTO donation_audit(actor,owner,name,action,amount,created) VALUES(?,?,?,?,?,?)',
+                       (actor,owner,name,action,days if action in ('buy','grant') else delta,int(time.time())))
+            return result
+
+    def premium_tasks(self):
+        with self.connection() as db:
+            return [dict(r) for r in db.execute('SELECT owner,until,version FROM premium WHERE applied!=version LIMIT 100')]
+
+    def premium_ack(self, owner, version):
+        with self.connection() as db:
+            db.execute('UPDATE premium SET applied=? WHERE owner=? AND version=?',(version,owner,version))
+
+    def audit(self, page):
+        with self.connection() as db:
+            count=db.execute('SELECT COUNT(*) FROM donation_audit').fetchone()[0]
+            pages=max(1,(count+19)//20);page=max(0,min(page,pages-1))
+            rows=[dict(r) for r in db.execute('SELECT * FROM donation_audit ORDER BY id DESC LIMIT 20 OFFSET ?',(page*20,))]
+            return {'rows':rows,'page':page,'pages':pages}
 
     def pending(self):
         with self.connection() as db:

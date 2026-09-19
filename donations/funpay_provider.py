@@ -2,11 +2,39 @@
 import re
 
 
+def session_account(key):
+    from FunPayAPI import Account
+    from FunPayAPI.common import exceptions
+    import requests
+    from types import MethodType
+    from urllib.parse import urlsplit
+    account = Account(key, requests_timeout=8)
+    session = requests.Session()
+    session.cookies.set('golden_key', key, domain='funpay.com', path='/')
+
+    def method(self, request_method, api_method, headers, payload,
+               exclude_phpsessid=False, raise_not_200=False):
+        url = api_method if api_method.startswith('https://') else 'https://funpay.com/' + api_method
+        if urlsplit(url).netloc != 'funpay.com':
+            raise ValueError('Unexpected FunPay host')
+        # The old library drops all cookies except golden_key and PHPSESSID.
+        # Preserve the site's additional CSRF cookies in this private session.
+        response = session.request(request_method, url, headers=dict(headers), data=payload,
+                                   timeout=self.requests_timeout, allow_redirects=False)
+        if response.status_code == 403:
+            raise exceptions.UnauthorizedError(response)
+        if response.status_code != 200 and raise_not_200:
+            raise exceptions.RequestFailedError(response)
+        return response
+
+    account.method = MethodType(method, account)
+    return account.get()
+
+
 class FunPayProvider:
     def __init__(self, config):
-        from FunPayAPI import Account
         self.config = config
-        self.account = Account(config['golden_key'], requests_timeout=8).get()
+        self.account = session_account(config['golden_key'])
         self.seller_id = int(self.account.id)
         if self.seller_id <= 0 or (config.get('seller_id') and self.seller_id != config['seller_id']):
             raise ValueError('Wrong FunPay seller')
@@ -23,27 +51,72 @@ class FunPayProvider:
             raise ValueError('Wrong seller or category')
         if self.config['order_marker'] not in (order.short_description or ''):
             raise ValueError('Wrong offer')
-        return parse_verified_order(order, self.config)
+        # Open paid orders have no status badge. Require fresh, explicit paid
+        # evidence from the seller list as well as the order's refund action.
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(order.html, 'html.parser')
+        paid = False
+        if not soup.select('.text-warning,.text-success,.text-primary,.text-info'):
+            _, rows = self.account.get_sells(id=order_id, state='paid')
+            matches = [r for r in rows if r.id == order_id]
+            if len(matches) == 1:
+                row = BeautifulSoup(matches[0].html, 'html.parser').select_one('.tc-item.info')
+                paid = row is not None and 'warning' not in row.get('class', [])
+        return parse_verified_order(order, self.config, paid)
 
     def send_code(self, row):
         # Retry sends the SAME code; it cannot create another balance credit.
-        chat = self.account.get_chat_by_name(row['buyer'], True)
-        if chat is None:
-            raise ValueError('Buyer chat unavailable')
+        order = self.account.get_order(row['id'])
+        if (order.seller_id != self.seller_id or order.buyer_username != row['buyer']
+                or order.subcategory.id != self.config['category_id']
+                or self.config['order_marker'] not in (order.short_description or '')):
+            raise ValueError('Wrong order recipient')
+        chat_id = order_chat_id(order)
         text = (f'Заказ #{row["id"]}. Код пополнения: {row["code"]}\n'
                 f'Сумма: {row["amount"]/100:.2f} монет. Введите код в личном кабинете сервера: '
                 'Пожертвования → Ввести код. Никому не передавайте код. '
                 'Подтверждайте получение на FunPay только после зачисления баланса.')
-        self.account.send_message(chat.id, text)
+        import json
+        payload = {
+            'objects': json.dumps([{'type': 'chat_node', 'id': chat_id, 'tag': '00000000',
+                                   'data': {'node': chat_id, 'last_message': -1, 'content': ''}}]),
+            'request': json.dumps({'action': 'chat_message',
+                                   'data': {'node': chat_id, 'last_message': -1, 'content': text}}),
+            'csrf_token': self.account.csrf_token,
+        }
+        response = self.account.method('post', 'runner/',
+            {'accept': '*/*', 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+             'x-requested-with': 'XMLHttpRequest'}, payload, raise_not_200=True).json()
+        result = response.get('response')
+        if not isinstance(result, dict) or not result or result.get('error') is not None:
+            raise ValueError('Message delivery not confirmed')
 
 
-def parse_verified_order(order, config):
+def order_chat_id(order):
+    from bs4 import BeautifulSoup
+    nodes = BeautifulSoup(order.html, 'html.parser').select('.chat[data-id][data-name]')
+    expected = {int(order.seller_id), int(order.buyer_id)}
+    ids = set()
+    for node in nodes:
+        match = re.fullmatch(r'users-(\d+)-(\d+)', node['data-name'])
+        if match and {int(match[1]), int(match[2])} == expected and node['data-id'].isdigit():
+            ids.add(int(node['data-id']))
+    if len(ids) != 1 or next(iter(ids)) <= 0:
+        raise ValueError('Order chat unavailable or ambiguous')
+    return ids.pop()
+
+
+def parse_verified_order(order, config, paid_in_seller_list=False):
     from bs4 import BeautifulSoup
     soup = BeautifulSoup(order.html, 'html.parser')
     # Library 1.1.0 defaults unknown statuses to PAID; do not trust that fallback.
     labels = {e.get_text(' ', strip=True) for e in soup.select('.text-warning,.text-success,.text-primary,.text-info')}
     states = {'Оплачен': 'PAID', 'Закрыт': 'CLOSED', 'Возврат': 'REFUNDED'}
     found = {states[s] for s in labels if s in states}
+    if not labels and paid_in_seller_list:
+        refund = soup.select_one('button.btn-refund[data-target=".modal-refund"]')
+        if refund and refund.get_text(' ', strip=True) == 'Вернуть деньги покупателю':
+            found.add('PAID')
     if len(found) != 1:
         raise ValueError('Unknown FunPay order status markup')
     params = {}

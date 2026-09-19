@@ -109,12 +109,23 @@ def handler(service):
                 payload = self.rfile.read(length)
                 supplied = self.headers.get('Authorization', '')
                 expected = 'Bearer ' + service.config['api_key']
-                if not hmac.compare_digest(supplied.encode(), expected.encode()):
+                website_key=service.config.get('website_api_key','')
+                website= len(website_key)>=40 and hmac.compare_digest(supplied.encode(),('Bearer '+website_key).encode())
+                if not hmac.compare_digest(supplied.encode(), expected.encode()) and not website:
                     self.reply(401, {'error': 'Unauthorized'})
                     return
                 body = json.loads(payload)
+                if website:
+                    if self.path not in ('/wallet','/donation-change') or (self.path=='/donation-change' and body.get('action') not in ('add','spend')):
+                        self.reply(403, {'error':'Operation not permitted for website key'})
+                        return
+                    body['actor']='website'
                 if self.path == '/alerts':
                     result = {'alerts': service.ledger.alerts()}
+                elif self.path == '/premium-tasks':
+                    result = {'tasks': service.ledger.premium_tasks()}
+                elif self.path == '/donation-audit':
+                    result = service.ledger.audit(int(body.get('page',0)))
                 elif self.path == '/ack':
                     service.ledger.acknowledge(str(body['id']))
                     result = {'ok': True}
@@ -122,6 +133,12 @@ def handler(service):
                     owner = str(uuid.UUID(body['owner']))
                     if self.path == '/wallet':
                         result = service.ledger.wallet(owner)
+                    elif self.path == '/premium-ack':
+                        service.ledger.premium_ack(owner,int(body['version']))
+                        result = {'ok':True}
+                    elif self.path == '/donation-change':
+                        result = service.ledger.change(owner,str(uuid.UUID(body['requestId'])),body['action'],
+                            str(body['actor']),str(body['name']),body.get('days',0),body.get('amountMinor',0),body.get('baseUntil',0))
                     elif self.path == '/redeem':
                         code = str(body['code']).strip().upper()
                         if not re.fullmatch('[A-F0-9]{32}', code):

@@ -1,6 +1,6 @@
 name: VaultTracker
 version: 0.12.1-folia26
-softdepend: [flexity]
+softdepend: [flexity, LuckPerms]
 main: ru.vaulttracker.VaultTrackerPlugin
 api-version: '26.1.2'
 folia-supported: true

@@ -11,6 +11,7 @@ final class TelegramBotService implements AutoCloseable {
     private final TelegramPrivateMenu privateMenu;
     private final GuardService guard;
     private final TelegramGuardMenu guardMenu;
+    private final TelegramModeration moderation;
     private final ScheduledExecutorService notifications=Executors.newSingleThreadScheduledExecutor(
             r->Thread.ofVirtual().name("VaultTracker-guard-notify").unstarted(r));
     private final ScheduledExecutorService donationNotifications=Executors.newSingleThreadScheduledExecutor(
@@ -31,12 +32,12 @@ final class TelegramBotService implements AutoCloseable {
     TelegramBotService(TelegramConfig config,Catalogue catalogue,StorageEngine storage,Logger log,GuardService guard,TelegramModeration moderation) {
         this.config=config; this.api=new TelegramApi(config); this.commands=new TelegramCommands(catalogue,storage,config.pageSize()); this.log=log;
         this.privateMenu=new TelegramPrivateMenu(catalogue,storage,commands,config.pageSize());
-        this.guard=guard;this.guardMenu=guard==null ? null : new TelegramGuardMenu(guard,commands,moderation,new TelegramTagManager(config,api),api);
+        this.guard=guard;this.moderation=moderation;this.guardMenu=guard==null ? null : new TelegramGuardMenu(guard,commands,moderation,new TelegramTagManager(config,api),api);
         privateMenu.guard(guard);
         commands.adminAccess(this::isAdmin);
         worker=Thread.ofVirtual().name("VaultTracker-telegram").unstarted(this::run);
     }
-    void start() { worker.start();if(guard!=null) donationNotifications.scheduleWithFixedDelay(this::notifyDonations,60,60,TimeUnit.SECONDS); }
+    void start() { worker.start();if(guard!=null) {donationNotifications.scheduleWithFixedDelay(this::notifyDonations,60,60,TimeUnit.SECONDS);donationNotifications.scheduleWithFixedDelay(()->{try {if(moderation!=null) moderation.syncDonations();}catch(Exception | LinkageError pending){log.fine("Выдача премиума ожидает повторной синхронизации.");}},5,10,TimeUnit.SECONDS);} }
     private void notifyDonations() {
         if(stopping.get()) return;
         try {
@@ -108,6 +109,7 @@ final class TelegramBotService implements AutoCloseable {
                 } else if(guardMenu!=null && update.callbackData().startsWith("vg:")) {
                     privateMenu.leave(update.userId(),update.chatId(),update.topicId());
                     try {result=guardMenu.callback(update.userId(),update.callbackData());}
+                    catch(DonationClient.Rejected rejected) {result=new TelegramCommands.Callback(null,rejected.getMessage(),true);}
                     catch(Exception e) {log.warning("Не удалось открыть кабинет охраны: "+e.getClass().getSimpleName());result=new TelegramCommands.Callback(null,"Кабинет временно недоступен или нет доступа. Откройте /menu.",true);}
                 } else if(guardMenu!=null && update.callbackData().startsWith("vt:")) {
                     var page=commands.callback(update.userId(),update.callbackData());

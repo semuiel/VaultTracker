@@ -23,6 +23,27 @@ class TelegramGuardMenuTest {
         menu=new TelegramGuardMenu(guard,new TelegramCommands(catalogue,storage,1,id->true));
     }
     @AfterEach void close() {guard.close();}
+    @Test void donationCodeWorksWithoutPromptAndHasNoInputDeadline() throws Exception {
+        guard.configure(new GuardConfig(true,0,99),Set.of());UUID owner=UUID.randomUUID();
+        guard.link(owner,"Alex",guard.generate(42).get().split("/vtrack link ")[1].substring(0,32)).get();guard.donationsVisible(99,true).get();
+        var direct=menu.input(42,"A".repeat(32));assertNotNull(direct);assertTrue(direct.text().contains("Не удалось зачислить код"));
+        var method=TelegramGuardMenu.class.getDeclaredMethod("prompt",long.class,String.class,String.class);method.setAccessible(true);
+        var prompt=(TelegramCommands.View)method.invoke(menu,42L,"donationCode","Введите код");assertFalse(prompt.text().contains("10 минут"));
+        menu.cancelInput(42);assertNotNull(menu.input(42,"B".repeat(32)));
+    }
+    @Test void donationPlayerPickerHasTwentyRowsOfflineToggleAndSearch() throws Exception {
+        guard.configure(new GuardConfig(true,0,99),Set.of());var moderation=mock(TelegramModeration.class);
+        var people=new ArrayList<TelegramModeration.Person>();for(int i=0;i<21;i++)people.add(new TelegramModeration.Person(UUID.randomUUID(),"Player"+i,true,""));
+        people.add(new TelegramModeration.Person(UUID.randomUUID(),"OfflineAlex",false,""));
+        when(moderation.players(99,"online")).thenReturn(java.util.concurrent.CompletableFuture.completedFuture(people.stream().filter(TelegramModeration.Person::online).toList()));
+        when(moderation.players(99,"all")).thenReturn(java.util.concurrent.CompletableFuture.completedFuture(people));
+        menu=new TelegramGuardMenu(guard,new TelegramCommands(catalogue,storage,20,v->true),moderation);
+        var admin=click(99,click(99,menu.home(99),"Супер"),"Пожертвования");var picker=click(99,admin,"Добавить пожертвования");
+        assertEquals(20,picker.buttons().stream().filter(b->b.text().startsWith("Player")).count());
+        assertTrue(click(99,picker,"Вперёд").text().contains("2/2"));var offline=click(99,picker,"офлайн");assertTrue(offline.buttons().stream().anyMatch(b->b.text().equals("OfflineAlex")));
+        click(99,offline,"Поиск");assertTrue(menu.input(99,"alex").buttons().stream().anyMatch(b->b.text().equals("OfflineAlex")));
+        assertTrue(menu.callback(42,button(admin,"Добавить пожертвования")).alert());
+    }
     @Test void donationsRequireLinkedAccountAndPersistSuperVisibility() throws Exception {
         guard.configure(new GuardConfig(true,0,99),Set.of());UUID id=UUID.randomUUID();
         guard.link(id,"Alex",guard.generate(42).get().split("/vtrack link ")[1].substring(0,32)).get();

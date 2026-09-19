@@ -11,6 +11,31 @@ from service import Service, handler
 
 
 class HttpTests(unittest.TestCase):
+    def test_website_key_has_only_balance_access_and_retries_are_idempotent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ledger=Ledger(Path(directory)/'ledger.sqlite')
+            config={'api_key':'a'*48,'website_api_key':'b'*48}
+            server=HTTPServer(('127.0.0.1',0),handler(Service(config,ledger,None)))
+            thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+            owner=str(uuid.uuid4())
+            def request(path,body):
+                conn=http.client.HTTPConnection('127.0.0.1',server.server_port,timeout=5)
+                try:
+                    conn.request('POST',path,json.dumps(body),{'Authorization':'Bearer '+config['website_api_key']})
+                    response=conn.getresponse();return response.status,json.loads(response.read())
+                finally:conn.close()
+            try:
+                body={'owner':owner,'requestId':str(uuid.uuid4()),'action':'add','actor':'forged-admin','name':'Alex','amountMinor':1000}
+                self.assertEqual(200,request('/donation-change',body)[0]);self.assertEqual(200,request('/donation-change',body)[0])
+                self.assertEqual(1000,request('/wallet',{'owner':owner})[1]['balanceMinor'])
+                self.assertEqual('website',ledger.audit(0)['rows'][0]['actor'])
+                body.update(requestId=str(uuid.uuid4()),action='spend',amountMinor=250)
+                self.assertEqual(750,request('/donation-change',body)[1]['balanceMinor'])
+                body.update(requestId=str(uuid.uuid4()),action='grant',days=30)
+                self.assertEqual(403,request('/donation-change',body)[0])
+                self.assertEqual(403,request('/donation-audit',{})[0]);self.assertEqual(403,request('/premium-tasks',{})[0])
+            finally:server.shutdown();server.server_close();thread.join(5)
+
     def test_auth_redeem_review_refund_through_http(self):
         with tempfile.TemporaryDirectory() as directory:
             ledger = Ledger(Path(directory) / 'ledger.sqlite')

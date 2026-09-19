@@ -6,7 +6,7 @@ plugins {
 group = "ru.vaulttracker"
 val legacy = providers.gradleProperty("legacy").getOrElse("false").toBoolean()
 val serverApi = if (legacy) "io.papermc.paper:paper-api:1.21.11-R0.1-SNAPSHOT" else "dev.folia:folia-api:26.1.2.build.8-stable"
-version = if (legacy) "0.13.0-preview-folia1.21.11" else "0.13.0-preview-folia26"
+version = if (legacy) "0.13.1-preview-folia1.21.11" else "0.13.1-preview-folia26"
 
 repositories {
     mavenCentral()
@@ -15,6 +15,8 @@ repositories {
 
 dependencies {
     compileOnly(serverApi)
+    compileOnly("net.luckperms:api:5.5")
+    testImplementation("net.luckperms:api:5.5")
     implementation("org.mariadb.jdbc:mariadb-java-client:3.5.7")
     implementation("com.h2database:h2:2.3.232")
     implementation("com.google.code.gson:gson:2.11.0")

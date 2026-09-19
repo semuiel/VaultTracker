@@ -10,6 +10,7 @@ import java.util.concurrent.TimeUnit;
 
 /** Called only by Telegram workers. FunPay credentials never enter the plugin. */
 final class DonationClient {
+    static final class Rejected extends IllegalArgumentException {Rejected(String message){super(message);}}
     private final Path config;
     private final OkHttpClient http=new OkHttpClient.Builder().proxy(java.net.Proxy.NO_PROXY)
             .connectTimeout(1,TimeUnit.SECONDS).callTimeout(12,TimeUnit.SECONDS)
@@ -34,7 +35,8 @@ final class DonationClient {
             byte[] bytes=response.body().byteStream().readNBytes(32769);
             if(bytes.length>32768) throw new IOException("Некорректный ответ сервиса.");
             var result=JsonParser.parseString(new String(bytes,java.nio.charset.StandardCharsets.UTF_8)).getAsJsonObject();
-            if(!response.isSuccessful()) throw new IOException(result.has("error")?result.get("error").getAsString():"Повторите позже.");
+            if(response.code()==400) throw new Rejected(result.has("error")?result.get("error").getAsString():"Повторите позже.");
+            if(!response.isSuccessful()) throw new IOException("Сервис пожертвований временно недоступен.");
             return result;
         }
     }
