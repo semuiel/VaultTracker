@@ -16,6 +16,7 @@ final class GuardService implements AutoCloseable {
     static final long MAX_OFFLINE_SECONDS=31_536_000;
     record Account(UUID uuid,String name,boolean notifications) {}
     record Child(UUID uuid,String name,double size) {}
+    final DonationClient donations;
     private final Map<UUID,Child> children=new ConcurrentHashMap<>();
     record Event(long id,long time,String name,String location,Map<String,Long> changes,boolean removed,String actor) {}
     record Delivery(long id,long recipient,String text) {}
@@ -46,12 +47,13 @@ final class GuardService implements AutoCloseable {
 
     GuardService(Path path,GuardConfig config,Logger log) throws Exception { this(path,config,log,System::currentTimeMillis); }
     GuardService(Path path,GuardConfig config,Logger log,LongSupplier clock) throws Exception {
-        this.config=config; this.log=log; this.clock=clock; started=clock.getAsLong();
+        this.config=config; this.log=log; this.clock=clock; started=clock.getAsLong();donations=new DonationClient(path.toAbsolutePath().getParent());
         Class.forName("org.h2.Driver");
         db=DriverManager.getConnection("jdbc:h2:"+path.toAbsolutePath()+";DB_CLOSE_ON_EXIT=FALSE","sa","");
         try(var s=db.createStatement()) {
             s.execute("CREATE TABLE IF NOT EXISTS accounts (tg BIGINT PRIMARY KEY, uuid VARCHAR(36) UNIQUE NOT NULL, nickname VARCHAR(64) NOT NULL, alerts BOOLEAN NOT NULL DEFAULT TRUE)");
             s.execute("CREATE TABLE IF NOT EXISTS children (uuid VARCHAR(36) PRIMARY KEY, nickname VARCHAR(64) NOT NULL, size DOUBLE PRECISION NOT NULL)");
+            s.execute("CREATE TABLE IF NOT EXISTS donation_settings (id INT PRIMARY KEY, visible BOOLEAN NOT NULL)");
             s.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS offline_seconds BIGINT");
             s.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS telegram_tag BOOLEAN NOT NULL DEFAULT FALSE");
             s.execute("CREATE TABLE IF NOT EXISTS guard_admins (tg BIGINT PRIMARY KEY, enabled BOOLEAN NOT NULL)");
@@ -307,6 +309,12 @@ final class GuardService implements AutoCloseable {
         return "Персонаж "+name+" привязан к Telegram. В боте нажмите «Обновить кабинет» или /menu. Уведомления о ваших хранилищах включены.";
     });}
     CompletableFuture<Account> account(long user) {return submit(()->accountNow(user));}
+    CompletableFuture<Boolean> donationsVisible() {return submit(()->{
+        try(var s=db.createStatement();var rs=s.executeQuery("SELECT visible FROM donation_settings WHERE id=1")) {return rs.next()&&rs.getBoolean(1);}
+    });}
+    CompletableFuture<Void> donationsVisible(long user,boolean visible) {return submit(()->{
+        requireSuper(user);execute("MERGE INTO donation_settings KEY(id) VALUES(1,?)",visible);return null;
+    });}
     private Account accountNow(long user) throws Exception {
         try(var s=db.prepareStatement("SELECT uuid,nickname,alerts FROM accounts WHERE tg=?")) {
             s.setLong(1,user);try(var rs=s.executeQuery()) {return rs.next() ? new Account(UUID.fromString(rs.getString(1)),rs.getString(2),rs.getBoolean(3)) : null;}

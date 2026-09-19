@@ -9,3 +9,7 @@ build/
 config.local.yml
 *.mv.db
 *.trace.db
+donations/config.local.json
+donations/*.sqlite*
+donations/.venv/
+**/__pycache__/

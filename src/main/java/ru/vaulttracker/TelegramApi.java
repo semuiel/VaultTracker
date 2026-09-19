@@ -244,7 +244,7 @@ final class TelegramApi implements AutoCloseable {
                 if(row==null || button.row()!=rowNumber) {
                     row=new JsonArray(); keyboard.add(row); rowNumber=button.row();
                 }
-                JsonObject value=new JsonObject(); value.addProperty("text",button.text()); value.addProperty("callback_data",button.data()); row.add(value);
+                JsonObject value=new JsonObject(); value.addProperty("text",button.text()); value.addProperty(button.url()==null?"callback_data":"url",button.url()==null?button.data():button.url()); row.add(value);
             }
         }
         JsonObject markup=new JsonObject(); markup.add("inline_keyboard",keyboard); body.add("reply_markup",markup);

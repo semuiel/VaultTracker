@@ -1,0 +1,11 @@
+{
+  "port": 18763,
+  "api_key": "",
+  "golden_key": "",
+  "seller_id": 0,
+  "category_id": 1753,
+  "order_marker": "Flexity — пополнение баланса пожертвований | 1 шт. = 1 монета",
+  "max_units": 100000,
+  "review_bonus_percent": 10,
+  "poll_seconds": 30
+}

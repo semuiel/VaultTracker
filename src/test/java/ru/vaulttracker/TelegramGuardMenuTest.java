@@ -23,6 +23,24 @@ class TelegramGuardMenuTest {
         menu=new TelegramGuardMenu(guard,new TelegramCommands(catalogue,storage,1,id->true));
     }
     @AfterEach void close() {guard.close();}
+    @Test void donationsRequireLinkedAccountAndPersistSuperVisibility() throws Exception {
+        guard.configure(new GuardConfig(true,0,99),Set.of());UUID id=UUID.randomUUID();
+        guard.link(id,"Alex",guard.generate(42).get().split("/vtrack link ")[1].substring(0,32)).get();
+        assertFalse(menu.home(42).buttons().stream().anyMatch(b->b.text().contains("Пожертвования")));
+        assertThrows(Exception.class,()->guard.donationsVisible(42,true).get());
+        var admin=click(99,click(99,menu.home(99),"Супер"),"Пожертвования");
+        click(99,admin,"Включить");
+        assertFalse(menu.home(43).buttons().stream().anyMatch(b->b.text().contains("Пожертвования")));
+        var donations=click(42,menu.home(42),"Пожертвования");
+        assertTrue(donations.text().contains("Баланс: временно недоступен"));assertTrue(donations.text().contains("добровольны"));
+        assertTrue(menu.callback(43,button(donations,"Премиум")).alert());
+        assertTrue(click(42,donations,"Пожертвовать").text().contains("недоступна"));
+        guard.close();guard=new GuardService(folder.resolve("guard"),new GuardConfig(true,0,99),Logger.getAnonymousLogger(),clock::get);
+        assertTrue(guard.donationsVisible().get());
+        menu=new TelegramGuardMenu(guard,new TelegramCommands(catalogue,storage,20,v->true));
+        var fresh=click(42,menu.home(42),"Пожертвования");guard.donationsVisible(99,false).get();
+        assertThrows(Exception.class,()->click(42,fresh,"Премиум"));
+    }
     @Test void childMenuIsLinkedOwnerOnlyAndSuperManagementIsProtected() throws Exception {
         guard.configure(new GuardConfig(true,0,99),Set.of());UUID id=UUID.randomUUID();
         guard.link(id,"Alex",guard.generate(42).get().split("/vtrack link ")[1].substring(0,32)).get();

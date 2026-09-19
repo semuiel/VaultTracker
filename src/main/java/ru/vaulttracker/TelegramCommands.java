@@ -6,8 +6,10 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Predicate;
 
 final class TelegramCommands {
-    record Button(String text,String data,int row) {
+    record Button(String text,String data,int row,String url) {
+        Button(String text,String data,int row) {this(text,data,row,null);}
         Button(String text,String data) { this(text,data,0); }
+        static Button link(String text,String url,int row) {return new Button(text,"",row,url);}
     }
     record View(String text,List<Button> buttons) {
         View(String text) { this(text,List.of()); }

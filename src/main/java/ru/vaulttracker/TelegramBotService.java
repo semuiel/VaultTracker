@@ -13,6 +13,8 @@ final class TelegramBotService implements AutoCloseable {
     private final TelegramGuardMenu guardMenu;
     private final ScheduledExecutorService notifications=Executors.newSingleThreadScheduledExecutor(
             r->Thread.ofVirtual().name("VaultTracker-guard-notify").unstarted(r));
+    private final ScheduledExecutorService donationNotifications=Executors.newSingleThreadScheduledExecutor(
+            r->Thread.ofVirtual().name("VaultTracker-donation-notify").unstarted(r));
     private String username;
     private TelegramChatBridge chatBridge;
     private static final Set<String> COMMANDS=Set.of("/start","/help","/id","/status","/items","/item","/topitem","/itemtop");
@@ -34,7 +36,21 @@ final class TelegramBotService implements AutoCloseable {
         commands.adminAccess(this::isAdmin);
         worker=Thread.ofVirtual().name("VaultTracker-telegram").unstarted(this::run);
     }
-    void start() { worker.start(); }
+    void start() { worker.start();if(guard!=null) donationNotifications.scheduleWithFixedDelay(this::notifyDonations,60,60,TimeUnit.SECONDS); }
+    private void notifyDonations() {
+        if(stopping.get()) return;
+        try {
+            if(!guard.donations.enabled()) return;
+            var recipients=guard.adminIds().stream().filter(guard::superAdmin).toList();if(recipients.isEmpty()) return;
+            var alerts=guard.donations.call("alerts",new com.google.gson.JsonObject()).getAsJsonArray("alerts");
+            for(var item:alerts) {
+                var alert=item.getAsJsonObject();boolean delivered=true;
+                for(long user:recipients) {try {api.send(user,0,new TelegramCommands.View("💝 "+alert.get("body").getAsString()));}catch(Exception failure){delivered=false;}}
+                if(delivered) {var ack=new com.google.gson.JsonObject();ack.addProperty("id",alert.get("id").getAsString());guard.donations.call("ack",ack);}
+            }
+        } catch(InterruptedException interrupted) {Thread.currentThread().interrupt();}
+        catch(Exception unavailable) {log.fine("Сервис пожертвований временно недоступен.");}
+    }
     void chatBridge(TelegramChatBridge bridge) {chatBridge=bridge;}
     private boolean isAdmin(long user) {return guard==null ? config.admin(user) : guard.admin(user);}
     private void run() {
@@ -196,6 +212,7 @@ final class TelegramBotService implements AutoCloseable {
     @Override public void close() {
         stopping.set(true); worker.interrupt(); deletionScheduler.shutdownNow(); api.close();
         notifications.shutdownNow();
+        donationNotifications.shutdownNow();
         try {notifications.awaitTermination(5,TimeUnit.SECONDS);} catch(InterruptedException e) {Thread.currentThread().interrupt();}
         try { worker.join(5000); } catch(InterruptedException e) { Thread.currentThread().interrupt(); }
     }

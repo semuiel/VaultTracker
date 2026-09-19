@@ -54,6 +54,13 @@ final class TelegramGuardMenu {
             case "event" -> view=detail(user,Long.parseLong(a.value()),a.page(),false);
             case "ownEvent" -> view=detail(user,Long.parseLong(a.value()),a.page(),true);
             case "superHome" -> view=superHome(user);
+            case "donations" -> view=donations(user);
+            case "donationPay" -> view=donationPay(user);
+            case "donationCode" -> {requireDonations(user);view=prompt(user,"donationCode","Введите одноразовый код из чата вашего оплаченного заказа FunPay. Не пересылайте код другим людям.");}
+            case "donationPremium" -> {requireDonations(user);view=new TelegramCommands.View("Премиум",List.of(b(user,"↩ Назад","donations","",0,0)));}
+            case "donationAdmin" -> view=donationAdmin(user);
+            case "donationVisibility" -> {guard.donationsVisible(user,Boolean.parseBoolean(a.value())).get();view=donationAdmin(user);}
+            case "donationPremiumAdd", "donationPremiumRemove" -> {guard.requireSuper(user);view=new TelegramCommands.View(a.op().equals("donationPremiumAdd")?"Добавить премиум":"Убрать премиум",List.of(b(user,"↩ Назад","donationAdmin","",0,0)));}
             case "children" -> view=children(user,a.page(),a.value());
             case "childSearch" -> {guard.requireSuper(user);view=prompt(user,"childSearch","Отправьте часть игрового ника ребёнка.");}
             case "childAdd" -> {guard.requireSuper(user);view=prompt(user,"childAdd","Отправьте точный игровой ник или Telegram ID связанного аккаунта ребёнка.");}
@@ -130,6 +137,7 @@ final class TelegramGuardMenu {
             buttons.add(b(user,"📦 Мои ресурсы","resources","",0,0));
             buttons.add(b(user,"📜 Мои события · 2 дня","ownHistory","",0,1));
             buttons.add(b(user,"⚙️ Настройки игрока","settings","",0,2));
+            if(guard.donationsVisible().get()) buttons.add(b(user,"💝 Пожертвования","donations","",0,7));
             if(guard.child(account.uuid())!=null) buttons.add(b(user,"📏 Размер персонажа","childSizes","",0,4));
         }
         if(guard.admin(user)) {
@@ -159,7 +167,35 @@ final class TelegramGuardMenu {
         return new TelegramCommands.View("👑 Супер администратор",List.of(
                 b(user,"👮 Администраторы бота","admins","",0,0),
                 b(user,"👥 Список игроков","browse:online","",0,1),
-                b(user,"⏱ Личный срок админских супер уведомлений","rootSettings","",0,2),b(user,"🧒 Дети","children","",0,3),new TelegramCommands.Button("↩ Назад","vg:home",4),homeButton(5)));
+                b(user,"⏱ Личный срок админских супер уведомлений","rootSettings","",0,2),b(user,"🧒 Дети","children","",0,3),
+                b(user,"💝 Пожертвования","donationAdmin","",0,4),new TelegramCommands.Button("↩ Назад","vg:home",5),homeButton(6)));
+    }
+    private void requireDonations(long user) throws Exception {
+        if(guard.account(user).get()==null || !guard.donationsVisible().get()) throw new IllegalArgumentException("Раздел пожертвований недоступен.");
+    }
+    private TelegramCommands.View donations(long user) throws Exception {
+        requireDonations(user);String balance="временно недоступен",premium="временно недоступен",extra="";
+        try {var wallet=guard.donations.wallet(guard.account(user).get().uuid());balance=DonationClient.money(wallet.get("balanceMinor").getAsLong());premium=wallet.get("premium").getAsBoolean()?"активен":"не активен";
+            if(wallet.get("blocked").getAsBoolean()) extra="\nПокупки приостановлены после возврата. Обратитесь к администратору.";
+        } catch(Exception unavailable) {extra="\nСервис пополнений недоступен или ещё настраивается. Попробуйте позже.";}
+        return new TelegramCommands.View("💝 Пожертвования\nБаланс: "+balance+"\nВсе пожертвования добровольны.\nПремиум: "+premium+extra,List.of(
+                b(user,"Пожертвовать","donationPay","",0,0),b(user,"Премиум","donationPremium","",0,1),new TelegramCommands.Button("↩ Назад","vg:home",2),homeButton(3)));
+    }
+    private TelegramCommands.View donationPay(long user) throws Exception {
+        requireDonations(user);List<TelegramCommands.Button> buttons=new ArrayList<>();String text;
+        try {
+            if(!guard.donations.enabled()) throw new java.io.IOException();
+            buttons.add(TelegramCommands.Button.link("Открыть FunPay",guard.donations.offerUrl(),0));
+            text="Пожертвование добровольное.\n1 единица лота = 1 монета; комиссии FunPay могут увеличить сумму оплаты.\nПосле оплаты в чате заказа придёт код. Введите его здесь. После зачисления подтвердите получение на FunPay.\nЗа любой честный отзыв на подтверждённый заказ — бонус 10%, один раз. При возврате пополнение и бонус отменяются.";
+            buttons.add(b(user,"Ввести код","donationCode","",0,1));
+        } catch(Exception unavailable) {text="Приём пожертвований ещё настраивается. Оплата пока недоступна.";}
+        buttons.add(b(user,"↩ Назад","donations","",0,2));return new TelegramCommands.View(text,List.copyOf(buttons));
+    }
+    private TelegramCommands.View donationAdmin(long user) throws Exception {
+        guard.requireSuper(user);boolean visible=guard.donationsVisible().get();
+        return new TelegramCommands.View("💝 Пожертвования\nКнопка у связанных игроков: "+(visible?"включена":"выключена"),List.of(
+                b(user,visible?"Выключить кнопку у игроков":"Включить кнопку у игроков","donationVisibility",Boolean.toString(!visible),0,0),
+                b(user,"Добавить премиум","donationPremiumAdd","",0,1),b(user,"Убрать премиум","donationPremiumRemove","",0,2),b(user,"↩ Назад","superHome","",0,3),homeButton(4)));
     }
     private TelegramCommands.View children(long user,int requested,String filter) {
         var rows=guard.children(user).stream().filter(c->c.name().toLowerCase(Locale.ROOT).contains(filter.toLowerCase(Locale.ROOT))).toList();
@@ -227,6 +263,15 @@ final class TelegramGuardMenu {
     }
     private TelegramCommands.View inputValue(long user,String text) throws Exception {
         Input pending=waiting.get(user);if(pending==null) return null;
+        if(pending.kind().equals("donationCode")&&pending.expires()>=System.currentTimeMillis()) {
+            requireDonations(user);String code=text.trim().toUpperCase(Locale.ROOT);
+            if(!code.matches("[A-F0-9]{32}")) return new TelegramCommands.View("Проверьте код: нужны 32 символа из сообщения FunPay. Отмена: /cancel.",List.of(b(user,"↩ Назад","donations","",0,0)));
+            try {
+                var result=guard.donations.redeem(guard.account(user).get().uuid(),code);waiting.remove(user);
+                String message=result.get("alreadyClaimed").getAsBoolean()?"Этот заказ уже зачислен ранее.":"Оплата проверена. Зачислено: "+DonationClient.money(result.get("amountMinor").getAsLong())+" монет.";
+                return new TelegramCommands.View(message+"\nБаланс: "+DonationClient.money(result.get("balanceMinor").getAsLong())+"\nПроверьте баланс и подтвердите получение заказа на FunPay.",List.of(b(user,"↩ Пожертвования","donations","",0,0)));
+            } catch(Exception unavailable) {return new TelegramCommands.View("Не удалось зачислить код: он недоступен, уже использован другим аккаунтом или проверка временно не работает. Повторите через минуту: повторного списания или зачисления не будет.",List.of(b(user,"↩ Назад","donations","",0,0)));}
+        }
         if(pending.kind().equals("resourceSearch")&&pending.expires()>=System.currentTimeMillis()) {
             String query=text.strip();if(query.isEmpty()||query.length()>64) return new TelegramCommands.View("Введите от 1 до 64 символов.");
             waiting.remove(user);return resourceResults(user,query,0);

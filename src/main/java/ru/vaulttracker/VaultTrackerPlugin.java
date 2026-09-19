@@ -74,7 +74,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
         getLogger().info("VaultTracker " + getPluginMeta().getVersion() + ": каталог ресурсов. /vtrack help");
     }
     private void ensureTelegramConfig() {
-        for(String name:List.of("telegram.yml","telegramchat.yml")) {
+        for(String name:List.of("telegram.yml","telegramchat.yml","donations.yml")) {
             java.io.File file=new java.io.File(getDataFolder(),name);
             if(file.exists()) continue;
             saveResource(name,false);
