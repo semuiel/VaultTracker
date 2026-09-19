@@ -10,6 +10,7 @@ config.local.yml
 *.mv.db
 *.trace.db
 donations/config.local.json
+donations/config.local.json.tmp
 donations/*.sqlite*
 donations/.venv/
 **/__pycache__/

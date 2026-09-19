@@ -50,8 +50,9 @@ class Service:
     def poll(self, stop):
         while not stop.is_set():
             try:
-                with self.lock:
-                    self.cursor, ids = self.provider.recent(self.cursor)
+                # Always check the newest page, even while walking old history.
+                # Otherwise a large order history delays newly paid orders.
+                ids = self.discover()
                 for order_id in ids:
                     if stop.is_set():
                         return
@@ -67,6 +68,16 @@ class Service:
                 # Credentials, codes, cookies, response HTML must never enter logs.
                 LOG.warning('FunPay check unavailable (%s); retry scheduled', type(error).__name__)
             stop.wait(max(15, self.config.get('poll_seconds', 30)))
+
+    def discover(self):
+        with self.lock:
+            first_cursor, ids = self.provider.recent()
+            if self.cursor:
+                self.cursor, older = self.provider.recent(self.cursor)
+                ids = list(dict.fromkeys([*ids, *older]))
+            else:
+                self.cursor = first_cursor
+        return ids
 
     def refresh_and_send(self, order_id):
         try:
@@ -89,16 +100,19 @@ def handler(service):
             self.connection.settimeout(12)
 
         def do_POST(self):
-            supplied = self.headers.get('Authorization', '')
-            expected = 'Bearer ' + service.config['api_key']
-            if not hmac.compare_digest(supplied.encode(), expected.encode()):
-                self.reply(401, {'error': 'Unauthorized'})
-                return
             try:
                 length = int(self.headers.get('Content-Length', '0'))
                 if not 0 < length <= 4096:
                     raise ValueError('Invalid request')
-                body = json.loads(self.rfile.read(length))
+                # Drain the bounded request before closing even for denied auth.
+                # Unread request data causes Windows to reset instead of delivering 401.
+                payload = self.rfile.read(length)
+                supplied = self.headers.get('Authorization', '')
+                expected = 'Bearer ' + service.config['api_key']
+                if not hmac.compare_digest(supplied.encode(), expected.encode()):
+                    self.reply(401, {'error': 'Unauthorized'})
+                    return
+                body = json.loads(payload)
                 if self.path == '/alerts':
                     result = {'alerts': service.ledger.alerts()}
                 elif self.path == '/ack':
@@ -139,18 +153,34 @@ def handler(service):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=Path, required=True)
+    parser.add_argument('--check', action='store_true', help='Read-only login and seller verification')
+    parser.add_argument('--check-order', help='Read-only verification of a seller order; no code, message or credit')
     args = parser.parse_args()
     config = json.loads(args.config.read_text(encoding='utf-8-sig'))
-    if len(config.get('api_key', '')) < 40 or not config.get('golden_key') or not config.get('seller_id') or not config.get('order_marker'):
-        raise SystemExit('Fill local config: api_key, golden_key, seller_id, order_marker')
+    if len(config.get('api_key', '')) < 40 or not config.get('golden_key') or not config.get('order_marker'):
+        raise SystemExit('Fill local config: api_key, golden_key, order_marker')
     if config.get('review_bonus_percent', 10) not in range(101):
         raise SystemExit('Invalid review bonus percentage')
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
-    service = Service(config, Ledger(args.config.parent / 'donations.sqlite'), FunPayProvider(config))
+    try:
+        provider = FunPayProvider(config)
+        if args.check_order:
+            checked = provider.verify(args.check_order.strip().upper().lstrip('#'))
+            print(json.dumps({k: checked[k] for k in ('order_id', 'amount', 'status', 'reviewed')}, ensure_ascii=False))
+            return
+        if args.check:
+            provider.recent()
+            print('FunPay login and seller verification OK; no messages sent, no credits issued.')
+            return
+    except Exception as error:
+        # Library exceptions can contain response bodies; never print them.
+        raise SystemExit('FunPay connection/check failed (' + type(error).__name__ + '). No payment processed.') from None
+    service = Service(config, Ledger(args.config.parent / 'donations.sqlite'), provider)
     stop = threading.Event()
     server = HTTPServer(('127.0.0.1', config.get('port', 18763)), handler(service))
     thread = threading.Thread(target=service.poll, args=(stop,), daemon=True)
     thread.start()
+    LOG.info('Donation service listening on 127.0.0.1:%s', server.server_port)
     try:
         server.serve_forever()
     finally:

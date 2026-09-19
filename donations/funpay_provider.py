@@ -7,7 +7,8 @@ class FunPayProvider:
         from FunPayAPI import Account
         self.config = config
         self.account = Account(config['golden_key'], requests_timeout=8).get()
-        if self.account.id != config['seller_id']:
+        self.seller_id = int(self.account.id)
+        if self.seller_id <= 0 or (config.get('seller_id') and self.seller_id != config['seller_id']):
             raise ValueError('Wrong FunPay seller')
 
     def recent(self, cursor=None):
@@ -18,7 +19,7 @@ class FunPayProvider:
         if not re.fullmatch(r'[A-Z0-9]{6,32}', order_id):
             raise ValueError('Invalid order id')
         order = self.account.get_order(order_id)
-        if order.seller_id != self.config['seller_id'] or order.subcategory.id != self.config['category_id']:
+        if order.seller_id != self.seller_id or order.subcategory.id != self.config['category_id']:
             raise ValueError('Wrong seller or category')
         if self.config['order_marker'] not in (order.short_description or ''):
             raise ValueError('Wrong offer')

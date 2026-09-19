@@ -1,9 +1,27 @@
 import unittest
 from types import SimpleNamespace
-from funpay_provider import parse_verified_order
+from unittest.mock import patch
+from funpay_provider import FunPayProvider, parse_verified_order
 
 
 class ProviderParsingTests(unittest.TestCase):
+    def test_detected_seller_still_rejects_other_sellers(self):
+        account = SimpleNamespace(id=123)
+        account.get = lambda: account
+        account.get_order = lambda order_id: SimpleNamespace(seller_id=456, subcategory=SimpleNamespace(id=1753))
+        with patch('FunPayAPI.Account', return_value=account):
+            provider = FunPayProvider(dict(golden_key='test-only', seller_id=0, category_id=1753))
+            self.assertEqual(123, provider.seller_id)
+            with self.assertRaises(ValueError):
+                provider.verify('ORDER123')
+
+    def test_pinned_seller_mismatch_rejects_login(self):
+        account = SimpleNamespace(id=123)
+        account.get = lambda: account
+        with patch('FunPayAPI.Account', return_value=account):
+            with self.assertRaises(ValueError):
+                FunPayProvider(dict(golden_key='test-only', seller_id=456))
+
     def order(self, status='Закрыт', quantity='100 шт.', review_html=''):
         return SimpleNamespace(id='ABC12345', buyer_username='buyer', review=None,
                                html=f'<span class="text-success">{status}</span>'
