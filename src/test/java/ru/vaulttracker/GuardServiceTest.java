@@ -79,6 +79,16 @@ class GuardServiceTest {
         guard.attribute(sign,other,"Griefer");guard.accept(snapshot(8,3));
         assertEquals(1,events().size());assertEquals("Griefer",events().getFirst().actor());
     }
+    @Test void friendsCreateHistoryButNeverNotifyOwnerOrAdminsAndPersist() throws Exception {
+        UUID friend=UUID.randomUUID();guard.link(owner,"Alex",code(42)).get();guard.addFriend(42,friend,"Trusted").get();
+        assertEquals(List.of(new GuardService.Friend(friend,"Trusted")),guard.friends(42).get());
+        guard.restore(List.of(snapshot(10,1)));offline();guard.attribute(sign,friend,"Trusted");guard.accept(snapshot(9,2));
+        assertEquals(1,events().size());assertTrue(ready().isEmpty());
+        guard.close();guard=open();guard.configure(new GuardConfig(true,120_000),Set.of(99L));
+        assertEquals("Trusted",guard.friends(42).get().getFirst().name());guard.removeFriend(42,friend).get();assertTrue(guard.friends(42).get().isEmpty());
+        guard.restore(List.of(snapshot(9,2)));guard.attribute(sign,friend,"Trusted");guard.accept(snapshot(8,3));
+        assertEquals(2,events().size());assertEquals(Set.of(42L,99L),new HashSet<>(ready().stream().map(GuardService.Delivery::recipient).toList()));
+    }
 
     @Test void personalDayDoesNotDelayAdminAlertsAndAppliesToFutureChanges() throws Exception {
         guard.link(owner,"Alex",code(42)).get();guard.offlineSeconds(42,86400L).get();

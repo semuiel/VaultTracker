@@ -7,6 +7,7 @@ import re
 import threading
 import time
 import uuid
+import traceback
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from ledger import Ledger
@@ -154,14 +155,21 @@ def handler(service):
                 if not message or not ('А' <= message[0] <= 'Я'):
                     message = 'Проверка недоступна. Повторите позже.'
                 self.reply(400, {'error': message})
-            except Exception:
+            except Exception as error:
+                # Local diagnostic contains only exception type and our source lines.
+                # Request bodies, cookies, credentials and provider responses are excluded.
+                frames=[f'{Path(frame.filename).name}:{frame.lineno}' for frame in traceback.extract_tb(error.__traceback__)
+                        if Path(frame.filename).name in ('service.py','ledger.py')]
+                LOG.warning('Local API %s failed (%s; %s)',self.path,type(error).__name__,' <- '.join(frames))
                 self.reply(503, {'error': 'Сервис временно недоступен. Повторите позже.'})
 
         def reply(self, status, value):
             data = json.dumps(value, ensure_ascii=False).encode()
+            self.close_connection = True
             self.send_response(status)
             self.send_header('Content-Type', 'application/json; charset=utf-8')
             self.send_header('Content-Length', str(len(data)))
+            self.send_header('Connection', 'close')
             self.end_headers()
             self.wfile.write(data)
     return Handler

@@ -29,7 +29,7 @@ class CabinetRolesTest {
     TelegramCommands.View click(long user,TelegramCommands.View view,String text) throws Exception {return menu.callback(user,button(view,text)).view();}
     Snapshot snap(UUID uuid,long amount,long revision) {return new Snapshot(new BlockKey(world,uuid.equals(owner) ? 1 : 2,64,0),generation,uuid,"SameName",List.of(new BlockKey(world,uuid.equals(owner) ? 1 : 2,64,1)),Map.of("DIAMOND",amount),true,clock.get(),revision);}
     @Test void cabinetRowsAndSettingsAreSeparatedByRole() throws Exception {
-        var home=menu.home(42);assertEquals(List.of("📦 Мои ресурсы","📜 Мои события · 2 дня","⚙️ Настройки игрока","⌂ Меню"),home.buttons().stream().map(TelegramCommands.Button::text).toList());
+        var home=menu.home(42);assertEquals(List.of("📦 Мои ресурсы","📜 События","⚙️ Настройки игрока","⌂ Меню"),home.buttons().stream().map(TelegramCommands.Button::text).toList());
         assertFalse(menu.home(99).buttons().stream().anyMatch(b->b.text().contains("Супер")));
         assertTrue(menu.home(500).buttons().stream().anyMatch(b->b.row()==5 && b.text().contains("Супер")));
         var settings=click(42,home,"Настройки");assertNotNull(button(settings,"Отключить мои"));assertNotNull(button(settings,"Всегда"));assertNotNull(button(settings,"2 дня"));
@@ -40,7 +40,7 @@ class CabinetRolesTest {
         guard.attribute(snap(owner,10,1).sign(),"Actor");guard.accept(snap(owner,9,2));guard.accept(snap(other,8,2));
         var own=guard.ownHistory(42,0,10).get();assertEquals(1,own.size());assertNull(own.getFirst().actor());
         assertNull(guard.ownEvent(43,own.getFirst().id()).get());
-        var view=click(42,click(42,menu.home(42),"Мои события"),"#");assertFalse(view.text().contains("Actor"));assertFalse(view.text().contains("Кто изменил"));
+        var events=click(42,menu.home(42),"События");var view=click(42,click(42,events,"Список событий"),"#");assertFalse(view.text().contains("Actor"));assertFalse(view.text().contains("Кто изменил"));
         clock.addAndGet(2L*86400_000+1);assertTrue(guard.ownHistory(42,0,10).get().isEmpty());assertEquals(2,guard.history(99,0,10).get().size());
     }
     @Test void onlineNotificationsAndSuperDelayAreIndependentOfAdminDelay() throws Exception {

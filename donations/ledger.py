@@ -115,17 +115,19 @@ class Ledger:
             premium = db.execute('SELECT * FROM premium WHERE owner=?', (owner,)).fetchone()
             until = premium['until'] if premium else 0
             return {'balanceMinor': row['balance'] if row else 0, 'blocked': bool(row['blocked']) if row else False,
-                    'premium': until > time.time(), 'premiumUntil': until,
+                    'premium': until < 0 or until > time.time(), 'premiumUntil': until,
                     'premiumPending': bool(premium and premium['version'] != premium['applied'])}
 
     def change(self, owner, request_id, action, actor, name, days=0, amount=0, base_until=0):
         if action not in ('buy', 'grant', 'remove', 'add', 'subtract', 'spend'):
             raise ValueError('Unknown operation')
-        if action in ('buy','grant') and (type(days) is not int or days not in (30,60)):
+        if action == 'buy' and (type(days) is not int or days not in (30,60)):
+            raise ValueError('Invalid duration')
+        if action == 'grant' and (type(days) is not int or days != -1 and not 1 <= days <= 36500):
             raise ValueError('Invalid duration')
         if action in ('add','subtract','spend') and (type(amount) is not int or not 0 < amount <= 100_000_000):
             raise ValueError('Invalid amount')
-        if type(base_until) is not int or not 0 <= base_until <= 253402300799:
+        if type(base_until) is not int or not -1 <= base_until <= 253402300799:
             raise ValueError('Invalid expiry')
         if not actor or len(actor)>128 or len(name)>64 or len(request_id)>128:
             raise ValueError('Invalid actor')
@@ -151,7 +153,11 @@ class Ledger:
             if delta: self.entry(db,request_id+':balance',owner,delta)
             if action in ('buy','grant','remove'):
                 old=db.execute('SELECT * FROM premium WHERE owner=?',(owner,)).fetchone()
-                until=0 if action=='remove' else max(int(time.time()),old['until'] if old else 0,base_until)+days*86400
+                previous_until=old['until'] if old else 0
+                if action=='remove': until=0
+                elif days<0: until=-1
+                elif previous_until<0 or base_until<0: raise ValueError('У игрока уже бессрочный премиум.')
+                else: until=max(int(time.time()),previous_until,base_until)+days*86400
                 version=(old['version'] if old else 0)+1
                 db.execute('INSERT INTO premium(owner,until,version) VALUES(?,?,?) ON CONFLICT(owner) DO UPDATE SET until=excluded.until,version=excluded.version', (owner,until,version))
             balance=db.execute('SELECT balance FROM wallets WHERE owner=?',(owner,)).fetchone()[0]

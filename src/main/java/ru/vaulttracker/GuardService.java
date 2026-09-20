@@ -16,8 +16,10 @@ final class GuardService implements AutoCloseable {
     static final long MAX_OFFLINE_SECONDS=31_536_000;
     record Account(UUID uuid,String name,boolean notifications) {}
     record Child(UUID uuid,String name,double size) {}
+    record Friend(UUID uuid,String name) {}
     final DonationClient donations;
     private final Map<UUID,Child> children=new ConcurrentHashMap<>();
+    private final Map<UUID,Map<UUID,String>> friends=new ConcurrentHashMap<>();
     record Event(long id,long time,String name,String location,Map<String,Long> changes,boolean removed,String actor) {}
     record Delivery(long id,long recipient,String text) {}
     private record Code(long user,long expires) {}
@@ -53,6 +55,7 @@ final class GuardService implements AutoCloseable {
         try(var s=db.createStatement()) {
             s.execute("CREATE TABLE IF NOT EXISTS accounts (tg BIGINT PRIMARY KEY, uuid VARCHAR(36) UNIQUE NOT NULL, nickname VARCHAR(64) NOT NULL, alerts BOOLEAN NOT NULL DEFAULT TRUE)");
             s.execute("CREATE TABLE IF NOT EXISTS children (uuid VARCHAR(36) PRIMARY KEY, nickname VARCHAR(64) NOT NULL, size DOUBLE PRECISION NOT NULL)");
+            s.execute("CREATE TABLE IF NOT EXISTS guard_friends (owner_uuid VARCHAR(36) NOT NULL, friend_uuid VARCHAR(36) NOT NULL, nickname VARCHAR(64) NOT NULL, PRIMARY KEY(owner_uuid,friend_uuid))");
             s.execute("CREATE TABLE IF NOT EXISTS donation_settings (id INT PRIMARY KEY, visible BOOLEAN NOT NULL)");
             s.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS offline_seconds BIGINT");
             s.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS telegram_tag BOOLEAN NOT NULL DEFAULT FALSE");
@@ -91,7 +94,30 @@ final class GuardService implements AutoCloseable {
         try(var s=db.createStatement();var rs=s.executeQuery("SELECT capability,enabled FROM admin_capabilities")) {while(rs.next()) adminCapabilities.put(rs.getString(1),rs.getBoolean(2));}
         disk.scheduleWithFixedDelay(()-> {try {prune();} catch(Exception e) {log.warning("Не удалось очистить историю охраны.");}},1,60,TimeUnit.MINUTES);
         try(var s=db.createStatement();var rs=s.executeQuery("SELECT uuid,nickname,size FROM children")) {while(rs.next()) {var child=new Child(UUID.fromString(rs.getString(1)),rs.getString(2),rs.getDouble(3));children.put(child.uuid(),child);}}
+        try(var s=db.createStatement();var rs=s.executeQuery("SELECT owner_uuid,friend_uuid,nickname FROM guard_friends")) {while(rs.next()) {
+            UUID owner=UUID.fromString(rs.getString(1)),friend=UUID.fromString(rs.getString(2));
+            friends.computeIfAbsent(owner,ignored->new ConcurrentHashMap<>()).put(friend,rs.getString(3));
+        }}
     }
+    CompletableFuture<List<Friend>> friends(long user) {return submit(()->{
+        Account account=accountNow(user);if(account==null) throw new SecurityException("Сначала привяжите персонажа");
+        return friends.getOrDefault(account.uuid(),Map.of()).entrySet().stream()
+                .map(e->new Friend(e.getKey(),e.getValue())).sorted(Comparator.comparing(Friend::name,String.CASE_INSENSITIVE_ORDER)).toList();
+    });}
+    CompletableFuture<Void> addFriend(long user,UUID uuid,String name) {return submit(()->{
+        Account account=accountNow(user);if(account==null) throw new SecurityException("Сначала привяжите персонажа");
+        if(account.uuid().equals(uuid)) throw new IllegalArgumentException("Нельзя добавить себя в друзья");
+        String nickname=Objects.requireNonNull(name).strip();if(nickname.isEmpty()||nickname.length()>64) throw new IllegalArgumentException("Некорректный игровой ник");
+        execute("MERGE INTO guard_friends KEY(owner_uuid,friend_uuid) VALUES(?,?,?)",account.uuid().toString(),uuid.toString(),nickname);
+        friends.computeIfAbsent(account.uuid(),ignored->new ConcurrentHashMap<>()).put(uuid,nickname);return null;
+    });}
+    CompletableFuture<Void> removeFriend(long user,UUID uuid) {return submit(()->{
+        Account account=accountNow(user);if(account==null) throw new SecurityException("Сначала привяжите персонажа");
+        execute("DELETE FROM guard_friends WHERE owner_uuid=? AND friend_uuid=?",account.uuid().toString(),uuid.toString());
+        Map<UUID,String> ownerFriends=friends.get(account.uuid());if(ownerFriends!=null) {ownerFriends.remove(uuid);if(ownerFriends.isEmpty()) friends.remove(account.uuid(),ownerFriends);}
+        return null;
+    });}
+    private boolean friend(UUID owner,UUID actor) {Map<UUID,String> ownerFriends=friends.get(owner);return ownerFriends!=null&&ownerFriends.containsKey(actor);}
     Child child(UUID uuid) {return children.get(uuid);}
     List<Child> children(long user) {requireSuper(user);return children.values().stream().sorted(Comparator.comparing(Child::name,String.CASE_INSENSITIVE_ORDER)).toList();}
     CompletableFuture<Void> child(long user,UUID uuid,String name,boolean enabled) {return submit(()->{
@@ -221,10 +247,11 @@ final class GuardService implements AutoCloseable {
         long root=settings.superAdminUserId(),rootDelay=superDelays.getOrDefault(root,settings.absenceMillis()/1000)*1000;
         boolean rootEligible=root>0 && (rootDelay<0 || (departed>=0 && now-departed>=rootDelay));
         boolean extraEligible=extraSupers.stream().anyMatch(id->eligibleSuper(id,departed,now));
-        if(ownEligible || adminEligible || rootEligible || extraEligible) enqueue(()->observe(old,snapshot,now,ownEligible,adminEligible,actor,rootEligible,root));
+        boolean trustedFriend=actorInfo!=null&&actorInfo.uuid()!=null&&friend(snapshot.owner(),actorInfo.uuid());
+        if(ownEligible || adminEligible || rootEligible || extraEligible) enqueue(()->observe(old,snapshot,now,ownEligible,adminEligible,actor,rootEligible,root,trustedFriend));
     }
     private boolean eligibleSuper(long user,long departed,long now) {long delay=superDelays.getOrDefault(user,defaultOfflineSeconds())*1000;return delay<0 || (departed>=0 && now-departed>=delay);}
-    private void observe(Snapshot old,Snapshot current,long now,boolean ownEligible,boolean adminEligible,String actor,boolean rootEligible,long root) throws Exception {
+    private void observe(Snapshot old,Snapshot current,long now,boolean ownEligible,boolean adminEligible,String actor,boolean rootEligible,long root,boolean trustedFriend) throws Exception {
         Map<String,Long> changes=new TreeMap<>();
         if(current.active()) {
             Set<String> keys=new HashSet<>(old.items().keySet()); keys.addAll(current.items().keySet());
@@ -250,6 +277,7 @@ final class GuardService implements AutoCloseable {
             }
             Set<Long> adminRecipients=new HashSet<>();
             for(long admin:adminIds()) if((superAdmin(admin) ? eligibleSuper(admin,presence.getOrDefault(old.owner(),started),now) : adminEligible) && adminAlertsNow(admin)) {recipients.add(admin);adminRecipients.add(admin);}
+            if(trustedFriend) {recipients.clear();adminRecipients.clear();ownerRecipient=null;}
             for(long recipient:recipients) {
                 boolean adminChannel=adminRecipients.contains(recipient);
                 queueNotification(id,recipient,old.owner(),now,Objects.equals(ownerRecipient,recipient),adminChannel,

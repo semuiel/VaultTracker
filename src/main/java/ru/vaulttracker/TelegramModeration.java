@@ -100,6 +100,15 @@ class TelegramModeration {
         }
         return people.values().stream().sorted(Comparator.comparing(Person::name,String.CASE_INSENSITIVE_ORDER)).toList();
     });}
+    CompletableFuture<Person> playerByName(String nickname) {return global(()-> {
+        String wanted=Objects.requireNonNull(nickname).strip();
+        if(wanted.isEmpty()||wanted.length()>64) throw new IllegalArgumentException("Введите игровой ник длиной от 1 до 64 символов");
+        Map<UUID,OfflinePlayer> people=new LinkedHashMap<>();
+        for(OfflinePlayer player:plugin.getServer().getOfflinePlayers()) people.put(player.getUniqueId(),player);
+        for(Player player:plugin.getServer().getOnlinePlayers()) people.put(player.getUniqueId(),player);
+        return people.values().stream().filter(player->player.getName()!=null&&player.getName().equalsIgnoreCase(wanted))
+                .findFirst().map(this::person).orElseThrow(()->new IllegalArgumentException("Игрок с таким точным ником не найден на сервере"));
+    });}
     private Person person(OfflinePlayer p) {
         ProfileBanList bans=plugin.getServer().getBanList(BanList.Type.PROFILE);
         var ban=bans.getBanEntry(p.getPlayerProfile());

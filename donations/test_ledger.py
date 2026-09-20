@@ -80,6 +80,24 @@ class Tests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 service.redeem(self.owner, '0'*32)
 
+    def test_custom_and_permanent_admin_premium(self):
+        custom_id = str(uuid.uuid4())
+        self.ledger.change(self.owner, custom_id, 'grant', 'admin', 'Alex', days=45)
+        custom = self.ledger.wallet(self.owner)
+        self.assertTrue(custom['premium'])
+        self.assertGreater(custom['premiumUntil'], 0)
+        permanent_id = str(uuid.uuid4())
+        self.ledger.change(self.owner, permanent_id, 'grant', 'admin', 'Alex', days=-1,
+                           base_until=custom['premiumUntil'])
+        self.assertEqual(-1, self.ledger.wallet(self.owner)['premiumUntil'])
+        self.assertTrue(self.ledger.wallet(self.owner)['premium'])
+        self.assertEqual(-1, self.ledger.premium_tasks()[0]['until'])
+        with self.assertRaisesRegex(ValueError, 'бессрочный'):
+            self.ledger.change(self.owner, str(uuid.uuid4()), 'grant', 'admin', 'Alex', days=10)
+        self.ledger.change(self.owner, str(uuid.uuid4()), 'remove', 'admin', 'Alex')
+        self.assertFalse(self.ledger.wallet(self.owner)['premium'])
+        self.assertEqual([-1, 45], [row['amount'] for row in self.ledger.audit(0)['rows'] if row['action']=='grant'])
+
 
 if __name__ == '__main__':
     unittest.main()

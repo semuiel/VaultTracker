@@ -14,13 +14,17 @@ final class LinkedChatIdentity {
     private final Object formatter,settings,database;
     private final Method format,connection;
     private final Map<?,?> cache;
+    private final FlexityPremiumStyle premiumStyle;
     LinkedChatIdentity(Plugin flexity) throws ReflectiveOperationException {
         Object bootstrap=field(flexity,"bootstrap");
         formatter=field(bootstrap,"chatFormatter");Object services=field(bootstrap,"serviceRegistry");
         settings=services.getClass().getMethod("getSettingsService").invoke(services);
         database=services.getClass().getMethod("getDatabaseService").invoke(services);
         cache=(Map<?,?>)field(settings,"cache");
-        format=formatter.getClass().getMethod("format",boolean.class,String.class,Component.class,String.class);
+        Method legacy=null;FlexityPremiumStyle modern=null;
+        try {legacy=formatter.getClass().getMethod("format",boolean.class,String.class,Component.class,String.class);}
+        catch(NoSuchMethodException updated) {modern=new FlexityPremiumStyle(flexity,formatter,settings);}
+        format=legacy;premiumStyle=modern;
         connection=database.getClass().getMethod("getConnection");
     }
     private static Object field(Object instance,String name) throws ReflectiveOperationException {
@@ -39,6 +43,7 @@ final class LinkedChatIdentity {
         return render(account,text,true);
     }
     Component render(GuardService.Account account,String text,boolean showTag) throws Exception {
+        if(premiumStyle!=null) return tag(showTag).append(premiumStyle.render(account,text));
         Style style=style(account.uuid());
         // Minecraft account names are inserted into Flexity's trusted template, never Telegram names.
         if(!account.name().matches("[A-Za-z0-9_.-]{1,32}")) return fallback(account.name(),text,showTag);

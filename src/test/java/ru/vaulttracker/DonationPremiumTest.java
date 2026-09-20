@@ -36,4 +36,18 @@ class DonationPremiumTest {
             assertEquals(1,ack.get());verify(builder,times(2)).expiry(Instant.ofEpochSecond(until));verify(map,times(2)).remove(old);
         } finally {server.stop(0);}
     }
+    @Test void permanentTaskCreatesInheritanceWithoutExpiry() throws Exception {
+        UUID owner=UUID.randomUUID();var ack=new java.util.concurrent.atomic.AtomicInteger();
+        var server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
+        server.createContext("/premium-tasks",e->{e.getRequestBody().readAllBytes();byte[] bytes=("{\"tasks\":[{\"owner\":\""+owner+"\",\"until\":-1,\"version\":3}]}").getBytes();e.sendResponseHeaders(200,bytes.length);e.getResponseBody().write(bytes);e.close();});
+        server.createContext("/premium-ack",e->{e.getRequestBody().readAllBytes();ack.incrementAndGet();byte[] bytes="{}".getBytes();e.sendResponseHeaders(200,bytes.length);e.getResponseBody().write(bytes);e.close();});server.start();
+        try(var provider=mockStatic(LuckPermsProvider.class);var nodes=mockStatic(InheritanceNode.class)) {
+            var lp=mock(LuckPerms.class);var manager=mock(UserManager.class);var user=mock(User.class);var map=mock(NodeMap.class);
+            provider.when(LuckPermsProvider::get).thenReturn(lp);when(lp.getUserManager()).thenReturn(manager);when(manager.loadUser(owner)).thenReturn(CompletableFuture.completedFuture(user));when(manager.saveUser(user)).thenReturn(CompletableFuture.completedFuture(null));
+            when(user.data()).thenReturn(map);when(user.getNodes()).thenReturn(Set.of());var builder=mock(InheritanceNode.Builder.class,RETURNS_SELF);var node=mock(InheritanceNode.class);nodes.when(()->InheritanceNode.builder("premium")).thenReturn(builder);when(builder.build()).thenReturn(node);
+            Files.writeString(folder.resolve("donations.yml"),"enabled: true\napi-key: '"+"x".repeat(48)+"'\nport: "+server.getAddress().getPort()+"\n");
+            new DonationPremium(new DonationClient(folder)).sync();
+            verify(builder,never()).expiry(any(Instant.class));verify(map).add(node);assertEquals(1,ack.get());
+        } finally {server.stop(0);}
+    }
 }

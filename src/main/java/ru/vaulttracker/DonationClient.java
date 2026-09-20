@@ -14,7 +14,9 @@ final class DonationClient {
     private final Path config;
     private final OkHttpClient http=new OkHttpClient.Builder().proxy(java.net.Proxy.NO_PROXY)
             .connectTimeout(1,TimeUnit.SECONDS).callTimeout(12,TimeUnit.SECONDS)
-            .followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false).build();
+            // All mutations carry a durable requestId, so reconnecting a stale
+            // loopback HTTP/1.0 socket cannot duplicate a balance operation.
+            .followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(true).build();
     DonationClient(Path folder) {config=folder.resolve("donations.yml");}
     private YamlConfiguration settings() throws Exception {
         var yaml=new YamlConfiguration();if(Files.exists(config)) yaml.load(config.toFile());return yaml;
@@ -30,6 +32,15 @@ final class DonationClient {
         if(!yaml.getBoolean("enabled",false)||key.length()<40||port<1024||port>65535) throw new IOException("Приём пожертвований ещё настраивается.");
         Request request=new Request.Builder().url("http://127.0.0.1:"+port+"/"+operation)
                 .header("Authorization","Bearer "+key).post(RequestBody.create(body.toString(),MediaType.get("application/json"))).build();
+        try {return execute(request);}
+        catch(java.net.SocketException reset) {
+            // Windows can reset a just-closed loopback HTTP/1.0 connection.
+            // donation-change is idempotent by requestId; other calls are reads
+            // or use their own durable identity, so one retry is safe.
+            return execute(request);
+        }
+    }
+    private JsonObject execute(Request request) throws Exception {
         try(Response response=http.newCall(request).execute()) {
             if(response.body()==null) throw new IOException("Сервис пожертвований недоступен.");
             byte[] bytes=response.body().byteStream().readNBytes(32769);

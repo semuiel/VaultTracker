@@ -6,7 +6,7 @@ plugins {
 group = "ru.vaulttracker"
 val legacy = providers.gradleProperty("legacy").getOrElse("false").toBoolean()
 val serverApi = if (legacy) "io.papermc.paper:paper-api:1.21.11-R0.1-SNAPSHOT" else "dev.folia:folia-api:26.1.2.build.8-stable"
-version = if (legacy) "0.13.1-preview-folia1.21.11" else "0.13.1-preview-folia26"
+version = if (legacy) "0.13.4-preview-folia1.21.11" else "0.13.4-preview-folia26"
 
 repositories {
     mavenCentral()

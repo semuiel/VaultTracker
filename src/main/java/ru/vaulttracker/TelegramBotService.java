@@ -89,7 +89,7 @@ final class TelegramBotService implements AutoCloseable {
         catch(InterruptedException e) {Thread.currentThread().interrupt();}
         catch(Exception e) {
             if(TelegramApi.benignCallbackError(e)) log.fine("Устаревший ответ Telegram пропущен.");
-            else log.warning("Не удалось обработать сообщение Telegram; бот продолжает работу: "+api.safe(e));
+            else log.warning("Не удалось обработать сообщение Telegram; бот продолжает работу: "+api.safe(e)+"; "+failureLocation(e));
         }
     }
     private long delay(int failures) {
@@ -110,7 +110,7 @@ final class TelegramBotService implements AutoCloseable {
                     privateMenu.leave(update.userId(),update.chatId(),update.topicId());
                     try {result=guardMenu.callback(update.userId(),update.callbackData());}
                     catch(DonationClient.Rejected rejected) {result=new TelegramCommands.Callback(null,rejected.getMessage(),true);}
-                    catch(Exception e) {log.warning("Не удалось открыть кабинет охраны: "+e.getClass().getSimpleName());result=new TelegramCommands.Callback(null,"Кабинет временно недоступен или нет доступа. Откройте /menu.",true);}
+                    catch(Exception e) {log.warning("Не удалось открыть кабинет охраны: "+failureLocation(e));result=new TelegramCommands.Callback(null,"Кабинет временно недоступен или нет доступа. Откройте /menu.",true);}
                 } else if(guardMenu!=null && update.callbackData().startsWith("vt:")) {
                     var page=commands.callback(update.userId(),update.callbackData());
                     result=page.view()==null ? page : new TelegramCommands.Callback(TelegramGuardMenu.withHome(page.view()),page.notice(),page.alert());
@@ -210,6 +210,12 @@ final class TelegramBotService implements AutoCloseable {
             }
         } catch(InterruptedException e) {Thread.currentThread().interrupt();}
         catch(Exception e) {log.warning("Ошибка очереди уведомлений охраны: "+e.getClass().getSimpleName());}
+    }
+    private static String failureLocation(Throwable error) {
+        StringBuilder result=new StringBuilder(error.getClass().getSimpleName());
+        for(StackTraceElement frame:error.getStackTrace()) if(frame.getClassName().startsWith("ru.vaulttracker.")&&!frame.getClassName().contains(".libs.")) result.append(" <- ").append(frame.getFileName()).append(':').append(frame.getLineNumber());
+        if(error.getCause()!=null && error.getCause()!=error) result.append("; cause ").append(failureLocation(error.getCause()));
+        return result.toString();
     }
     @Override public void close() {
         stopping.set(true); worker.interrupt(); deletionScheduler.shutdownNow(); api.close();

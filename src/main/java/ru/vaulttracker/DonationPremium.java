@@ -31,11 +31,11 @@ final class DonationPremium {
             sync();
             if(!action.equals("remove") && api().getGroupManager().loadGroup("premium").get(10,TimeUnit.SECONDS).isEmpty()) throw new DonationClient.Rejected("Группа premium не создана в LuckPerms. Средства не списаны.");
             base=expiry(owner);
-            if(base<0 && !action.equals("remove")) throw new DonationClient.Rejected("У игрока уже бессрочный премиум.");
+            if(base<0 && !action.equals("remove") && days>=0) throw new DonationClient.Rejected("У игрока уже бессрочный премиум.");
         }
         var body=new JsonObject();body.addProperty("owner",owner.toString());body.addProperty("name",name);
         body.addProperty("actor",Long.toString(actor));body.addProperty("requestId",requestId);body.addProperty("action",action);
-        body.addProperty("days",days);body.addProperty("amountMinor",amount);body.addProperty("baseUntil",Math.max(0,base));
+        body.addProperty("days",days);body.addProperty("amountMinor",amount);body.addProperty("baseUntil",base);
         var result=client.call("donation-change",body);
         // Failure leaves the durable task pending; it never charges again.
         try {sync();} catch(Exception | LinkageError pending) {result.addProperty("pending",true);}
@@ -50,7 +50,8 @@ final class DonationPremium {
             var task=element.getAsJsonObject();UUID owner=UUID.fromString(task.get("owner").getAsString());long until=task.get("until").getAsLong();
             var user=lp.getUserManager().loadUser(owner).get(10,TimeUnit.SECONDS);
             for(var node:List.copyOf(user.getNodes())) if(node instanceof InheritanceNode group && group.getGroupName().equals("premium")) user.data().remove(node);
-            if(until>Instant.now().getEpochSecond()) user.data().add(InheritanceNode.builder("premium").expiry(Instant.ofEpochSecond(until)).build());
+            if(until<0) user.data().add(InheritanceNode.builder("premium").build());
+            else if(until>Instant.now().getEpochSecond()) user.data().add(InheritanceNode.builder("premium").expiry(Instant.ofEpochSecond(until)).build());
             lp.getUserManager().saveUser(user).get(10,TimeUnit.SECONDS);
             var ack=new JsonObject();ack.addProperty("owner",owner.toString());ack.addProperty("version",task.get("version").getAsLong());client.call("premium-ack",ack);
         }

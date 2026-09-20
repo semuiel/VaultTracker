@@ -44,6 +44,18 @@ class TelegramGuardMenuTest {
         click(99,offline,"Поиск");assertTrue(menu.input(99,"alex").buttons().stream().anyMatch(b->b.text().equals("OfflineAlex")));
         assertTrue(menu.callback(42,button(admin,"Добавить пожертвования")).alert());
     }
+    @Test void superAdminCanSelectPermanentOrCustomPremiumDuration() throws Exception {
+        guard.configure(new GuardConfig(true,0,99),Set.of());var moderation=mock(TelegramModeration.class);UUID player=UUID.randomUUID();
+        var person=new TelegramModeration.Person(player,"Player",true,"");
+        when(moderation.players(99,"online")).thenReturn(java.util.concurrent.CompletableFuture.completedFuture(List.of(person)));
+        when(moderation.info(99,player)).thenReturn(java.util.concurrent.CompletableFuture.completedFuture(person));
+        menu=new TelegramGuardMenu(guard,new TelegramCommands(catalogue,storage,20,v->true),moderation);
+        var admin=click(99,click(99,menu.home(99),"Супер"),"Пожертвования");var durations=click(99,admin,"Добавить премиум");
+        assertTrue(durations.buttons().stream().anyMatch(b->b.text().equals("Навсегда")));assertTrue(durations.buttons().stream().anyMatch(b->b.text().equals("Свой срок")));
+        var permanent=click(99,click(99,durations,"Навсегда"),"Player");assertTrue(permanent.text().contains("бессрочный премиум"));
+        var customPlayer=click(99,click(99,durations,"Свой срок"),"Player");assertTrue(customPlayer.text().contains("от 1 до 36500"));
+        assertTrue(menu.input(99,"0").text().contains("от 1 до 36500"));var confirm=menu.input(99,"45");assertTrue(confirm.text().contains("на 45 дней"));
+    }
     @Test void donationsRequireLinkedAccountAndPersistSuperVisibility() throws Exception {
         guard.configure(new GuardConfig(true,0,99),Set.of());UUID id=UUID.randomUUID();
         guard.link(id,"Alex",guard.generate(42).get().split("/vtrack link ")[1].substring(0,32)).get();
@@ -83,6 +95,20 @@ class TelegramGuardMenuTest {
         assertTrue(page.text().contains("1/2"));assertFalse(page.text().contains("999"));assertTrue(page.text().contains("офлайн"));
         String next=button(page,"Вперёд");assertTrue(menu.callback(43,next).alert());
         assertTrue(menu.callback(42,next).view().text().contains("2/2"));
+    }
+    @Test void eventsMenuAddsPagesAndRemovesFriendsByExactNickname() throws Exception {
+        UUID owner=UUID.randomUUID(),friendId=UUID.randomUUID();guard.link(owner,"Alex",guard.generate(42).get().split("/vtrack link ")[1].substring(0,32)).get();
+        var moderation=mock(TelegramModeration.class);when(moderation.playerByName("Trusted"))
+                .thenReturn(java.util.concurrent.CompletableFuture.completedFuture(new TelegramModeration.Person(friendId,"Trusted",false,"")));
+        menu=new TelegramGuardMenu(guard,new TelegramCommands(catalogue,storage,20,v->true),moderation);
+        var events=click(42,menu.home(42),"События");assertTrue(events.buttons().stream().anyMatch(b->b.text().contains("Список событий за 2 дня")));
+        var friends=click(42,events,"Друзья");assertTrue(friends.text().contains("Список пуст"));
+        click(42,friends,"Добавить друга");friends=menu.input(42,"Trusted");assertEquals("Trusted",guard.friends(42).get().getFirst().name());
+        for(int i=0;i<20;i++) guard.addFriend(42,UUID.randomUUID(),"Friend"+String.format("%02d",i)).get();
+        friends=click(42,events,"Друзья");assertEquals(20,friends.buttons().stream().filter(b->b.text().startsWith("❌ ")).count());
+        friends=click(42,friends,"Вперёд");assertTrue(friends.text().contains("2/2"));
+        var confirm=click(42,friends,"Trusted");assertTrue(confirm.text().contains("Удалить Trusted"));
+        click(42,confirm,"Да, удалить");assertFalse(guard.friends(42).get().stream().anyMatch(f->f.uuid().equals(friendId)));
     }
     String button(TelegramCommands.View view,String contains) {return view.buttons().stream().filter(b->b.text().contains(contains)).findFirst().orElseThrow().data();}
     TelegramCommands.View click(long user,TelegramCommands.View view,String contains) throws Exception {return menu.callback(user,button(view,contains)).view();}
