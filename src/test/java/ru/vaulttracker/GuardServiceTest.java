@@ -57,6 +57,19 @@ class GuardServiceTest {
         assertFalse(ownerText.contains("Кто изменил"));assertTrue(adminText.contains("Кто изменил: Griefer"));
         assertEquals("Griefer",events().getFirst().actor());assertTrue(GuardService.eventText(events().getFirst(),0,8).contains("Кто изменил: Griefer"));
     }
+    @Test void bastionGrantIsPendingOnlyAfterSuccessfulLinkAndSurvivesRestart() throws Exception {
+        String valid=code(42);
+        assertFalse(guard.linkOutcome(owner,"Alex","WRONG-CODE").get().linked());
+        assertFalse(guard.bastionPending(owner).get());
+        var linked=guard.linkOutcome(owner,"Alex",valid).get();assertTrue(linked.linked());
+        assertTrue(guard.bastionPending(owner).get());
+        assertFalse(guard.linkOutcome(owner,"Alex",valid).get().linked());
+        guard.close();guard=open();guard.configure(new GuardConfig(true,120_000),Set.of(99L));
+        assertTrue(guard.bastionPending(owner).get());
+        guard.bastionGranted(owner).get();assertFalse(guard.bastionPending(owner).get());
+        guard.close();guard=open();guard.configure(new GuardConfig(true,120_000),Set.of(99L));
+        assertFalse(guard.bastionPending(owner).get());
+    }
     @Test void personalAdminAlertsKeepActorEvenWhenAdminChannelIsDisabledAndHideAfterDemotion() throws Exception {
         UUID actor=UUID.randomUUID();guard.link(owner,"Alex",code(99)).get();
         guard.toggleAdmin(99).get();guard.offlineSeconds(99,-1L).get();guard.presence(owner,"Alex",true);

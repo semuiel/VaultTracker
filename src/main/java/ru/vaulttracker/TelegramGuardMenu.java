@@ -372,7 +372,7 @@ final class TelegramGuardMenu {
     }
     private TelegramCommands.View capabilities(long user) {
         guard.requireSuper(user);List<TelegramCommands.Button> buttons=new ArrayList<>();int row=0;
-        Map<String,String> labels=Map.ofEntries(Map.entry("freeze","Заморозка и разморозка"),Map.entry("ban","Бан на 5 минут"),Map.entry("permanentBan","Бессрочный бан"),Map.entry("kick","Кик"),Map.entry("players","Список игроков"),Map.entry("inventory","Инвентарь"),Map.entry("ender","Эндер-сундук"),Map.entry("unban","Разбан"),Map.entry("heal","Лечение"),Map.entry("kill","Убийство"),Map.entry("repair","Ремонт предметов"),Map.entry("scale","Размер игрока"),Map.entry("flySpeed","Скорость полёта"),Map.entry("walkSpeed","Скорость движения"),Map.entry("teleport","Телепорт к игроку"),Map.entry("teleportCoords","Телепорт на координаты"),Map.entry("luckPerms","LuckPerms admin"),Map.entry("op","Выдать OP"),Map.entry("deop","Забрать OP"),Map.entry("chat","Игровой чат"),Map.entry("manageAdmins","Управление администраторами"));
+        Map<String,String> labels=Map.ofEntries(Map.entry("bastionTrust","Доверие Bastion"),Map.entry("freeze","Заморозка и разморозка"),Map.entry("ban","Бан на 5 минут"),Map.entry("permanentBan","Бессрочный бан"),Map.entry("kick","Кик"),Map.entry("players","Список игроков"),Map.entry("inventory","Инвентарь"),Map.entry("ender","Эндер-сундук"),Map.entry("unban","Разбан"),Map.entry("heal","Лечение"),Map.entry("kill","Убийство"),Map.entry("repair","Ремонт предметов"),Map.entry("scale","Размер игрока"),Map.entry("flySpeed","Скорость полёта"),Map.entry("walkSpeed","Скорость движения"),Map.entry("teleport","Телепорт к игроку"),Map.entry("teleportCoords","Телепорт на координаты"),Map.entry("luckPerms","LuckPerms admin"),Map.entry("op","Выдать OP"),Map.entry("deop","Забрать OP"),Map.entry("chat","Игровой чат"),Map.entry("manageAdmins","Управление администраторами"));
         for(String capability:GuardService.ADMIN_CAPABILITIES) {boolean enabled=guard.capability(capability);buttons.add(b(user,(enabled?"✅ ":"❌ ")+labels.get(capability),"toggleCapability",capability,0,row++));}
         buttons.add(b(user,"↩ Администраторы бота","admins","",0,row++));buttons.add(homeButton(row));
         return new TelegramCommands.View("🧩 Возможности обычных администраторов\nУведомления доступны всегда и здесь не отключаются.",List.copyOf(buttons));
@@ -636,6 +636,10 @@ final class TelegramGuardMenu {
         var p=moderation.info(user,uuid).get();
         if(allowed(user,"inventory")) buttons.add(b(user,"🎒 Инвентарь","inventory",id+"|main",0,row++));
         if(allowed(user,"ender")) buttons.add(b(user,"🧰 Эндер-сундук","inventory",id+"|ender",0,row++));
+        if(allowed(user,"bastionTrust") && moderation.bastionAvailable()) {
+            buttons.add(b(user,"🛡 Добавить в доверенные Bastion","confirm:bastionAdd",id,0,row++));
+            buttons.add(b(user,"🛡 Убрать из доверенных Bastion","confirm:bastionRemove",id,0,row++));
+        }
         buttons.add(b(user,"💬 Личное сообщение от FLEXITY","privateMessage",id,0,row++));
         if(allowed(user,"freeze") && moderation.freezeAvailable()) {
             buttons.add(b(user,"❄ Заморозить","confirm:freeze",id,0,row++));
@@ -711,8 +715,8 @@ final class TelegramGuardMenu {
         }
         String target=value;
         String lookup=(operation.equals("scale") || operation.equals("flySpeed") || operation.equals("walkSpeed")) ? value.substring(0,value.indexOf('|')) : value;
-        if(Set.of("freeze","unfreeze","ban","permanentBan","kick","unban","toggleLp","heal","kill","repair","scale","flySpeed","walkSpeed","addLp","removeLp","op","deop").contains(operation)) target=moderation.info(user,UUID.fromString(lookup)).get().name()+"\nUUID: "+lookup;
-        String label=switch(operation) {case "freeze" -> "Заморозить игрока через Flexity";case "unfreeze" -> "Разморозить игрока через Flexity";case "ban" -> "Бан на 5 минут: пока идёт расследование";case "permanentBan" -> "Забанить бессрочно";case "kick" -> "Кик: пока идёт расследование";case "unban" -> "Снять бан";case "toggleLp" -> "Изменить группу LuckPerms admin";case "addLp" -> "Выдать группу LuckPerms admin";case "removeLp" -> "Удалить группу LuckPerms admin";case "heal" -> "Вылечить игрока";case "kill" -> "Убить игрока";case "repair" -> "Починить предметы";case "scale" -> "Установить размер "+value.substring(value.indexOf('|')+1);case "flySpeed" -> "Установить скорость полёта "+value.substring(value.indexOf('|')+1)+"x";case "walkSpeed" -> "Установить скорость передвижения "+value.substring(value.indexOf('|')+1)+"x";case "op" -> "Выдать OP";case "deop" -> "Забрать OP";case "addAdmin" -> "Добавить Telegram-администратора";case "removeAdmin" -> "Убрать Telegram-администратора";case "chat" -> "Отправить в игровой чат";default -> throw new IllegalArgumentException();};
+        if(Set.of("bastionAdd","bastionRemove","freeze","unfreeze","ban","permanentBan","kick","unban","toggleLp","heal","kill","repair","scale","flySpeed","walkSpeed","addLp","removeLp","op","deop").contains(operation)) target=moderation.info(user,UUID.fromString(lookup)).get().name()+"\nUUID: "+lookup;
+        String label=switch(operation) {case "bastionAdd" -> "Добавить игрока в доверенные Bastion";case "bastionRemove" -> "Убрать игрока из доверенных Bastion";case "freeze" -> "Заморозить игрока через Flexity";case "unfreeze" -> "Разморозить игрока через Flexity";case "ban" -> "Бан на 5 минут: пока идёт расследование";case "permanentBan" -> "Забанить бессрочно";case "kick" -> "Кик: пока идёт расследование";case "unban" -> "Снять бан";case "toggleLp" -> "Изменить группу LuckPerms admin";case "addLp" -> "Выдать группу LuckPerms admin";case "removeLp" -> "Удалить группу LuckPerms admin";case "heal" -> "Вылечить игрока";case "kill" -> "Убить игрока";case "repair" -> "Починить предметы";case "scale" -> "Установить размер "+value.substring(value.indexOf('|')+1);case "flySpeed" -> "Установить скорость полёта "+value.substring(value.indexOf('|')+1)+"x";case "walkSpeed" -> "Установить скорость передвижения "+value.substring(value.indexOf('|')+1)+"x";case "op" -> "Выдать OP";case "deop" -> "Забрать OP";case "addAdmin" -> "Добавить Telegram-администратора";case "removeAdmin" -> "Убрать Telegram-администратора";case "chat" -> "Отправить в игровой чат";default -> throw new IllegalArgumentException();};
         TelegramCommands.Button back=Set.of("addAdmin","removeAdmin").contains(operation)?b(user,"↩ Назад","admins","",0,1):operation.equals("chat")?b(user,"↩ Назад",guard.superAdmin(user)?"superHome":"adminHome","",0,1):b(user,"↩ Назад","playerActions",lookup,0,1);
         return new TelegramCommands.View(label+"\n\n"+target+"\n\nПодтвердите действие.",List.of(b(user,"✅ Подтвердить","do:"+operation,value,0,0),back,homeButton(2)));
     }
@@ -729,7 +733,7 @@ final class TelegramGuardMenu {
         else result=moderation.act(user,operation,UUID.fromString(value)).get();
         List<TelegramCommands.Button> buttons=new ArrayList<>();
         if(operation.startsWith("teleport")) buttons.add(b(user,"↩ Назад к действиям игрока","playerActions",value.split("\\|",2)[0],0,0));
-        if(Set.of("freeze","unfreeze","ban","permanentBan","kick","unban","toggleLp","addLp","removeLp","heal","kill","repair","scale","flySpeed","walkSpeed","op","deop").contains(operation)) {
+        if(Set.of("bastionAdd","bastionRemove","freeze","unfreeze","ban","permanentBan","kick","unban","toggleLp","addLp","removeLp","heal","kill","repair","scale","flySpeed","walkSpeed","op","deop").contains(operation)) {
             String raw=operation.equals("scale") || operation.equals("flySpeed") || operation.equals("walkSpeed") ? value.substring(0,value.indexOf('|')) : value;
             buttons.add(b(user,"↩ Назад к действиям игрока","playerActions",raw,0,0));
         } else if(Set.of("addAdmin","removeAdmin").contains(operation)) buttons.add(b(user,"↩ Назад к администраторам","admins","",0,0));
@@ -741,6 +745,7 @@ final class TelegramGuardMenu {
         if(operation.equals("privateMessage")) {guard.requireAdmin(user);return;}
         if(Set.of("addSuper","removeSuper","addAdmin","removeAdmin").contains(operation)) {guard.requireSuper(user);return;}
         String capability=switch(operation) {
+            case "bastionAdd","bastionRemove" -> "bastionTrust";
             case "freeze","unfreeze" -> "freeze";
             case "ban" -> "ban";case "permanentBan" -> "permanentBan";case "kick" -> "kick";case "unban" -> "unban";
             case "toggleLp","addLp","removeLp" -> "luckPerms";

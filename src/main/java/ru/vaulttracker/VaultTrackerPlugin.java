@@ -30,6 +30,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
     private TelegramChatBridge telegramChat;
     private GuardService guard;
     private SearchCompass searchCompass;
+    private BastionTrust bastionTrust;
     private ChildPlayers childPlayers;
     private final Object telegramLock=new Object();
     private final Set<BlockKey> scheduled = ConcurrentHashMap.newKeySet();
@@ -55,7 +56,8 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
         try {guard=new GuardService(getDataFolder().toPath().resolve("guard-data"),GuardConfig.load(getDataFolder().toPath()),getLogger());}
         catch(Exception e) {throw new IllegalStateException("Не удалось открыть guard.yml / guard-data. Сохраните файлы и проверьте доступ к диску.",e);}
         for(World world:getServer().getWorlds()) guard.world(world.getUID(),world.getName());
-        for(Player player:getServer().getOnlinePlayers()) guard.presence(player.getUniqueId(),player.getName(),true);
+        bastionTrust=new BastionTrust(this);
+        for(Player player:getServer().getOnlinePlayers()) {guard.presence(player.getUniqueId(),player.getName(),true);retryBastion(player.getUniqueId());}
         storage = new StorageEngine(getDataFolder().toPath().resolve("cache-"+id), database, getLogger());
         catalogue = new Catalogue(snapshot-> {storage.accept(snapshot);guard.accept(snapshot);});
         searchCompass=new SearchCompass(this,catalogue);
@@ -332,7 +334,17 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
     }
     @EventHandler(priority=EventPriority.MONITOR) public void join(PlayerJoinEvent e) {
         guard.presence(e.getPlayer().getUniqueId(),e.getPlayer().getName(),true);
+        retryBastion(e.getPlayer().getUniqueId());
         if (storage.ready()) catalogue.rename(e.getPlayer().getUniqueId(),e.getPlayer().getName());
+    }
+    private void retryBastion(UUID uuid) {
+        guard.bastionPending(uuid).thenAccept(pending->{
+            if(!pending || stopping) return;
+            bastionTrust.change(uuid,true).thenAccept(outcome->{
+                if(outcome.success()) guard.bastionGranted(uuid);
+                else getLogger().warning("Ожидает доверия Bastion после привязки: "+uuid+". "+outcome.message());
+            }).exceptionally(error->{getLogger().warning("Не удалось выдать доверие Bastion после привязки: "+uuid);return null;});
+        }).exceptionally(error->{getLogger().warning("Не удалось проверить ожидающее доверие Bastion: "+uuid);return null;});
     }
     @EventHandler(priority=EventPriority.MONITOR) public void quit(PlayerQuitEvent e) {guard.presence(e.getPlayer().getUniqueId(),e.getPlayer().getName(),false);}
     private static void tell(CommandSender sender,String message) { sender.sendMessage(Component.text("[VaultTracker] " + message)); }
@@ -379,7 +391,14 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
             if(!(sender instanceof Player player)) {tell(sender,"Привязка выполняется только игроком в Minecraft.");return true;}
             if(!player.hasPermission("vaulttracker.link")) {tell(sender,"Нет права vaulttracker.link.");return true;}
             if(args.length!=2 || !args[1].matches("[0-9a-f]{32}")) {tell(sender,"Получите готовую команду в личном кабинете Telegram-бота.");return true;}
-            guard.link(player.getUniqueId(),player.getName(),args[1]).whenComplete((message,error)-> {
+            guard.linkOutcome(player.getUniqueId(),player.getName(),args[1]).thenCompose(linked->{
+                if(!linked.linked()) return java.util.concurrent.CompletableFuture.completedFuture(linked.message());
+                return bastionTrust.change(player.getUniqueId(),true)
+                    .exceptionally(error->new BastionTrust.Outcome(false,"Команда Bastion временно недоступна."))
+                    .thenCompose(outcome->
+                    outcome.success()?guard.bastionGranted(player.getUniqueId()).thenApply(ignored->linked.message()+" "+outcome.message())
+                        :java.util.concurrent.CompletableFuture.completedFuture(linked.message()+" Доверие Bastion пока не выдано: "+outcome.message()+" Повторим при следующем входе."));
+            }).whenComplete((message,error)-> {
                 if(stopping) return;
                 player.getScheduler().run(this,task->tell(player,error==null ? message : "Не удалось сохранить привязку. Сообщите администратору."),null);
             });

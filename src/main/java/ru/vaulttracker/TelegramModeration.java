@@ -30,6 +30,7 @@ class TelegramModeration {
     private final JavaPlugin plugin;
     private final GuardService guard;
     private final SearchCompass searchCompass;
+    private final BastionTrust bastionTrust;
     private final ChildPlayers children;
     private final DonationPremium premium;
     private final Map<UUID,Boolean> lpAdminState=new ConcurrentHashMap<>();
@@ -39,7 +40,8 @@ class TelegramModeration {
     private volatile long lastVanishWarning;
     TelegramModeration(JavaPlugin plugin,GuardService guard) {this(plugin,guard,null);}
     TelegramModeration(JavaPlugin plugin,GuardService guard,SearchCompass searchCompass) {this(plugin,guard,searchCompass,null);}
-    TelegramModeration(JavaPlugin plugin,GuardService guard,SearchCompass searchCompass,ChildPlayers children) {this.plugin=plugin;this.guard=guard;this.searchCompass=searchCompass;this.children=children;this.premium=new DonationPremium(guard.donations);}
+    TelegramModeration(JavaPlugin plugin,GuardService guard,SearchCompass searchCompass,ChildPlayers children) {this.plugin=plugin;this.guard=guard;this.searchCompass=searchCompass;this.children=children;this.premium=new DonationPremium(guard.donations);this.bastionTrust=new BastionTrust(plugin);}
+    boolean bastionAvailable() {return bastionTrust.available();}
     void reloadPlugin(long user) {
         guard.requireSuper(user);
         plugin.getServer().getGlobalRegionScheduler().runDelayed(plugin,task->{
@@ -255,6 +257,14 @@ class TelegramModeration {
         return List.copyOf(result);
     }
     CompletableFuture<String> act(long user,String operation,UUID uuid) {
+        if(operation.equals("bastionAdd") || operation.equals("bastionRemove")) {
+            guard.requireCapability(user,"bastionTrust");boolean add=operation.equals("bastionAdd");
+            return bastionTrust.change(uuid,add,()->guard.requireCapability(user,"bastionTrust")).thenCompose(outcome->{
+                if(!outcome.success()) return CompletableFuture.completedFuture(outcome.message());
+                audit(user,operation,uuid.toString());
+                return add?guard.bastionGranted(uuid).thenApply(ignored->outcome.message()):CompletableFuture.completedFuture(outcome.message());
+            });
+        }
         if(operation.equals("freeze") || operation.equals("unfreeze")) return freeze(user,uuid,operation.equals("freeze"));
         if(operation.equals("kick")) return global(()-> {
             guard.requireCapability(user,"kick");OfflinePlayer offline=plugin.getServer().getOfflinePlayer(uuid);return offline.getPlayer();
@@ -450,6 +460,7 @@ class TelegramModeration {
     private void audit(long user,String action,String target) {if(guard.superAdmin(user)) return;plugin.getLogger().info("Telegram "+user+": "+action+" → "+target);}
     private void requireOperation(long user,String operation) {
         String capability=switch(operation) {
+            case "bastionAdd","bastionRemove" -> "bastionTrust";
             case "freeze","unfreeze" -> "freeze";
             case "ban" -> "ban";case "permanentBan" -> "permanentBan";case "kick" -> "kick";case "unban" -> "unban";
             case "toggleLp","addLp","removeLp" -> "luckPerms";case "op" -> "op";case "deop" -> "deop";

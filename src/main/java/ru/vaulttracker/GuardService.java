@@ -13,10 +13,11 @@ import java.util.logging.Logger;
 final class GuardService implements AutoCloseable {
     private static final char[] LINK_CODE_ALPHABET="ABCDEFGHJKLMNPQRSTUVWXYZ23456789".toCharArray();
     static final int LINK_CODE_LENGTH=10;
-    static final List<String> ADMIN_CAPABILITIES=List.of("ban","permanentBan","kick","inventory","ender","unban","heal","kill","repair","scale","flySpeed","walkSpeed","teleport","teleportCoords","luckPerms","op","deop","chat","freeze");
+    static final List<String> ADMIN_CAPABILITIES=List.of("ban","permanentBan","kick","inventory","ender","unban","heal","kill","repair","scale","flySpeed","walkSpeed","teleport","teleportCoords","luckPerms","op","deop","chat","freeze","bastionTrust");
     static final long RETENTION=30L*24*60*60*1000, CODE_TTL=10*60*1000L;
     static final long MAX_OFFLINE_SECONDS=31_536_000;
     record Account(UUID uuid,String name,boolean notifications) {}
+    record LinkResult(String message,boolean linked) {}
     record Child(UUID uuid,String name,double size) {}
     record Friend(UUID uuid,String name) {}
     final DonationClient donations;
@@ -63,6 +64,7 @@ final class GuardService implements AutoCloseable {
             s.execute("CREATE TABLE IF NOT EXISTS donation_settings (id INT PRIMARY KEY, visible BOOLEAN NOT NULL)");
             s.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS offline_seconds BIGINT");
             s.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS telegram_tag BOOLEAN NOT NULL DEFAULT FALSE");
+            s.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS bastion_pending BOOLEAN NOT NULL DEFAULT FALSE");
             s.execute("CREATE TABLE IF NOT EXISTS guard_admins (tg BIGINT PRIMARY KEY, enabled BOOLEAN NOT NULL)");
             s.execute("CREATE TABLE IF NOT EXISTS guard_supers (tg BIGINT PRIMARY KEY)");
             s.execute("CREATE TABLE IF NOT EXISTS telegram_profiles (tg BIGINT PRIMARY KEY, label VARCHAR(512) NOT NULL)");
@@ -330,17 +332,24 @@ final class GuardService implements AutoCloseable {
         codes.put(code,new Code(user,now+CODE_TTL));
         return "Выполните в Minecraft под своим персонажем:\n"+TelegramEmojiMarkup.plainCode("/vtrack link "+code)+"\n\nКод одноразовый, действует 10 минут. Не передавайте его другим игрокам. После выполнения нажмите «Обновить кабинет».";
     });}
-    CompletableFuture<String> link(UUID uuid,String name,String token) {return submit(()-> {
+    CompletableFuture<String> link(UUID uuid,String name,String token) {return linkOutcome(uuid,name,token).thenApply(LinkResult::message);}
+    CompletableFuture<LinkResult> linkOutcome(UUID uuid,String name,String token) {return submit(()-> {
         String normalized=token==null?"":token.strip().toUpperCase(Locale.ROOT);Code code=codes.get(normalized);
-        if(code==null || code.expires()<=clock.getAsLong()) return "Код неверный или истёк. Получите новый в личном чате бота.";
-        if(accountNow(code.user())!=null) return "Этот Telegram-аккаунт уже привязан.";
+        if(code==null || code.expires()<=clock.getAsLong()) return new LinkResult("Код неверный или истёк. Получите новый в личном чате бота.",false);
+        if(accountNow(code.user())!=null) return new LinkResult("Этот Telegram-аккаунт уже привязан.",false);
         try(var s=db.prepareStatement("SELECT tg FROM accounts WHERE uuid=?")) {
-            s.setString(1,uuid.toString());try(var rs=s.executeQuery()) {if(rs.next()) return "Ваш персонаж уже привязан к Telegram. Повторная привязка запрещена.";}
+            s.setString(1,uuid.toString());try(var rs=s.executeQuery()) {if(rs.next()) return new LinkResult("Ваш персонаж уже привязан к Telegram. Повторная привязка запрещена.",false);}
         }
-        execute("INSERT INTO accounts(tg,uuid,nickname,alerts) VALUES(?,?,?,TRUE)",code.user(),uuid.toString(),name);
+        execute("INSERT INTO accounts(tg,uuid,nickname,alerts,bastion_pending) VALUES(?,?,?,TRUE,TRUE)",code.user(),uuid.toString(),name);
         codes.remove(normalized);
-        return "Персонаж "+name+" привязан к Telegram. В боте нажмите «Обновить кабинет» или /menu. Уведомления о ваших хранилищах включены.";
+        return new LinkResult("Персонаж "+name+" привязан к Telegram. В боте нажмите «Обновить кабинет» или /menu. Уведомления о ваших хранилищах включены.",true);
     });}
+    CompletableFuture<Boolean> bastionPending(UUID uuid) {return submit(()->{
+        try(var s=db.prepareStatement("SELECT bastion_pending FROM accounts WHERE uuid=?")) {
+            s.setString(1,uuid.toString());try(var rs=s.executeQuery()) {return rs.next() && rs.getBoolean(1);}
+        }
+    });}
+    CompletableFuture<Void> bastionGranted(UUID uuid) {return submit(()->{execute("UPDATE accounts SET bastion_pending=FALSE WHERE uuid=?",uuid.toString());return null;});}
     CompletableFuture<Account> account(long user) {return submit(()->accountNow(user));}
     CompletableFuture<Boolean> donationsVisible() {return submit(()->{
         try(var s=db.createStatement();var rs=s.executeQuery("SELECT visible FROM donation_settings WHERE id=1")) {return rs.next()&&rs.getBoolean(1);}

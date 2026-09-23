@@ -23,6 +23,30 @@ class TelegramGuardMenuTest {
         menu=new TelegramGuardMenu(guard,new TelegramCommands(catalogue,storage,1,id->true));
     }
     @AfterEach void close() {guard.close();}
+    @Test void bastionButtonsRequireSeparateCapabilityAndConfirmation() throws Exception {
+        guard.configure(new GuardConfig(true,0,500),Set.of(99L));
+        var moderation=mock(TelegramModeration.class);UUID player=UUID.randomUUID();
+        when(moderation.bastionAvailable()).thenReturn(true);
+        var person=new TelegramModeration.Person(player,"Alice",true,"");
+        when(moderation.info(anyLong(),eq(player))).thenReturn(java.util.concurrent.CompletableFuture.completedFuture(person));
+        when(moderation.act(99,"bastionAdd",player)).thenReturn(java.util.concurrent.CompletableFuture.completedFuture("Добавлен"));
+        menu=new TelegramGuardMenu(guard,new TelegramCommands(catalogue,storage,20,v->true),moderation);
+        // The capability is off for regular admins while the superadmin sees both actions.
+        var actions=TelegramGuardMenu.class.getDeclaredMethod("playerActions",long.class,UUID.class);actions.setAccessible(true);
+        var root=(TelegramCommands.View)actions.invoke(menu,500L,player);
+        var ordinary=(TelegramCommands.View)actions.invoke(menu,99L,player);
+        assertNotNull(button(root,"Добавить в доверенные Bastion"));
+        assertFalse(ordinary.buttons().stream().anyMatch(b->b.text().contains("Bastion")));
+        guard.capability(500,"bastionTrust",true).get();ordinary=(TelegramCommands.View)actions.invoke(menu,99L,player);
+        String add=button(ordinary,"Добавить в доверенные Bastion");
+        assertTrue(menu.callback(42,add).alert());
+        var confirm=click(99,ordinary,"Добавить в доверенные Bastion");
+        verify(moderation,never()).act(anyLong(),anyString(),any());
+        String approve=button(confirm,"Подтвердить");menu.callback(99,approve);menu.callback(99,approve);
+        verify(moderation,times(1)).act(99,"bastionAdd",player);
+        assertNotNull(button(ordinary,"Убрать из доверенных Bastion"));
+        guard.capability(500,"bastionTrust",false).get();assertThrows(Exception.class,()->menu.callback(99,add));
+    }
     @Test void notificationActionsArePrivateRoleCheckedAndTargetTheActorUuid() throws Exception {
         guard.configure(new GuardConfig(true,0,500),Set.of(99L));guard.capability(500,"ban",true).get();guard.capability(500,"freeze",true).get();
         var moderation=mock(TelegramModeration.class);when(moderation.freezeAvailable()).thenReturn(true);
