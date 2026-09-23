@@ -152,7 +152,8 @@ final class TelegramCommands {
         var rows=owner.items().entrySet().stream().sorted(Map.Entry.<String,Long>comparingByValue().reversed()
                 .thenComparing(Map.Entry.comparingByKey())).toList();
         int pages=pages(rows.size()); int page=clamp(requested,pages);
-        StringBuilder text=new StringBuilder("📦 Ресурсы ").append(owner.name()).append(" • ").append(page).append('/').append(pages).append("\n\n");
+        StringBuilder text=new StringBuilder("📦 Ресурсы ").append(owner.name()).append(" • ").append(page).append('/').append(pages)
+                .append("\nЧтобы вещи появились в этом списке, повесьте на сундук табличку с надписью [v] или [vault].\n\n");
         if(rows.isEmpty()) text.append("В зарегистрированных хранилищах пока нет предметов.");
         int first=(page-1)*pageSize;
         for(int i=first;i<Math.min(first+pageSize,rows.size());i++) {
@@ -233,7 +234,7 @@ final class TelegramCommands {
         return "/item предмет — топ игроков\n/item Ник — все ресурсы игрока\n/item Ник предмет — количество предмета\n\nМожно использовать русские названия и команду /topitem.";
     }
     private static String help(boolean admin) {
-        String text="Каталог ресурсов VaultTracker.\n\n"+topHelp();
+        String text="Каталог ресурсов торгового бота FLEXITY.\n\n"+topHelp();
         return admin ? text+"\n\nАдминистратор: /items, /status\n/id — вывести данные настройки в консоль сервера." : text;
     }
 }

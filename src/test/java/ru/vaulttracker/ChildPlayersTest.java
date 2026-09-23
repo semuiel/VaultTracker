@@ -18,7 +18,7 @@ class ChildPlayersTest {
     @Test void superCanAddByLinkedTelegramIdOrNickname() throws Exception {
         UUID id=UUID.randomUUID();
         try(var guard=new GuardService(folder.resolve("guard"),new GuardConfig(true,0,99),Logger.getAnonymousLogger())) {
-            String code=guard.generate(123456).get().split("/vtrack link ")[1].substring(0,32);guard.link(id,"Alex",code).get();
+            String code=guard.generate(123456).get().split("/vtrack link ")[1].substring(0,GuardService.LINK_CODE_LENGTH);guard.link(id,"Alex",code).get();
             var moderation=spy(new TelegramModeration(mock(JavaPlugin.class),guard));
             moderation.changeChild(99,"123456",true).get();assertNotNull(guard.child(id));
             moderation.changeChild(99,"Alex",false).get();assertNull(guard.child(id));
@@ -33,7 +33,7 @@ class ChildPlayersTest {
             assertThrows(ExecutionException.class,()->guard.child(42,id,"Alex",true).get());
             guard.child(99,id,"Alex",true).get();
             assertThrows(ExecutionException.class,()->guard.childSize(42,0.6).get());
-            String code=guard.generate(42).get().split("/vtrack link ")[1].substring(0,32);guard.link(id,"Alex",code).get();
+            String code=guard.generate(42).get().split("/vtrack link ")[1].substring(0,GuardService.LINK_CODE_LENGTH);guard.link(id,"Alex",code).get();
             guard.childSize(42,0.6).get();assertEquals(0.6,guard.child(id).size());
             assertThrows(ExecutionException.class,()->guard.childSize(42,20).get());
             assertThrows(ExecutionException.class,()->guard.childSize(43,0.75).get());

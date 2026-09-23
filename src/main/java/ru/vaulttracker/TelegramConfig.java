@@ -9,6 +9,7 @@ import java.util.*;
 record TelegramConfig(boolean enabled, String token, Set<Long> allowedChatIds, Set<Long> adminUserIds, List<Chat> chats, int pageSize,
                       int pollTimeoutSeconds, int messageLifetimeSeconds, String botApiUrl, Proxy proxy, Retry retry, Path offsetFile) {
     static final int LIST_PAGE_SIZE=20;
+    static final int BUTTON_PAGE_SIZE=10;
     enum ProxyType { NONE, SOCKS5, HTTP }
     record Proxy(ProxyType type,String host,int port,String username,String password) {
         boolean enabled() { return type != ProxyType.NONE; }

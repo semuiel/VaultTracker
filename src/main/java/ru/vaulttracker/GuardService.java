@@ -11,7 +11,9 @@ import java.util.logging.Logger;
 
 /** Dedicated disk worker: region threads only enqueue immutable snapshots and presence changes. */
 final class GuardService implements AutoCloseable {
-    static final List<String> ADMIN_CAPABILITIES=List.of("ban","kick","inventory","ender","unban","heal","kill","repair","scale","flySpeed","walkSpeed","teleport","teleportCoords","luckPerms","op","deop","chat");
+    private static final char[] LINK_CODE_ALPHABET="ABCDEFGHJKLMNPQRSTUVWXYZ23456789".toCharArray();
+    static final int LINK_CODE_LENGTH=10;
+    static final List<String> ADMIN_CAPABILITIES=List.of("ban","permanentBan","kick","inventory","ender","unban","heal","kill","repair","scale","flySpeed","walkSpeed","teleport","teleportCoords","luckPerms","op","deop","chat","freeze");
     static final long RETENTION=30L*24*60*60*1000, CODE_TTL=10*60*1000L;
     static final long MAX_OFFLINE_SECONDS=31_536_000;
     record Account(UUID uuid,String name,boolean notifications) {}
@@ -20,8 +22,10 @@ final class GuardService implements AutoCloseable {
     final DonationClient donations;
     private final Map<UUID,Child> children=new ConcurrentHashMap<>();
     private final Map<UUID,Map<UUID,String>> friends=new ConcurrentHashMap<>();
-    record Event(long id,long time,String name,String location,Map<String,Long> changes,boolean removed,String actor) {}
-    record Delivery(long id,long recipient,String text) {}
+    record Event(long id,long time,String name,String location,Map<String,Long> changes,boolean removed,String actor,UUID actorUuid) {
+        Event(long id,long time,String name,String location,Map<String,Long> changes,boolean removed,String actor) {this(id,time,name,location,changes,removed,actor,null);}
+    }
+    record Delivery(long id,long recipient,String text,UUID actorUuid,String actor) {}
     private record Code(long user,long expires) {}
     private final ScheduledExecutorService disk=Executors.newSingleThreadScheduledExecutor(r->new Thread(r,"VaultTracker-guard-disk"));
     private final Connection db;
@@ -147,10 +151,10 @@ final class GuardService implements AutoCloseable {
         if(bounded.equals(telegramProfiles.put(user,bounded))) return;
         enqueue(()->execute("MERGE INTO telegram_profiles KEY(tg) VALUES(?,?)",user,bounded));
     }
-    void requireSuper(long user) {if(!superAdmin(user)) throw new SecurityException("Требуются права супер администратора");}
+    void requireSuper(long user) {if(!superAdmin(user)) throw new SecurityException("Требуются права суперадминистратора");}
     boolean capability(String name) {return adminCapabilities.getOrDefault(name, false);}
-    void requireCapability(long user,String name) {if(superAdmin(user)) return;requireAdmin(user);if(!capability(name)) throw new SecurityException("Эта функция отключена супер администратором");}
-    void requireAnyCapability(long user,Collection<String> names) {if(superAdmin(user)) return;requireAdmin(user);if(names.stream().noneMatch(this::capability)) throw new SecurityException("Действия с игроками отключены супер администратором");}
+    void requireCapability(long user,String name) {if(superAdmin(user)) return;requireAdmin(user);if(!capability(name)) throw new SecurityException("Эта функция отключена суперадминистратором");}
+    void requireAnyCapability(long user,Collection<String> names) {if(superAdmin(user)) return;requireAdmin(user);if(names.stream().noneMatch(this::capability)) throw new SecurityException("Действия с игроками отключены суперадминистратором");}
     CompletableFuture<Void> capability(long user,String name,boolean enabled) {return submit(()-> {requireSuper(user);if(!ADMIN_CAPABILITIES.contains(name)) throw new IllegalArgumentException("Неизвестная функция");execute("MERGE INTO admin_capabilities KEY(capability) VALUES(?,?)",name,enabled);adminCapabilities.put(name,enabled);return null;});}
     CompletableFuture<Void> changeAdmin(long user,long target,boolean enabled) {return submit(()-> {
         requireSuper(user);if(target<=0 || superAdmin(target)) throw new IllegalArgumentException("Нельзя изменить эту роль");
@@ -159,8 +163,8 @@ final class GuardService implements AutoCloseable {
     });}
     CompletableFuture<Void> changeSuper(long user,long target,boolean enabled) {return submit(()-> {
         requireSuper(user);
-        if(target<=0 || target==config.superAdminUserId() || target==user) throw new IllegalArgumentException("Основного супер администратора и собственную роль изменить нельзя");
-        if(!enabled && !extraSupers.contains(target)) throw new IllegalArgumentException("Супер администратор не найден");
+        if(target<=0 || target==config.superAdminUserId() || target==user) throw new IllegalArgumentException("Основного суперадминистратора и собственную роль изменить нельзя");
+        if(!enabled && !extraSupers.contains(target)) throw new IllegalArgumentException("Суперадминистратор не найден");
         if(enabled) {execute("MERGE INTO guard_supers KEY(tg) VALUES(?)",target);extraSupers.add(target);}
         else {execute("DELETE FROM guard_supers WHERE tg=?",target);extraSupers.remove(target);execute("MERGE INTO guard_admins KEY(tg) VALUES(?,?)",target,false);adminOverrides.put(target,false);}
         return null;
@@ -248,10 +252,10 @@ final class GuardService implements AutoCloseable {
         boolean rootEligible=root>0 && (rootDelay<0 || (departed>=0 && now-departed>=rootDelay));
         boolean extraEligible=extraSupers.stream().anyMatch(id->eligibleSuper(id,departed,now));
         boolean trustedFriend=actorInfo!=null&&actorInfo.uuid()!=null&&friend(snapshot.owner(),actorInfo.uuid());
-        if(ownEligible || adminEligible || rootEligible || extraEligible) enqueue(()->observe(old,snapshot,now,ownEligible,adminEligible,actor,rootEligible,root,trustedFriend));
+        if(ownEligible || adminEligible || rootEligible || extraEligible) enqueue(()->observe(old,snapshot,now,ownEligible,adminEligible,actor,actorInfo==null?null:actorInfo.uuid(),rootEligible,root,trustedFriend));
     }
     private boolean eligibleSuper(long user,long departed,long now) {long delay=superDelays.getOrDefault(user,defaultOfflineSeconds())*1000;return delay<0 || (departed>=0 && now-departed>=delay);}
-    private void observe(Snapshot old,Snapshot current,long now,boolean ownEligible,boolean adminEligible,String actor,boolean rootEligible,long root,boolean trustedFriend) throws Exception {
+    private void observe(Snapshot old,Snapshot current,long now,boolean ownEligible,boolean adminEligible,String actor,UUID actorUuid,boolean rootEligible,long root,boolean trustedFriend) throws Exception {
         Map<String,Long> changes=new TreeMap<>();
         if(current.active()) {
             Set<String> keys=new HashSet<>(old.items().keySet()); keys.addAll(current.items().keySet());
@@ -262,7 +266,7 @@ final class GuardService implements AutoCloseable {
         }
         BlockKey p=old.chests().getFirst();
         String location=readableLocation("Мир "+p.world()+"; блок "+p.x()+" "+p.y()+" "+p.z());
-        Event event=new Event(0,now,old.playerName(),location,changes,!current.active(),actor);
+        Event event=new Event(0,now,old.playerName(),location,changes,!current.active(),actor,actorUuid);
         db.setAutoCommit(false);
         try {
             long id;
@@ -281,7 +285,7 @@ final class GuardService implements AutoCloseable {
             for(long recipient:recipients) {
                 boolean adminChannel=adminRecipients.contains(recipient);
                 queueNotification(id,recipient,old.owner(),now,Objects.equals(ownerRecipient,recipient),adminChannel,
-                        new Event(id,event.time(),event.name(),event.location(),event.changes(),event.removed(),adminChannel?actor:null));
+                        new Event(id,event.time(),event.name(),event.location(),event.changes(),event.removed(),actor,actorUuid));
             }
             db.commit();
         } catch(Exception e) {db.rollback();throw e;} finally {db.setAutoCommit(true);}
@@ -291,7 +295,7 @@ final class GuardService implements AutoCloseable {
         long existing=0;List<Event> batch=new ArrayList<>();
         try(var s=db.prepareStatement("SELECT id,batch FROM outbox WHERE tg=? AND owner_uuid=? AND own_channel=? AND admin_channel=? AND created>? AND due=created+10000 AND batch IS NOT NULL ORDER BY id DESC LIMIT 1")) {
             s.setLong(1,recipient);s.setString(2,owner.toString());s.setBoolean(3,own);s.setBoolean(4,admin);s.setLong(5,now-10000);
-            try(var rs=s.executeQuery()) {if(rs.next()) {Event[] entries=gson.fromJson(rs.getString(2),Event[].class);if(entries.length<1000) {existing=rs.getLong(1);batch.addAll(Arrays.asList(entries));}}}
+            try(var rs=s.executeQuery()) {if(rs.next()) {Event[] entries=gson.fromJson(rs.getString(2),Event[].class);if(entries.length>0 && entries.length<1000 && Objects.equals(entries[0].actorUuid(),event.actorUuid()) && Objects.equals(entries[0].actor(),event.actor())) {existing=rs.getLong(1);batch.addAll(Arrays.asList(entries));}}}
         }
         batch.add(event);String body=batchText(batch,admin),payload=gson.toJson(batch);
         if(existing>0) execute("UPDATE outbox SET body=?,batch=? WHERE id=?",body,payload,existing);
@@ -321,19 +325,20 @@ final class GuardService implements AutoCloseable {
     CompletableFuture<String> generate(long user) {return submit(()-> {
         if(accountNow(user)!=null) return "Персонаж уже привязан. Откройте кабинет.";
         long now=clock.getAsLong(); codes.entrySet().removeIf(e->e.getValue().expires()<=now || e.getValue().user()==user);
-        byte[] bytes=new byte[16];random.nextBytes(bytes);
-        String code=HexFormat.of().formatHex(bytes); codes.put(code,new Code(user,now+CODE_TTL));
-        return "Выполните в Minecraft под своим персонажем:\n/vtrack link "+code+"\n\nКод одноразовый, действует 10 минут. Не передавайте его другим игрокам. После выполнения нажмите «Обновить кабинет».";
+        String code;
+        do {StringBuilder value=new StringBuilder(LINK_CODE_LENGTH);for(int i=0;i<LINK_CODE_LENGTH;i++) value.append(LINK_CODE_ALPHABET[random.nextInt(LINK_CODE_ALPHABET.length)]);code=value.toString();} while(codes.containsKey(code));
+        codes.put(code,new Code(user,now+CODE_TTL));
+        return "Выполните в Minecraft под своим персонажем:\n"+TelegramEmojiMarkup.plainCode("/vtrack link "+code)+"\n\nКод одноразовый, действует 10 минут. Не передавайте его другим игрокам. После выполнения нажмите «Обновить кабинет».";
     });}
     CompletableFuture<String> link(UUID uuid,String name,String token) {return submit(()-> {
-        Code code=codes.get(token);
+        String normalized=token==null?"":token.strip().toUpperCase(Locale.ROOT);Code code=codes.get(normalized);
         if(code==null || code.expires()<=clock.getAsLong()) return "Код неверный или истёк. Получите новый в личном чате бота.";
         if(accountNow(code.user())!=null) return "Этот Telegram-аккаунт уже привязан.";
         try(var s=db.prepareStatement("SELECT tg FROM accounts WHERE uuid=?")) {
             s.setString(1,uuid.toString());try(var rs=s.executeQuery()) {if(rs.next()) return "Ваш персонаж уже привязан к Telegram. Повторная привязка запрещена.";}
         }
         execute("INSERT INTO accounts(tg,uuid,nickname,alerts) VALUES(?,?,?,TRUE)",code.user(),uuid.toString(),name);
-        codes.remove(token);
+        codes.remove(normalized);
         return "Персонаж "+name+" привязан к Telegram. В боте нажмите «Обновить кабинет» или /menu. Уведомления о ваших хранилищах включены.";
     });}
     CompletableFuture<Account> account(long user) {return submit(()->accountNow(user));}
@@ -364,7 +369,7 @@ final class GuardService implements AutoCloseable {
         prune(); List<Event> result=new ArrayList<>();
         try(var s=db.prepareStatement("SELECT id,payload FROM events WHERE happened>=? ORDER BY id DESC LIMIT ? OFFSET ?")) {
             s.setLong(1,clock.getAsLong()-RETENTION);s.setInt(2,size);s.setLong(3,(long)Math.max(0,page)*size);
-            try(var rs=s.executeQuery()) {while(rs.next()) {Event e=gson.fromJson(rs.getString(2),Event.class);result.add(new Event(rs.getLong(1),e.time(),e.name(),readableLocation(e.location()),e.changes(),e.removed(),e.actor()));}}
+            try(var rs=s.executeQuery()) {while(rs.next()) {Event e=gson.fromJson(rs.getString(2),Event.class);result.add(new Event(rs.getLong(1),e.time(),e.name(),readableLocation(e.location()),e.changes(),e.removed(),e.actor(),e.actorUuid()));}}
         }
         return result;
     });}
@@ -378,7 +383,7 @@ final class GuardService implements AutoCloseable {
                 String searchable="#"+id+" "+e.name()+" "+Objects.toString(e.actor(),"")+" "+readableLocation(e.location())+" "+e.changes().keySet()+" "+e.changes().keySet().stream().map(RussianItems::name).toList();
                 if(!searchable.toLowerCase(Locale.ROOT).replace('ё','е').contains(needle)) continue;
                 if(skip-->0) continue;
-                result.add(new Event(id,e.time(),e.name(),readableLocation(e.location()),e.changes(),e.removed(),e.actor()));
+                result.add(new Event(id,e.time(),e.name(),readableLocation(e.location()),e.changes(),e.removed(),e.actor(),e.actorUuid()));
                 if(result.size()>=size) break;
             }}
         }return List.copyOf(result);
@@ -388,31 +393,39 @@ final class GuardService implements AutoCloseable {
         List<Event> result=new ArrayList<>();
         try(var s=db.prepareStatement("SELECT id,payload FROM events WHERE owner_uuid=? AND happened>=? ORDER BY id DESC LIMIT ? OFFSET ?")) {
             s.setString(1,a.uuid().toString());s.setLong(2,clock.getAsLong()-2L*86400_000);s.setInt(3,size);s.setLong(4,(long)Math.max(0,page)*size);
-            try(var rs=s.executeQuery()) {while(rs.next()) {Event e=gson.fromJson(rs.getString(2),Event.class);result.add(new Event(rs.getLong(1),e.time(),e.name(),readableLocation(e.location()),e.changes(),e.removed(),null));}}
+            try(var rs=s.executeQuery()) {while(rs.next()) {Event e=gson.fromJson(rs.getString(2),Event.class);result.add(new Event(rs.getLong(1),e.time(),e.name(),readableLocation(e.location()),e.changes(),e.removed(),admin(user)?e.actor():null,admin(user)?e.actorUuid():null));}}
         }return result;
     });}
     CompletableFuture<Event> ownEvent(long user,long id) {return submit(()-> {
         Account a=accountNow(user);if(a==null) throw new SecurityException("Нет привязки");
         try(var s=db.prepareStatement("SELECT payload FROM events WHERE id=? AND owner_uuid=? AND happened>=?")) {
             s.setLong(1,id);s.setString(2,a.uuid().toString());s.setLong(3,clock.getAsLong()-2L*86400_000);
-            try(var rs=s.executeQuery()) {if(!rs.next()) return null;Event e=gson.fromJson(rs.getString(1),Event.class);return new Event(id,e.time(),e.name(),readableLocation(e.location()),e.changes(),e.removed(),null);}
+            try(var rs=s.executeQuery()) {if(!rs.next()) return null;Event e=gson.fromJson(rs.getString(1),Event.class);return new Event(id,e.time(),e.name(),readableLocation(e.location()),e.changes(),e.removed(),admin(user)?e.actor():null,admin(user)?e.actorUuid():null);}
         }
     });}
     CompletableFuture<Event> event(long user,long id) {return submit(()-> {
         if(!admin(user)) throw new SecurityException("Нет доступа");
         try(var s=db.prepareStatement("SELECT payload FROM events WHERE id=? AND happened>=?")) {
             s.setLong(1,id);s.setLong(2,clock.getAsLong()-RETENTION);
-            try(var rs=s.executeQuery()) {if(!rs.next()) return null;Event e=gson.fromJson(rs.getString(1),Event.class);return new Event(id,e.time(),e.name(),readableLocation(e.location()),e.changes(),e.removed(),e.actor());}
+            try(var rs=s.executeQuery()) {if(!rs.next()) return null;Event e=gson.fromJson(rs.getString(1),Event.class);return new Event(id,e.time(),e.name(),readableLocation(e.location()),e.changes(),e.removed(),e.actor(),e.actorUuid());}
         }
     });}
     CompletableFuture<List<Delivery>> deliveries() {return submit(()-> {
         prune(); if(!config.enabled()) return List.of();
         List<Delivery> result=new ArrayList<>();List<Long> discard=new ArrayList<>();
-        try(var s=db.prepareStatement("SELECT id,tg,owner_uuid,body,own_channel,admin_channel FROM outbox WHERE due<=? ORDER BY id LIMIT 20")) {
+        try(var s=db.prepareStatement("SELECT id,tg,owner_uuid,body,own_channel,admin_channel,batch FROM outbox WHERE due<=? ORDER BY id LIMIT 20")) {
             s.setLong(1,clock.getAsLong());try(var rs=s.executeQuery()) {while(rs.next()) {
                 long id=rs.getLong(1),tg=rs.getLong(2);Account a=accountNow(tg);
-                if((rs.getBoolean(6) && admin(tg) && adminAlertsNow(tg)) || (rs.getBoolean(5) && a!=null && a.notifications() && a.uuid().toString().equals(rs.getString(3))))
-                    result.add(new Delivery(id,tg,(rs.getBoolean(6) && admin(tg) && adminAlertsNow(tg)) ? readableLocation(rs.getString(4)) : readableLocation(rs.getString(4)).replaceAll("\\nКто изменил:[^\\n]*","")));
+                if((rs.getBoolean(6) && admin(tg) && adminAlertsNow(tg)) || (rs.getBoolean(5) && a!=null && a.notifications() && a.uuid().toString().equals(rs.getString(3)))) {
+                    boolean showActor=admin(tg);
+                    Event[] batch=rs.getString(7)==null?new Event[0]:gson.fromJson(rs.getString(7),Event[].class);
+                    String text=batch.length==0?rs.getString(4):batchText(Arrays.asList(batch),showActor);
+                    if(!showActor) text=text.replaceAll("\\nКто изменил:[^\\n]*","");
+                    Event first=batch.length==0?null:batch[0];
+                    // Old batches may contain several actors: never attach one player's actions to those.
+                    boolean single=first!=null && Arrays.stream(batch).allMatch(e->Objects.equals(e.actorUuid(),first.actorUuid()));
+                    result.add(new Delivery(id,tg,readableLocation(text),showActor&&single?first.actorUuid():null,showActor&&single?first.actor():null));
+                }
                 else discard.add(id);
             }}
         }

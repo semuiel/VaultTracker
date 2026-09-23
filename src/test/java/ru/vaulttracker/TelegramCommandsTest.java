@@ -39,15 +39,15 @@ class TelegramCommandsTest {
             assertTrue(second.view().text().contains("Bob — 10 шт."));
 
             var player=commands.handle(42,10,20,"/topitem Alex",false);
-            assertTrue(player.text().contains("Ресурсы Alex")); assertFalse(player.buttons().isEmpty());
+            assertTrue(player.text().contains("Ресурсы Alex"));assertTrue(player.text().contains("табличку с надписью [v] или [vault]")); assertFalse(player.buttons().isEmpty());
             var quantity=commands.handle(42,10,20,"/topitem Alex diamond",false);
-            assertEquals("Alex — 💎 Алмаз: 2000 шт. (1 шалкер + 272 шт.)",quantity.text());
+            assertEquals("Alex — Алмаз: 2000 шт. (1 шалкер + 272 шт.)",quantity.text());
             assertTrue(commands.handle(42,10,20,"/item алмаз",false).text().contains("Alex — 2000 шт."));
             assertTrue(commands.handle(42,10,20,"/item железный слиток",false).text().contains("Alex — 50 шт."));
-            assertEquals("Alex — 💎 Алмаз: 2000 шт. (1 шалкер + 272 шт.)",
+            assertEquals("Alex — Алмаз: 2000 шт. (1 шалкер + 272 шт.)",
                     commands.handle(42,10,20,"/item Alex алмаз",false).text());
             assertTrue(commands.handle(42,10,20,"/itemtop АР",false).text().contains("Alex — 10 шт."));
-            assertEquals("Alex — 💎 Изумрудная руда (обычная + глубинная): 5 шт.",
+            assertEquals("Alex — Изумрудная руда (обычная + глубинная): 5 шт.",
                     commands.handle(42,10,20,"/itemtop Alex ИР",false).text());
         }
     }

@@ -23,7 +23,7 @@ class CabinetRolesTest {
         link(42,owner);link(43,other);
         menu=new TelegramGuardMenu(guard,new TelegramCommands(new Catalogue(v->{}),mock(StorageEngine.class),8),moderation);
     }
-    void link(long tg,UUID uuid) throws Exception {String code=guard.generate(tg).get().split("/vtrack link ")[1].substring(0,32);guard.link(uuid,"Player"+tg,code).get();}
+    void link(long tg,UUID uuid) throws Exception {String code=guard.generate(tg).get().split("/vtrack link ")[1].substring(0,GuardService.LINK_CODE_LENGTH);guard.link(uuid,"Player"+tg,code).get();}
     @AfterEach void close() {guard.close();}
     String button(TelegramCommands.View view,String text) {return view.buttons().stream().filter(b->b.text().contains(text)).findFirst().orElseThrow().data();}
     TelegramCommands.View click(long user,TelegramCommands.View view,String text) throws Exception {return menu.callback(user,button(view,text)).view();}
@@ -34,6 +34,23 @@ class CabinetRolesTest {
         assertTrue(menu.home(500).buttons().stream().anyMatch(b->b.row()==5 && b.text().contains("Супер")));
         var settings=click(42,home,"Настройки");assertNotNull(button(settings,"Отключить мои"));assertNotNull(button(settings,"Всегда"));assertNotNull(button(settings,"2 дня"));
         assertNotNull(button(settings,"Применить тег"));assertNotNull(button(settings,"Сбросить тег"));
+    }
+    @Test void linkedCabinetShowsHeartsAndCurrentCoordinates() throws Exception {
+        when(moderation.cabinetProfile(42,owner)).thenReturn(CompletableFuture.completedFuture(
+                new TelegramModeration.CabinetProfile(true,17.0,20.0,13,"world",223,64,1004,java.time.Instant.parse("2026-02-09T13:57:00Z").toEpochMilli(),90061L)));
+        var home=menu.home(42);
+        assertTrue(home.text().contains("Здоровье: ♥♥♥♥♥♥♥♥♡♤"),home.text());
+        assertTrue(home.text().contains("\n\nГолод: ◆◆◆◆◆◆◇○○○"),home.text());
+        var rendered=TelegramEmojiMarkup.html(home.text());assertTrue(rendered.custom());assertTrue(rendered.text().startsWith("<b>"));assertTrue(rendered.text().endsWith("</b>"));
+        assertFalse(home.text().contains("17/20"),home.text());
+        assertTrue(TelegramEmojiMarkup.plain(home.text()).contains("📍 Координаты: world · 223 64 1004"),home.text());
+        assertTrue(TelegramEmojiMarkup.plain(home.text()).contains("⏱ Наиграно: 1 дн. 1 ч. 1 мин."),home.text());
+        assertTrue(TelegramEmojiMarkup.html(home.text()).text().contains("world · </b><code>223 64 1004</code>"),TelegramEmojiMarkup.html(home.text()).text());
+    }
+    @Test void cabinetOmitsUnknownFirstJoinInsteadOfShowingNoData() throws Exception {
+        when(moderation.cabinetProfile(42,owner)).thenReturn(CompletableFuture.completedFuture(
+                new TelegramModeration.CabinetProfile(false,20.0,20.0,20,"world",1,64,2,0,3600L)));
+        assertFalse(TelegramEmojiMarkup.plain(menu.home(42).text()).contains("Первый вход:"));
     }
     @Test void personalHistoryUsesUuidAnd48HoursAndNeverExposesActor() throws Exception {
         guard.restore(List.of(snap(owner,10,1),snap(other,10,1)));clock.addAndGet(120001);
@@ -68,6 +85,20 @@ class CabinetRolesTest {
         verify(moderation,never()).act(anyLong(),anyString(),any());String yes=button(confirm,"Подтвердить");
         assertTrue(menu.callback(42,yes).alert());menu.callback(99,yes);menu.callback(99,yes);verify(moderation,times(1)).act(99,"ban",other);
     }
+    @Test void permanentBanIsAlwaysAvailableToSuperAndCanBeToggledForAdmin() throws Exception {
+        var person=new TelegramModeration.Person(other,"Target",true,"");
+        when(moderation.players(anyLong(),eq("online"))).thenReturn(CompletableFuture.completedFuture(List.of(person)));
+        when(moderation.info(anyLong(),eq(other))).thenReturn(CompletableFuture.completedFuture(person));
+        var superCard=click(500,click(500,click(500,menu.home(500),"Супер"),"Список игроков"),"Target");
+        assertNotNull(button(superCard,"Забанить"));
+        var adminCard=click(99,click(99,click(99,menu.home(99),"Функции администратора"),"Список игроков"),"Target");
+        assertFalse(adminCard.buttons().stream().anyMatch(b->b.text().contains("Забанить")));
+        guard.capability(500,"permanentBan",true).get();
+        adminCard=click(99,click(99,click(99,menu.home(99),"Функции администратора"),"Список игроков"),"Target");
+        assertNotNull(button(adminCard,"Забанить"));
+        var capabilities=click(500,click(500,click(500,menu.home(500),"Супер"),"Администраторы бота"),"Возможности администратора");
+        assertTrue(capabilities.buttons().stream().anyMatch(b->b.text().contains("Бессрочный бан")));
+    }
     @Test void regularAdminCanChooseOnlinePlayersForTemporaryBan() throws Exception {
         guard.capability(500,"ban",true).get();
         var person=new TelegramModeration.Person(other,"OnlineTarget",true,"");
@@ -75,6 +106,24 @@ class CabinetRolesTest {
         var choice=click(99,click(99,menu.home(99),"Функции администратора"),"Список игроков");
         var players=choice;assertNotNull(button(players,"OnlineTarget"));
         verify(moderation).players(99,"online");
+    }
+    @Test void vanishedPlayerHasGlassesInAdminAndSuperAdminPlayerLists() throws Exception {
+        var hidden=new TelegramModeration.Person(other,"HiddenAdmin",true,"",true);
+        when(moderation.players(99,"online")).thenReturn(CompletableFuture.completedFuture(List.of(hidden)));
+        when(moderation.players(500,"online")).thenReturn(CompletableFuture.completedFuture(List.of(hidden)));
+        var adminList=click(99,click(99,menu.home(99),"Функции администратора"),"Список игроков");
+        var superList=click(500,click(500,menu.home(500),"Супер"),"Список игроков");
+        assertTrue(adminList.buttons().stream().anyMatch(button->button.text().equals("🕶 HiddenAdmin")));
+        assertTrue(superList.buttons().stream().anyMatch(button->button.text().equals("🕶 HiddenAdmin")));
+    }
+    @Test void onlySuperAdminCanScheduleVaultTrackerReload() throws Exception {
+        var root=click(500,menu.home(500),"Супер");
+        assertTrue(root.buttons().stream().anyMatch(b->b.text().contains("Перезагрузить VaultTracker")));
+        var result=click(500,root,"Перезагрузить VaultTracker");
+        assertTrue(result.text().contains("запланирована"));
+        verify(moderation).reloadPlugin(500);
+        var admin=click(99,menu.home(99),"Функции администратора");
+        assertFalse(admin.buttons().stream().anyMatch(b->b.text().contains("Перезагрузить VaultTracker")));
     }
     @Test void superAdminCanFilterPlayerListByPartialName() throws Exception {
         var first=new TelegramModeration.Person(other,"Giga_TapoChek_",false,"");
@@ -104,6 +153,18 @@ class CabinetRolesTest {
         var confirm=click(500,fly,"20.0");
         assertTrue(confirm.text().contains("скорость полёта 20.0x"));
         click(500,confirm,"Подтвердить");verify(moderation).speed(500,other,"fly",20);
+    }
+    @Test void adminPlayerCardUsesRussianFlagsMoscowDatesStatusBarsAndCopyableCoordinates() throws Exception {
+        long first=java.time.Instant.parse("2026-02-09T13:57:00Z").toEpochMilli(),last=java.time.Instant.parse("2026-09-20T12:54:00Z").toEpochMilli();
+        var person=new TelegramModeration.Person(other,"Target",true,"",false,true,false,first,last,last+3600_000);
+        when(moderation.players(500,"online")).thenReturn(CompletableFuture.completedFuture(List.of(person)));
+        when(moderation.info(500,other)).thenReturn(CompletableFuture.completedFuture(person));
+        when(moderation.playerProfile(500,other)).thenReturn(CompletableFuture.completedFuture(new TelegramModeration.CabinetProfile(true,18.0,20.0,15,"world",10,64,-20,first,93784L)));
+        when(moderation.adminGroup(500,other)).thenReturn(CompletableFuture.completedFuture(false));
+        var card=click(500,click(500,click(500,menu.home(500),"Супер"),"Список игроков"),"Target");String plain=TelegramEmojiMarkup.plain(card.text());
+        assertTrue(plain.contains("Онлайн: да\nOP: да\nЗабанен: нет"),plain);assertTrue(plain.contains("09.02.2026 16:57"),plain);
+        assertTrue(plain.contains("♥♥♥♥♥♥♥♥♥♤"),plain);assertTrue(plain.contains("◆◆◆◆◆◆◆◇○○"),plain);
+        assertTrue(plain.contains("Наиграно: 1 дн. 2 ч. 3 мин."),plain);String html=TelegramEmojiMarkup.html(card.text()).text();assertTrue(html.contains("world · </b><code>10 64 -20</code>"),html);assertFalse(html.contains("<b><code>"),html);
     }
     TelegramCommands.View rootActions() throws Exception {
         var target=new TelegramModeration.Person(other,"Target",true,"");
@@ -159,7 +220,7 @@ class CabinetRolesTest {
     }
     @Test void chatTextIsPreviewedAndNotTreatedAsAConsoleCommand() throws Exception {
         when(moderation.broadcast(500,"/op Player42")).thenReturn(CompletableFuture.completedFuture("Отправлено"));
-        click(500,rootActions(),"сообщение");var preview=menu.input(500,"/op Player42");
+        click(500,rootActions(),"Отправить сообщение в игровой чат");var preview=menu.input(500,"/op Player42");
         verify(moderation,never()).broadcast(anyLong(),anyString());click(500,preview,"Подтвердить");verify(moderation).broadcast(500,"/op Player42");
     }
     @Test void roleOverridesTagAndSuperTimePersistAcrossRestart() throws Exception {
@@ -169,14 +230,14 @@ class CabinetRolesTest {
     }
     @Test void mainMenuAlwaysOffersSearchAndCabinetEvenBeforeBinding() throws Exception {
         for(long user:List.of(42L,500L,12345L)) {
-            var main=menu.mainMenu(user);assertEquals(List.of("🔎 Поиск","👤 Личный кабинет"),main.buttons().stream().map(TelegramCommands.Button::text).toList());
+            var main=menu.mainMenu(user);assertEquals(List.of("🔎 Поиск","👤 Личный кабинет"),main.buttons().stream().map(TelegramCommands.Button::text).toList());assertTrue(main.text().contains("торговый бот FLEXITY"));assertTrue(main.text().contains("не знаете, у кого он есть"));assertTrue(main.text().contains("защитить свои ресурсы"));
         }
         assertNotNull(button(click(12345,menu.mainMenu(12345),"Личный кабинет"),"Привязать"));
     }
     @Test void removesSuperByTypedIdOnlyAfterConfirmation() throws Exception {
         long target=123456789L;guard.changeSuper(500,target,true).get();
         var admins=click(500,click(500,menu.home(500),"Супер"),"Администраторы бота");
-        String remove=button(admins,"Удалить супер администратора");
+        String remove=button(admins,"Удалить суперадминистратора");
         assertTrue(menu.callback(99,remove).alert());menu.callback(500,remove);
         assertTrue(menu.input(500,"abc").text().contains("Telegram ID"));
         assertTrue(menu.input(500,"123").text().contains("не найден"));
@@ -185,13 +246,14 @@ class CabinetRolesTest {
         String yes=button(confirm,"Подтвердить");assertTrue(menu.callback(99,yes).alert());
         menu.callback(500,yes);assertFalse(guard.admin(target));assertTrue(menu.callback(500,yes).alert());
     }
-    @Test void playerAndInventoryPagesContainTwentyEntriesWithoutSkipping() throws Exception {
+    @Test void buttonListsUseTenButTextInventoryUsesTwentyEntriesWithoutSkipping() throws Exception {
         var people=java.util.stream.IntStream.range(0,21).mapToObj(i->new TelegramModeration.Person(UUID.randomUUID(),"Player_"+i,true,"")).toList();
         when(moderation.players(500,"online")).thenReturn(CompletableFuture.completedFuture(people));
         var first=click(500,click(500,menu.home(500),"Супер"),"Список игроков");
-        assertEquals(20,first.buttons().stream().filter(b->b.text().contains("Player_")).count());
-        var next=click(500,first,"Вперёд");assertEquals(1,next.buttons().stream().filter(b->b.text().contains("Player_")).count());assertNotNull(button(next,"Player_20"));
-        assertEquals(20,click(500,next,"◀ Назад").buttons().stream().filter(b->b.text().contains("Player_")).count());
+        assertEquals(10,first.buttons().stream().filter(b->b.text().contains("Player_")).count());
+        var next=click(500,first,"Вперёд");assertEquals(10,next.buttons().stream().filter(b->b.text().contains("Player_")).count());
+        var last=click(500,next,"Вперёд");assertEquals(1,last.buttons().stream().filter(b->b.text().contains("Player_")).count());assertNotNull(button(last,"Player_20"));
+        assertEquals(10,click(500,last,"◀ Назад").buttons().stream().filter(b->b.text().contains("Player_")).count());
         var actions=rootActions();var items=java.util.stream.IntStream.range(0,21).mapToObj(i->new TelegramModeration.ItemView("Item_"+i,1,List.of())).toList();
         when(moderation.inventory(500,other,false)).thenReturn(CompletableFuture.completedFuture(items));
         var inventory=click(500,actions,"Инвентарь");assertEquals(20,inventory.text().lines().filter(line->line.startsWith("Item_")).count());

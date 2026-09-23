@@ -23,6 +23,6 @@ final class OwnResourceSearch {
         return Math.sqrt(Math.pow((double)chest.x()-origin.x(),2)+Math.pow((double)chest.y()-origin.y(),2)+Math.pow((double)chest.z()-origin.z(),2));
     }
     static String line(Row row,String world) {
-        BlockKey c=row.chest();return RussianItems.name(row.material())+" ×"+row.amount()+" — "+world+" "+c.x()+" "+c.y()+" "+c.z()+(Double.isFinite(row.distance())?" · "+Math.round(row.distance())+" м":"");
+        BlockKey c=row.chest();return RussianItems.name(row.material())+" ×"+row.amount()+" — "+world+" · "+TelegramEmojiMarkup.plainCode(c.x()+" "+c.y()+" "+c.z())+(Double.isFinite(row.distance())?" · "+Math.round(row.distance())+" м":"");
     }
 }

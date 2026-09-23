@@ -10,26 +10,48 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.Damageable;
 import org.bukkit.inventory.meta.BlockStateMeta;
 import org.bukkit.block.ShulkerBox;
+import org.bukkit.plugin.Plugin;
 import org.bukkit.plugin.java.JavaPlugin;
 import net.kyori.adventure.text.Component;
 
 /** Executes only fixed, authorized actions. Telegram text is never a console command. */
 class TelegramModeration {
     private static final List<String> PLAYER_CAPABILITIES=GuardService.ADMIN_CAPABILITIES.stream().filter(c->!Set.of("chat","manageAdmins").contains(c)).toList();
-    record Person(UUID uuid,String name,boolean online,String details) {}
+    record Person(UUID uuid,String name,boolean online,String details,boolean vanished,boolean op,boolean banned,long firstPlayed,long lastLogin,long lastSeen) {
+        Person(UUID uuid,String name,boolean online,String details) {this(uuid,name,online,details,false,false,false,0,0,0);}
+        Person(UUID uuid,String name,boolean online,String details,boolean vanished) {this(uuid,name,online,details,vanished,false,false,0,0,0);}
+    }
     record ItemView(String label,int amount,List<ItemView> contents,boolean container) {
         ItemView(String label,int amount,List<ItemView> contents) { this(label,amount,contents,!contents.isEmpty()); }
         boolean shulker() { return container; }
     }
+    record CabinetProfile(boolean online,Double health,double maxHealth,Integer food,String world,int x,int y,int z,long firstPlayed,Long playtimeSeconds) {}
+    private record CabinetSeed(Player online,Location location,List<java.nio.file.Path> folders,double offlineMax,long firstPlayed) {}
     private final JavaPlugin plugin;
     private final GuardService guard;
     private final SearchCompass searchCompass;
     private final ChildPlayers children;
     private final DonationPremium premium;
     private final Map<UUID,Boolean> lpAdminState=new ConcurrentHashMap<>();
+    private volatile Plugin flexityPlugin;
+    private volatile FlexityVanish flexityVanish;
+    private volatile FlexityPlaytime flexityPlaytime;
+    private volatile long lastVanishWarning;
     TelegramModeration(JavaPlugin plugin,GuardService guard) {this(plugin,guard,null);}
     TelegramModeration(JavaPlugin plugin,GuardService guard,SearchCompass searchCompass) {this(plugin,guard,searchCompass,null);}
     TelegramModeration(JavaPlugin plugin,GuardService guard,SearchCompass searchCompass,ChildPlayers children) {this.plugin=plugin;this.guard=guard;this.searchCompass=searchCompass;this.children=children;this.premium=new DonationPremium(guard.donations);}
+    void reloadPlugin(long user) {
+        guard.requireSuper(user);
+        plugin.getServer().getGlobalRegionScheduler().runDelayed(plugin,task->{
+            try {
+                guard.requireSuper(user);
+                if(!plugin.getServer().dispatchCommand(plugin.getServer().getConsoleSender(),"vtrack reload"))
+                    plugin.getLogger().warning("Команда vtrack reload не была выполнена");
+            } catch(Exception failure) {
+                plugin.getLogger().warning("Не удалось перезагрузить VaultTracker из Telegram: "+failure.getMessage());
+            }
+        },20L);
+    }
     long premiumExpiry(UUID owner) throws Exception {return premium.expiry(owner);}
     void syncDonations() throws Exception {premium.sync();}
     com.google.gson.JsonObject donationChange(long actor,UUID owner,String name,String id,String action,int days,long amount) throws Exception {
@@ -76,7 +98,61 @@ class TelegramModeration {
             });
         });
     }
+    CompletableFuture<String> selectOwnCompass(long user,UUID uuid,BlockKey chest) {
+        if(searchCompass==null) return CompletableFuture.completedFuture("Навигация недоступна.");
+        return guard.account(user).thenCompose(account->{
+            if(account==null || !account.uuid().equals(uuid)) throw new SecurityException("Персонаж не привязан к вашему аккаунту.");
+            return global(()->plugin.getServer().getPlayer(uuid));
+        }).thenCompose(player->{
+            if(player==null) return CompletableFuture.completedFuture("Войдите в игру, чтобы выбрать цель компаса.");
+            CompletableFuture<String> result=new CompletableFuture<>();
+            player.getScheduler().run(plugin,t->{
+                if(result.isDone()) return;
+                try {result.complete(searchCompass.select(player,chest));} catch(Exception error) {result.completeExceptionally(error);}
+            },()->result.complete("Игрок вышел. Повторите после входа."));
+            return result.orTimeout(10,TimeUnit.SECONDS);
+        });
+    }
     CompletableFuture<Map<UUID,String>> worldLabels() {return global(()->{Map<UUID,String> result=new HashMap<>();for(World world:plugin.getServer().getWorlds()) result.put(world.getUID(),world.getName());return Map.copyOf(result);});}
+    CompletableFuture<CabinetProfile> cabinetProfile(long user,UUID uuid) {
+        return guard.account(user).thenCompose(account->{
+            if(account==null||!account.uuid().equals(uuid)) return CompletableFuture.failedFuture(new SecurityException("Нет доступа"));
+            return profile(uuid);
+        });
+    }
+    CompletableFuture<CabinetProfile> playerProfile(long user,UUID uuid) {
+        guard.requireAdmin(user);return profile(uuid).thenApply(profile->{guard.requireAdmin(user);return profile;});
+    }
+    private CompletableFuture<CabinetProfile> profile(UUID uuid) {
+        return global(()->{
+                Player online=plugin.getServer().getPlayer(uuid);OfflinePlayer saved=plugin.getServer().getOfflinePlayer(uuid);
+                Location location=online!=null?null:saved.getLocation();
+                List<java.nio.file.Path> folders=plugin.getServer().getWorlds().stream().map(world->world.getWorldFolder().toPath()).toList();
+                return new CabinetSeed(online,location,folders,guard.child(uuid)==null?20.0:24.0,saved.getFirstPlayed());
+            }).thenCompose(seed->{
+            if(seed.online()!=null) {
+                CompletableFuture<CabinetProfile> result=new CompletableFuture<>();
+                seed.online().getScheduler().run(plugin,task->{try {
+                    var player=seed.online();var location=player.getLocation();var attribute=player.getAttribute(Attribute.MAX_HEALTH);
+                    result.complete(new CabinetProfile(true,player.getHealth(),attribute==null?20.0:attribute.getValue(),player.getFoodLevel(),location.getWorld().getName(),location.getBlockX(),location.getBlockY(),location.getBlockZ(),seed.firstPlayed(),null));
+                } catch(Exception failure) {result.completeExceptionally(failure);}},()->result.complete(null));
+                return result.orTimeout(10,TimeUnit.SECONDS);
+            }
+            return CompletableFuture.supplyAsync(()->{
+                Double health=null;Integer food=null;try {health=OfflineInventory.health(seed.folders(),uuid);food=OfflineInventory.food(seed.folders(),uuid);} catch(Exception ignored) {}
+                var location=seed.location();if(location==null||location.getWorld()==null) return new CabinetProfile(false,health,seed.offlineMax(),food,null,0,0,0,seed.firstPlayed(),null);
+                return new CabinetProfile(false,health,seed.offlineMax(),food,location.getWorld().getName(),location.getBlockX(),location.getBlockY(),location.getBlockZ(),seed.firstPlayed(),null);
+            });
+            }).thenCompose(profile->flexityPlaytime(uuid).handle((seconds,error)->new CabinetProfile(profile.online(),profile.health(),profile.maxHealth(),profile.food(),profile.world(),profile.x(),profile.y(),profile.z(),profile.firstPlayed(),error==null?seconds:null)));
+    }
+    private CompletableFuture<Long> flexityPlaytime(UUID uuid) {
+        try {
+            var manager=plugin.getServer().getPluginManager();Plugin current=manager==null?null:manager.getPlugin("flexity");
+            if(current==null||!current.isEnabled()) return CompletableFuture.completedFuture(null);
+            if(current!=flexityPlugin||flexityPlaytime==null) flexityPlaytime=new FlexityPlaytime(current);
+            return flexityPlaytime.seconds(uuid);
+        } catch(Exception failure) {return CompletableFuture.completedFuture(null);}
+    }
     private <T> CompletableFuture<T> global(Callable<T> job) {
         CompletableFuture<T> result=new CompletableFuture<>();
         try {plugin.getServer().getGlobalRegionScheduler().run(plugin,task-> {if(result.isDone()) return;try {result.complete(job.call());} catch(Exception e) {result.completeExceptionally(e);}});}
@@ -85,18 +161,19 @@ class TelegramModeration {
     CompletableFuture<List<Person>> players(long user,String mode) {return global(()-> {
         if(mode.equals("banned")) guard.requireCapability(user,"unban");else guard.requireAdmin(user);
         Map<UUID,Person> people=new HashMap<>();
+        Set<UUID> vanished=mode.equals("banned")?Set.of():vanishedPlayers();
         if(mode.equals("banned")) {
             ProfileBanList bans=plugin.getServer().getBanList(BanList.Type.PROFILE);
             for(var entry:bans.<org.bukkit.BanEntry<com.destroystokyo.paper.profile.PlayerProfile>>getEntries()) {
                 var profile=entry.getBanTarget();if(profile==null || profile.getId()==null) continue;
                 if(entry.getExpiration()!=null && entry.getExpiration().before(new Date())) continue;
                 people.put(profile.getId(),new Person(profile.getId(),Objects.toString(profile.getName(),profile.getId().toString()),false,
-                        "Причина: "+Objects.toString(entry.getReason(),"не указана")+"\nДо: "+Objects.toString(entry.getExpiration(),"бессрочно")));
+                        "Причина: "+Objects.toString(entry.getReason(),"не указана")+"\nДо: "+Objects.toString(entry.getExpiration(),"бессрочно"),false));
             }
         } else {
             Collection<? extends OfflinePlayer> source=mode.equals("online") ? plugin.getServer().getOnlinePlayers() : Arrays.asList(plugin.getServer().getOfflinePlayers());
-            for(OfflinePlayer p:source) people.put(p.getUniqueId(),person(p));
-            if(!mode.equals("online")) for(Player p:plugin.getServer().getOnlinePlayers()) people.put(p.getUniqueId(),person(p));
+            for(OfflinePlayer p:source) people.put(p.getUniqueId(),person(p,vanished.contains(p.getUniqueId())));
+            if(!mode.equals("online")) for(Player p:plugin.getServer().getOnlinePlayers()) people.put(p.getUniqueId(),person(p,vanished.contains(p.getUniqueId())));
         }
         return people.values().stream().sorted(Comparator.comparing(Person::name,String.CASE_INSENSITIVE_ORDER)).toList();
     });}
@@ -106,16 +183,33 @@ class TelegramModeration {
         Map<UUID,OfflinePlayer> people=new LinkedHashMap<>();
         for(OfflinePlayer player:plugin.getServer().getOfflinePlayers()) people.put(player.getUniqueId(),player);
         for(Player player:plugin.getServer().getOnlinePlayers()) people.put(player.getUniqueId(),player);
+        Set<UUID> vanished=vanishedPlayers();
         return people.values().stream().filter(player->player.getName()!=null&&player.getName().equalsIgnoreCase(wanted))
-                .findFirst().map(this::person).orElseThrow(()->new IllegalArgumentException("Игрок с таким точным ником не найден на сервере"));
+                .findFirst().map(player->person(player,vanished.contains(player.getUniqueId()))).orElseThrow(()->new IllegalArgumentException("Игрок с таким точным ником не найден на сервере"));
     });}
     private Person person(OfflinePlayer p) {
+        return person(p,vanishedPlayers().contains(p.getUniqueId()));
+    }
+    private Person person(OfflinePlayer p,boolean vanished) {
         ProfileBanList bans=plugin.getServer().getBanList(BanList.Type.PROFILE);
         var ban=bans.getBanEntry(p.getPlayerProfile());
         String banInfo=ban==null ? "" : "\nПричина бана: "+Objects.toString(ban.getReason(),"нет")+"\nБан до: "+Objects.toString(ban.getExpiration(),"бессрочно");
         return new Person(p.getUniqueId(),Objects.toString(p.getName(),p.getUniqueId().toString()),p.isOnline(),
                 "UUID: "+p.getUniqueId()+"\nОнлайн: "+p.isOnline()+"\nOP: "+p.isOp()+"\nЗабанен: "+p.isBanned()
-                +"\nПервый вход: "+date(p.getFirstPlayed())+"\nПоследний вход: "+date(p.getLastLogin())+"\nПоследний выход: "+date(p.getLastSeen())+banInfo);
+                +"\nПервый вход: "+date(p.getFirstPlayed())+"\nПоследний вход: "+date(p.getLastLogin())+"\nПоследний выход: "+date(p.getLastSeen())+banInfo,vanished,p.isOp(),p.isBanned(),p.getFirstPlayed(),p.getLastLogin(),p.getLastSeen());
+    }
+    private Set<UUID> vanishedPlayers() {
+        try {
+            var manager=plugin.getServer().getPluginManager();if(manager==null) return Set.of();
+            Plugin current=manager.getPlugin("flexity");
+            if(current==null||!current.isEnabled()) {flexityPlugin=null;flexityVanish=null;return Set.of();}
+            if(current!=flexityPlugin||flexityVanish==null) {flexityVanish=new FlexityVanish(current);flexityPlugin=current;}
+            return flexityVanish.snapshot();
+        } catch(Exception failure) {
+            long now=System.currentTimeMillis();
+            if(now-lastVanishWarning>60000) {lastVanishWarning=now;plugin.getLogger().warning("Не удалось прочитать /vanish Flexity для списка игроков: "+failure.getClass().getSimpleName());}
+            return Set.of();
+        }
     }
     private static String date(long ms) {return ms<=0 ? "нет данных" : java.time.Instant.ofEpochMilli(ms).atZone(java.time.ZoneId.systemDefault()).toString();}
     CompletableFuture<Person> info(long user,UUID uuid) {
@@ -125,7 +219,7 @@ class TelegramModeration {
             online.getScheduler().run(plugin,t-> {
                 if(result.isDone()) return;
                 try {guard.requireAdmin(user);var loc=online.getLocation();result.complete(new Person(base.uuid(),base.name(),true,base.details()+"\nМир: "+loc.getWorld().getName()
-                        +"\nКоординаты: "+loc.getBlockX()+" "+loc.getBlockY()+" "+loc.getBlockZ()+"\nРежим: "+online.getGameMode()+"\nЗдоровье: "+online.getHealth()));}
+                        +"\nКоординаты: "+loc.getBlockX()+" "+loc.getBlockY()+" "+loc.getBlockZ()+"\nРежим: "+online.getGameMode()+"\nЗдоровье: "+online.getHealth(),base.vanished(),base.op(),base.banned(),base.firstPlayed(),base.lastLogin(),base.lastSeen()));}
                 catch(Exception e) {result.completeExceptionally(e);}
             },()->result.complete(base));return result.orTimeout(15,TimeUnit.SECONDS);
         });
@@ -161,6 +255,7 @@ class TelegramModeration {
         return List.copyOf(result);
     }
     CompletableFuture<String> act(long user,String operation,UUID uuid) {
+        if(operation.equals("freeze") || operation.equals("unfreeze")) return freeze(user,uuid,operation.equals("freeze"));
         if(operation.equals("kick")) return global(()-> {
             guard.requireCapability(user,"kick");OfflinePlayer offline=plugin.getServer().getOfflinePlayer(uuid);return offline.getPlayer();
         }).thenCompose(player-> {
@@ -183,6 +278,13 @@ class TelegramModeration {
                 Player online=target.getPlayer();
                 if(online!=null) online.getScheduler().run(plugin,t->online.kick(Component.text("Бан на 5 минут: пока идёт расследование")),null);
                 audit(user,operation,uuid.toString());return "Бан на 5 минут: пока идёт расследование.";
+            }
+            if(operation.equals("permanentBan")) {
+                if(bans.isBanned(target.getPlayerProfile())) return "Игрок уже забанен. Существующий бан сохранён.";
+                bans.addBan(target.getPlayerProfile(),"Бессрочный бан",(java.util.Date)null,"Telegram "+user);
+                Player online=target.getPlayer();
+                if(online!=null) online.getScheduler().run(plugin,t->online.kick(Component.text("Вы забанены на сервере")),null);
+                audit(user,operation,uuid.toString());return "Игрок забанен бессрочно.";
             }
             if(operation.equals("unban")) {bans.pardon(target.getPlayerProfile());audit(user,operation,uuid.toString());return "Бан снят.";}
             if(operation.equals("op") || operation.equals("deop")) {boolean enabled=operation.equals("op");target.setOp(enabled);audit(user,operation,uuid.toString());return enabled?"Игроку выдан OP.":"OP у игрока снят.";}
@@ -307,10 +409,49 @@ class TelegramModeration {
         for(Player p:plugin.getServer().getOnlinePlayers()) p.getScheduler().run(plugin,t->p.sendMessage(message),null);
         plugin.getServer().getConsoleSender().sendMessage(message);audit(user,"chat",text);return "Сообщение отправлено в игровой чат.";
     });}
+    boolean freezeAvailable() {
+        try {freezeBridge();return true;} catch(Exception unavailable) {return false;}
+    }
+    private FlexityFreeze freezeBridge() throws Exception {
+        Plugin flexity=plugin.getServer().getPluginManager().getPlugin("flexity");
+        if(flexity==null || !flexity.isEnabled()) throw new IllegalStateException("Заморозка Flexity недоступна");
+        return new FlexityFreeze(flexity);
+    }
+    private CompletableFuture<String> freeze(long user,UUID target,boolean enabled) {
+        guard.requireCapability(user,"freeze");
+        return guard.account(user).thenCompose(account->global(()->{
+            guard.requireCapability(user,"freeze");
+            if(enabled && plugin.getServer().getPlayer(target)==null) throw new IllegalArgumentException("Для заморозки игрок должен быть онлайн.");
+            UUID actor=account!=null?account.uuid():UUID.nameUUIDFromBytes(("VaultTracker:Telegram:"+user).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            var future=freezeBridge().change(target,actor,enabled);
+            plugin.getLogger().info("Telegram "+user+" ("+actor+"): "+(enabled?"freeze":"unfreeze")+" → "+target);
+            return future;
+        }).thenCompose(f->f)).thenCompose(changed->global(()->{
+            Player player=plugin.getServer().getPlayer(target);
+            if(changed && player!=null) player.getScheduler().run(plugin,t->player.sendMessage(Component.text(enabled?"[FLEXITY] Вы заморожены на время проверки.":"[FLEXITY] Заморозка снята.")),null);
+            return changed?(enabled?"Игрок заморожен через Flexity.":"Игрок разморожен через Flexity."):"Игрок уже не заморожен.";
+        }));
+    }
+    CompletableFuture<String> privateMessage(long user,UUID target,String text) {
+        guard.requireAdmin(user);
+        if(text==null || text.isBlank() || text.length()>500 || text.contains("\n") || text.contains("\r"))
+            return CompletableFuture.failedFuture(new IllegalArgumentException("Сообщение: одна строка, до 500 символов."));
+        return global(()->{guard.requireAdmin(user);return plugin.getServer().getPlayer(target);}).thenCompose(player->{
+            if(player==null) return CompletableFuture.completedFuture("Игрок не в сети. Сообщение не отправлено.");
+            CompletableFuture<String> result=new CompletableFuture<>();
+            player.getScheduler().run(plugin,t->{
+                if(result.isDone()) return;
+                try {guard.requireAdmin(user);player.sendMessage(Component.text("[FLEXITY] "+text));audit(user,"privateMessage",target+": "+text);result.complete("Личное сообщение отправлено игроку от имени FLEXITY.");}
+                catch(Exception error) {result.completeExceptionally(error);}
+            },()->result.complete("Игрок вышел. Сообщение не отправлено."));
+            return result.orTimeout(15,TimeUnit.SECONDS);
+        });
+    }
     private void audit(long user,String action,String target) {if(guard.superAdmin(user)) return;plugin.getLogger().info("Telegram "+user+": "+action+" → "+target);}
     private void requireOperation(long user,String operation) {
         String capability=switch(operation) {
-            case "ban" -> "ban";case "kick" -> "kick";case "unban" -> "unban";
+            case "freeze","unfreeze" -> "freeze";
+            case "ban" -> "ban";case "permanentBan" -> "permanentBan";case "kick" -> "kick";case "unban" -> "unban";
             case "toggleLp","addLp","removeLp" -> "luckPerms";case "op" -> "op";case "deop" -> "deop";
             case "heal" -> "heal";case "kill" -> "kill";case "repair" -> "repair";
             case "scale" -> "scale";case "flySpeed" -> "flySpeed";case "walkSpeed" -> "walkSpeed";

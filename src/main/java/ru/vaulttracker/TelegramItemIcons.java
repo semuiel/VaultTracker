@@ -1,12 +1,40 @@
 package ru.vaulttracker;
+import org.bukkit.Material;
+import org.bukkit.configuration.file.YamlConfiguration;
+import java.nio.file.Path;
 import java.util.*;
+import java.util.logging.Logger;
 
 /** Stable category symbols shared by all Telegram item lists. */
 final class TelegramItemIcons {
- static String label(String material) {return icon(material)+" "+RussianItems.name(material);}
- static String groupLabel(ResourceGroups.Group group) {return icon(group.displayMaterial())+" "+group.title();}
+ private record Entry(String emoji,String customEmojiId) {}
+ private static volatile Map<String,Entry> configured=Map.of();
+ static String label(String material) {return RussianItems.name(material);}
+ static String groupLabel(ResourceGroups.Group group) {return group.title();}
  static String icon(String material) {
   String n=material.toUpperCase(Locale.ROOT).replace("MINECRAFT:","");
+  Entry custom=configured.get(n);
+  if(custom!=null) return TelegramEmojiMarkup.marker(custom.customEmojiId(),custom.emoji());
+  return defaultIcon(n);
+ }
+ static synchronized void configure(Path folder,Logger log) {
+  try {
+   Path path=folder.resolve("item-emojis.yml");var file=path.toFile();var yaml=YamlConfiguration.loadConfiguration(file);boolean changed=!file.exists();
+   yaml.options().header("Смайлы предметов во всех списках торгового Telegram-бота.\nemoji — обычный запасной смайлик. customEmojiId — числовой ID кастомного эмодзи Telegram; пустая строка использует emoji.\nПосле изменения выполните /vtrack reload. Названия материалов соответствуют Bukkit/Folia.");
+   Map<String,Entry> entries=new HashMap<>();
+   for(Material material:Material.values()) {
+    String name=material.name(),base="items."+name;
+    if(!yaml.contains(base+".emoji")) {yaml.set(base+".emoji",defaultIcon(name));changed=true;}
+    if(!yaml.contains(base+".customEmojiId")) {yaml.set(base+".customEmojiId","");changed=true;}
+    String emoji=Objects.toString(yaml.getString(base+".emoji",defaultIcon(name)),defaultIcon(name));
+    String id=Objects.toString(yaml.getString(base+".customEmojiId",""),"").strip();
+    if(!id.isEmpty()&&!id.matches("[0-9]{1,30}")) {log.warning("item-emojis.yml: "+name+".customEmojiId должен содержать только цифры; используется обычный смайлик.");id="";}
+    entries.put(name,new Entry(emoji,id));
+   }
+   if(changed) yaml.save(file);configured=Map.copyOf(entries);
+  } catch(Exception failure) {configured=Map.of();log.warning("Не удалось прочитать item-emojis.yml: "+failure.getMessage()+". Используются стандартные категории смайликов.");}
+ }
+ private static String defaultIcon(String n) {
   if(n.endsWith("SHULKER_BOX") || n.endsWith("_CHEST") || Set.of("CHEST","TRAPPED_CHEST","ENDER_CHEST","BARREL","BUNDLE").contains(n) || n.endsWith("_BUNDLE")) return "📦";
   if(n.endsWith("SWORD") || n.endsWith("_SPEAR") || Set.of("BOW","CROSSBOW","TRIDENT","MACE","ARROW","SPECTRAL_ARROW","TIPPED_ARROW").contains(n)) return "⚔️";
   if(n.endsWith("HELMET") || n.endsWith("CHESTPLATE") || n.endsWith("LEGGINGS") || n.endsWith("BOOTS") || n.endsWith("HORSE_ARMOR") || Set.of("SHIELD","ELYTRA","WOLF_ARMOR").contains(n)) return "🛡️";

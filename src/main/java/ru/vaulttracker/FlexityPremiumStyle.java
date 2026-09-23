@@ -11,8 +11,6 @@ import org.bukkit.plugin.Plugin;
 
 /** Read-only adapter: use Flexity's own visibility rules, colours and chat formatter. */
 final class FlexityPremiumStyle {
-    private static final List<String> PERMISSIONS=List.of("flexity.nick","flexity.chat.color","flexity.style.gradient",
-            "flexity.style.title","flexity.style.profile","flexity.style.bubble","flexity.style.particle");
     @FunctionalInterface interface Permissions {Predicate<String> read(UUID uuid) throws Exception;}
     private final Object formatter,styles,colors;
     private final Method format,read,paint;
@@ -52,24 +50,18 @@ final class FlexityPremiumStyle {
         return formatted.colorIfAbsent(NamedTextColor.WHITE);
     }
     private static Predicate<String> permissions(Plugin plugin,UUID uuid) throws Exception {
+        // Permission reads do not access location/entity state. Using the live Permissible
+        // exactly matches the check performed by Flexity's own chat formatter.
         var player=plugin.getServer().getPlayer(uuid);
-        if(player!=null) {
-            CompletableFuture<Set<String>> result=new CompletableFuture<>();
-            var task=player.getScheduler().run(plugin,t->{
-                try {Set<String> allowed=new HashSet<>();for(String permission:PERMISSIONS) if(player.hasPermission(permission)) allowed.add(permission);result.complete(Set.copyOf(allowed));}
-                catch(Exception failure) {result.completeExceptionally(failure);}
-            },()->result.complete(null));
-            if(task==null) result.complete(null);
-            Set<String> allowed=result.get(5,TimeUnit.SECONDS);
-            if(allowed!=null) return allowed::contains;
-        }
+        if(player!=null&&player.isOnline()) return player::hasPermission;
         return OfflinePermissions.read(uuid);
     }
     private static final class OfflinePermissions {
         static Predicate<String> read(UUID uuid) throws Exception {
             try {
                 var api=net.luckperms.api.LuckPermsProvider.get();
-                var user=api.getUserManager().loadUser(uuid).get(5,TimeUnit.SECONDS);
+                var user=api.getUserManager().getUser(uuid);
+                if(user==null) user=api.getUserManager().loadUser(uuid).get(5,TimeUnit.SECONDS);
                 var data=user.getCachedData().getPermissionData(api.getContextManager().getQueryOptions(user).orElseGet(()->api.getContextManager().getStaticQueryOptions()));
                 return permission->data.checkPermission(permission).asBoolean();
             } catch(IllegalStateException | LinkageError unavailable) {return permission->false;}

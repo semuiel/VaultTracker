@@ -9,6 +9,9 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.*;
 import org.bukkit.event.player.*;
 import org.bukkit.event.entity.PlayerDeathEvent;
+import org.bukkit.event.server.PluginDisableEvent;
+import org.bukkit.event.server.PluginEnableEvent;
+import org.bukkit.plugin.Plugin;
 import org.bukkit.plugin.java.JavaPlugin;
 import java.util.*;
 import java.util.concurrent.*;
@@ -39,7 +42,11 @@ final class TelegramChatBridge implements Listener,AutoCloseable {
     private volatile long lastCommandDeleteWarning;
     private GuardService guard;
     private volatile LinkedChatIdentity identity;
+    private volatile FlexityVanish vanish;
+    private volatile Set<UUID> lastVanished=Set.of();
+    private volatile boolean vanishSnapshotReady;
     private volatile long lastIdentityWarning;
+    private volatile long lastVanishWarning;
     void linkedAccounts(GuardService value) {guard=value;}
     TelegramChatBridge(JavaPlugin plugin,TelegramChatConfig config,TelegramConfig catalogue) throws Exception {
         this.plugin=plugin;this.config=config;transport=config.transport(catalogue);api=new TelegramApi(transport);
@@ -54,9 +61,29 @@ final class TelegramChatBridge implements Listener,AutoCloseable {
         plugin.getServer().getGlobalRegionScheduler().run(plugin,t->{
             if(stopping.get()) return;
             var flexity=plugin.getServer().getPluginManager().getPlugin("flexity");
-            if(flexity!=null&&flexity.isEnabled()) try {identity=new LinkedChatIdentity(flexity);} catch(Exception e) {plugin.getLogger().warning("Оформление Flexity недоступно: используется игровой ник с [TG].");}
+            if(flexity!=null&&flexity.isEnabled()) bindFlexity(flexity);
         });
         expiry.start();sender.start();if(!shared) receiver.start();
+    }
+    @EventHandler
+    public void onPluginDisable(PluginDisableEvent event) {
+        if(event.getPlugin().getName().equalsIgnoreCase("flexity")) {identity=null;vanish=null;lastVanished=Set.of();vanishSnapshotReady=false;}
+    }
+    @EventHandler
+    public void onPluginEnable(PluginEnableEvent event) {
+        if(event.getPlugin().getName().equalsIgnoreCase("flexity")) bindFlexity(event.getPlugin());
+    }
+    private void bindFlexity(Plugin flexity) {
+        try {identity=new LinkedChatIdentity(flexity);}
+        catch(Exception failure) {
+            identity=null;
+            plugin.getLogger().warning("Оформление Flexity недоступно ("+failure.getClass().getSimpleName()+"): используется игровой ник с [TG].");
+        }
+        try {vanish=new FlexityVanish(flexity);lastVanished=Set.of();vanishSnapshotReady=false;}
+        catch(Exception failure) {
+            vanish=null;
+            vanishWarning(failure);
+        }
     }
     void username(String value) {username=value;}
     boolean reportsEnabled() {return reports!=null;}
@@ -69,8 +96,19 @@ final class TelegramChatBridge implements Listener,AutoCloseable {
         var result=new CompletableFuture<List<String>>();
         plugin.getServer().getGlobalRegionScheduler().run(plugin,task->{
             if(stopping.get()) {result.cancel(false);return;}
+            Set<UUID> hidden=lastVanished;boolean hideAll=false;
+            try {
+                if(vanish!=null) {hidden=vanish.snapshot();lastVanished=hidden;vanishSnapshotReady=true;}
+                else {
+                    Plugin flexity=plugin.getServer().getPluginManager().getPlugin("flexity");
+                    hideAll=flexity!=null&&flexity.isEnabled();
+                }
+            } catch(Exception failure) {vanishWarning(failure);hideAll=!vanishSnapshotReady;}
             List<CompletableFuture<TelegramChatFormat.PlayerRow>> rows=new ArrayList<>();
             for(Player p:plugin.getServer().getOnlinePlayers()) {
+                UUID playerId=p.getUniqueId();
+                boolean playerHidden=playerId!=null&&hidden.contains(playerId);
+                if(hideAll||playerHidden) continue;
                 var row=new CompletableFuture<TelegramChatFormat.PlayerRow>();rows.add(row);
                 try {
                     var scheduled=p.getScheduler().run(plugin,t->{
@@ -133,7 +171,9 @@ final class TelegramChatBridge implements Listener,AutoCloseable {
         if(first.startsWith("/")) {
             String[] command=first.split("@",2);
             if(!command[0].equalsIgnoreCase("/list") || (command.length==2 && (username==null || !command[1].equalsIgnoreCase(username)))) return false;
-            if(config.flag("list.enabled",true)) currentPlayerPages().thenAccept(pages->enqueueList(new TelegramChatConfig.Target(update.chatId(),update.topicId()),pages));
+            if(config.flag("list.enabled",true)) {
+                currentPlayerPages().thenAccept(pages->enqueueList(new TelegramChatConfig.Target(update.chatId(),update.topicId()),pages));
+            }
             return true;
         }
         if(!config.chat.matches(update)) return false;
@@ -169,19 +209,23 @@ final class TelegramChatBridge implements Listener,AutoCloseable {
             if(account!=null) {
                 showTag=config.flag("messages.showTelegramTagLinked",config.flag("messages.showTelegramTag",true));
                 if(config.flag("messages.linkedPlayerIdentity",true)) {
-                    try {if(identity!=null) return identity.render(account,text,showTag);} catch(Exception e) {identityWarning();}
+                    try {if(identity!=null) return identity.render(account,text,showTag);} catch(Exception e) {identityWarning(e);}
                     return LinkedChatIdentity.fallback(account.name(),text,showTag);
                 }
             }
-        } catch(Exception e) {identityWarning();}
+        } catch(Exception e) {identityWarning(e);}
         String template=config.format("telegramChat","{tg}<white>{sender}<gray>:</gray> {text}</white>");
         if(template.equals("<aqua>[TG] {sender}</aqua> {text}")) template="{tg}<white>{sender}<gray>:</gray> {text}</white>";
         // Existing configs used a literal marker. Keep the toggle effective without rewriting them.
         if(!template.contains("{tg}")) template=template.replace("[TG] ","{tg}").replace("[TG]","{tg}");
         return MiniMessage.miniMessage().deserialize(template.replace("{tg}","<bridge_tag>").replace("{sender}","<bridge_sender>").replace("{text}","<bridge_text>"),Placeholder.component("bridge_tag",LinkedChatIdentity.tag(showTag)),Placeholder.component("bridge_sender",Component.text(limit(sender,120),net.kyori.adventure.text.format.NamedTextColor.WHITE)),Placeholder.component("bridge_text",Component.text(text,net.kyori.adventure.text.format.NamedTextColor.WHITE)));
     }
-    private void identityWarning() {
-        long now=System.currentTimeMillis();if(now-lastIdentityWarning>60000) {lastIdentityWarning=now;plugin.getLogger().warning("Не удалось получить оформление привязанного персонажа; используется запасное оформление [TG].");}
+    private void identityWarning(Exception failure) {
+        long now=System.currentTimeMillis();if(now-lastIdentityWarning>60000) {lastIdentityWarning=now;plugin.getLogger().warning("Не удалось получить оформление привязанного персонажа ("+rootCause(failure).getClass().getSimpleName()+"); используется запасное оформление [TG].");}
+    }
+    private static Throwable rootCause(Throwable failure) {Throwable result=failure;while(result.getCause()!=null&&result.getCause()!=result) result=result.getCause();return result;}
+    private synchronized void vanishWarning(Exception failure) {
+        long now=System.currentTimeMillis();if(now-lastVanishWarning>60000) {lastVanishWarning=now;plugin.getLogger().warning("Не удалось проверить скрытых игроков или права Telegram ("+rootCause(failure).getClass().getSimpleName()+"); скрытые игроки администраторам не раскрываются.");}
     }
     private boolean consumeListCallback(TelegramApi.Incoming update) {
         String data=update.callbackData();if(data==null||!data.startsWith("vcl:")) return false;

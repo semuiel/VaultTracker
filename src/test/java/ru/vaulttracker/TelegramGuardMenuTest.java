@@ -23,15 +23,49 @@ class TelegramGuardMenuTest {
         menu=new TelegramGuardMenu(guard,new TelegramCommands(catalogue,storage,1,id->true));
     }
     @AfterEach void close() {guard.close();}
+    @Test void notificationActionsArePrivateRoleCheckedAndTargetTheActorUuid() throws Exception {
+        guard.configure(new GuardConfig(true,0,500),Set.of(99L));guard.capability(500,"ban",true).get();guard.capability(500,"freeze",true).get();
+        var moderation=mock(TelegramModeration.class);when(moderation.freezeAvailable()).thenReturn(true);
+        UUID actor=UUID.randomUUID();when(moderation.info(99,actor)).thenReturn(java.util.concurrent.CompletableFuture.completedFuture(new TelegramModeration.Person(actor,"Thief",true,"")));
+        when(moderation.act(99,"ban",actor)).thenReturn(java.util.concurrent.CompletableFuture.completedFuture("Бан на 5 минут"));
+        when(moderation.privateMessage(99,actor,"Верните вещи")).thenReturn(java.util.concurrent.CompletableFuture.completedFuture("Отправлено"));
+        menu=new TelegramGuardMenu(guard,new TelegramCommands(catalogue,storage,20,v->true),moderation);
+        var delivery=new GuardService.Delivery(1,99,"Взяли вещи\nКто изменил: Thief",actor,"Thief");
+        var alert=menu.notification(delivery);assertNotNull(button(alert,"Заморозить"));
+        assertTrue(menu.callback(42,button(alert,"Бан на 5 минут")).alert());
+        var confirm=click(99,alert,"Бан на 5 минут");assertTrue(confirm.text().contains("Thief"));
+        String token=button(confirm,"Подтвердить");menu.callback(99,token);menu.callback(99,token);verify(moderation,times(1)).act(99,"ban",actor);
+        click(99,alert,"Написать игроку");var preview=menu.input(99,"Верните вещи");verify(moderation,never()).privateMessage(anyLong(),any(),anyString());
+        click(99,preview,"Отправить");verify(moderation).privateMessage(99,actor,"Верните вещи");
+        guard.capability(500,"freeze",false).get();assertThrows(Exception.class,()->click(99,alert,"Заморозить"));
+        var ordinary=menu.notification(new GuardService.Delivery(2,42,"Взяли вещи\nКто изменил: Thief",actor,"Thief"));assertTrue(ordinary.buttons().isEmpty());assertFalse(ordinary.text().contains("Thief"));
+        var ignored=click(99,alert,"Игнорировать");assertTrue(ignored.text().contains("проигнорировано"));assertFalse(ignored.buttons().stream().anyMatch(b->b.text().contains("Бан")));
+        guard.changeAdmin(500,99,false).get();assertThrows(Exception.class,()->click(99,alert,"Написать игроку"));
+    }
+    @Test void compassButtonsUseSelectedChestAndPaginationDoesNotResetTarget() throws Exception {
+        UUID owner=UUID.randomUUID(),world=UUID.randomUUID();guard.link(owner,"Alex",guard.generate(42).get().split("/vtrack link ")[1].substring(0,GuardService.LINK_CODE_LENGTH)).get();
+        for(int i=0;i<12;i++) catalogue.register(new BlockKey(world,i,65,0),owner,"Alex",List.of(new BlockKey(world,i,64,0)),Map.of("DIAMOND",1L),1,0);
+        var moderation=mock(TelegramModeration.class);
+        when(moderation.ownPosition(42,owner)).thenReturn(java.util.concurrent.CompletableFuture.completedFuture(new BlockKey(world,0,64,0)));
+        when(moderation.worldLabels()).thenReturn(java.util.concurrent.CompletableFuture.completedFuture(Map.of(world,"world")));
+        BlockKey chosen=new BlockKey(world,9,64,0);when(moderation.selectOwnCompass(42,owner,chosen)).thenReturn(java.util.concurrent.CompletableFuture.completedFuture("Компас направлен"));
+        menu=new TelegramGuardMenu(guard,new TelegramCommands(catalogue,storage,20,v->true),moderation);
+        menu.callback(42,"vg:resourceSearch");var page=menu.input(42,"алмаз");assertEquals(10,page.buttons().stream().filter(b->b.text().startsWith("🧭")).count());
+        assertTrue(page.buttons().stream().anyMatch(b->b.text().equals("🧭 Алмаз ×1")));
+        String token=page.buttons().stream().filter(b->b.text().equals("🧭 Алмаз ×1")).skip(9).findFirst().orElseThrow().data();
+        assertTrue(menu.callback(43,token).alert());
+        assertNull(menu.callback(42,token).view());verify(moderation).selectOwnCompass(42,owner,chosen);
+        click(42,click(42,page,"Вперёд"),"Назад");verify(moderation,times(1)).pointOwnCompass(eq(42L),eq(owner),anyList());
+    }
     @Test void donationCodeWorksWithoutPromptAndHasNoInputDeadline() throws Exception {
         guard.configure(new GuardConfig(true,0,99),Set.of());UUID owner=UUID.randomUUID();
-        guard.link(owner,"Alex",guard.generate(42).get().split("/vtrack link ")[1].substring(0,32)).get();guard.donationsVisible(99,true).get();
+        guard.link(owner,"Alex",guard.generate(42).get().split("/vtrack link ")[1].substring(0,GuardService.LINK_CODE_LENGTH)).get();guard.donationsVisible(99,true).get();
         var direct=menu.input(42,"A".repeat(32));assertNotNull(direct);assertTrue(direct.text().contains("Не удалось зачислить код"));
         var method=TelegramGuardMenu.class.getDeclaredMethod("prompt",long.class,String.class,String.class);method.setAccessible(true);
         var prompt=(TelegramCommands.View)method.invoke(menu,42L,"donationCode","Введите код");assertFalse(prompt.text().contains("10 минут"));
         menu.cancelInput(42);assertNotNull(menu.input(42,"B".repeat(32)));
     }
-    @Test void donationPlayerPickerHasTwentyRowsOfflineToggleAndSearch() throws Exception {
+    @Test void donationPlayerPickerHasTenRowsOfflineToggleAndSearch() throws Exception {
         guard.configure(new GuardConfig(true,0,99),Set.of());var moderation=mock(TelegramModeration.class);
         var people=new ArrayList<TelegramModeration.Person>();for(int i=0;i<21;i++)people.add(new TelegramModeration.Person(UUID.randomUUID(),"Player"+i,true,""));
         people.add(new TelegramModeration.Person(UUID.randomUUID(),"OfflineAlex",false,""));
@@ -39,8 +73,8 @@ class TelegramGuardMenuTest {
         when(moderation.players(99,"all")).thenReturn(java.util.concurrent.CompletableFuture.completedFuture(people));
         menu=new TelegramGuardMenu(guard,new TelegramCommands(catalogue,storage,20,v->true),moderation);
         var admin=click(99,click(99,menu.home(99),"Супер"),"Пожертвования");var picker=click(99,admin,"Добавить пожертвования");
-        assertEquals(20,picker.buttons().stream().filter(b->b.text().startsWith("Player")).count());
-        assertTrue(click(99,picker,"Вперёд").text().contains("2/2"));var offline=click(99,picker,"офлайн");assertTrue(offline.buttons().stream().anyMatch(b->b.text().equals("OfflineAlex")));
+        assertEquals(10,picker.buttons().stream().filter(b->b.text().startsWith("Player")).count());
+        assertTrue(click(99,picker,"Вперёд").text().contains("2/3"));var offline=click(99,picker,"офлайн");assertTrue(offline.buttons().stream().anyMatch(b->b.text().equals("OfflineAlex")));
         click(99,offline,"Поиск");assertTrue(menu.input(99,"alex").buttons().stream().anyMatch(b->b.text().equals("OfflineAlex")));
         assertTrue(menu.callback(42,button(admin,"Добавить пожертвования")).alert());
     }
@@ -58,7 +92,7 @@ class TelegramGuardMenuTest {
     }
     @Test void donationsRequireLinkedAccountAndPersistSuperVisibility() throws Exception {
         guard.configure(new GuardConfig(true,0,99),Set.of());UUID id=UUID.randomUUID();
-        guard.link(id,"Alex",guard.generate(42).get().split("/vtrack link ")[1].substring(0,32)).get();
+        guard.link(id,"Alex",guard.generate(42).get().split("/vtrack link ")[1].substring(0,GuardService.LINK_CODE_LENGTH)).get();
         assertFalse(menu.home(42).buttons().stream().anyMatch(b->b.text().contains("Пожертвования")));
         assertThrows(Exception.class,()->guard.donationsVisible(42,true).get());
         var admin=click(99,click(99,menu.home(99),"Супер"),"Пожертвования");
@@ -76,7 +110,7 @@ class TelegramGuardMenuTest {
     }
     @Test void childMenuIsLinkedOwnerOnlyAndSuperManagementIsProtected() throws Exception {
         guard.configure(new GuardConfig(true,0,99),Set.of());UUID id=UUID.randomUUID();
-        guard.link(id,"Alex",guard.generate(42).get().split("/vtrack link ")[1].substring(0,32)).get();
+        guard.link(id,"Alex",guard.generate(42).get().split("/vtrack link ")[1].substring(0,GuardService.LINK_CODE_LENGTH)).get();
         var moderation=new TelegramModeration(mock(org.bukkit.plugin.java.JavaPlugin.class),guard);
         menu=new TelegramGuardMenu(guard,new TelegramCommands(catalogue,storage,20,v->true),moderation);
         assertFalse(menu.home(42).buttons().stream().anyMatch(b->b.text().contains("Размер")));
@@ -88,7 +122,7 @@ class TelegramGuardMenuTest {
     }
     @Test void ownChestSearchPaginatesAndDoesNotExposeOtherOwners() throws Exception {
         UUID owner=UUID.randomUUID(),world=UUID.randomUUID();
-        guard.link(owner,"Alex",guard.generate(42).get().split("/vtrack link ")[1].substring(0,32)).get();
+        guard.link(owner,"Alex",guard.generate(42).get().split("/vtrack link ")[1].substring(0,GuardService.LINK_CODE_LENGTH)).get();
         for(int i=0;i<21;i++) catalogue.register(new BlockKey(world,i,65,0),owner,"Alex",List.of(new BlockKey(world,i,64,0)),Map.of("DIAMOND_ORE",1L),1,0);
         catalogue.register(new BlockKey(world,999,65,0),UUID.randomUUID(),"Alex",List.of(new BlockKey(world,999,64,0)),Map.of("DIAMOND_ORE",999L),1,0);
         menu.callback(42,"vg:resourceSearch");var page=menu.input(42,"алмазная руда");
@@ -97,24 +131,25 @@ class TelegramGuardMenuTest {
         assertTrue(menu.callback(42,next).view().text().contains("2/2"));
     }
     @Test void eventsMenuAddsPagesAndRemovesFriendsByExactNickname() throws Exception {
-        UUID owner=UUID.randomUUID(),friendId=UUID.randomUUID();guard.link(owner,"Alex",guard.generate(42).get().split("/vtrack link ")[1].substring(0,32)).get();
+        UUID owner=UUID.randomUUID(),friendId=UUID.randomUUID();guard.link(owner,"Alex",guard.generate(42).get().split("/vtrack link ")[1].substring(0,GuardService.LINK_CODE_LENGTH)).get();
         var moderation=mock(TelegramModeration.class);when(moderation.playerByName("Trusted"))
                 .thenReturn(java.util.concurrent.CompletableFuture.completedFuture(new TelegramModeration.Person(friendId,"Trusted",false,"")));
         menu=new TelegramGuardMenu(guard,new TelegramCommands(catalogue,storage,20,v->true),moderation);
-        var events=click(42,menu.home(42),"События");assertTrue(events.buttons().stream().anyMatch(b->b.text().contains("Список событий за 2 дня")));
+        var events=click(42,menu.home(42),"События");assertTrue(events.buttons().stream().anyMatch(b->b.text().contains("Список событий за 2 дня")));assertTrue(events.text().contains("[v] или [vault]"));
         var friends=click(42,events,"Друзья");assertTrue(friends.text().contains("Список пуст"));
         click(42,friends,"Добавить друга");friends=menu.input(42,"Trusted");assertEquals("Trusted",guard.friends(42).get().getFirst().name());
         for(int i=0;i<20;i++) guard.addFriend(42,UUID.randomUUID(),"Friend"+String.format("%02d",i)).get();
-        friends=click(42,events,"Друзья");assertEquals(20,friends.buttons().stream().filter(b->b.text().startsWith("❌ ")).count());
-        friends=click(42,friends,"Вперёд");assertTrue(friends.text().contains("2/2"));
+        friends=click(42,events,"Друзья");assertEquals(10,friends.buttons().stream().filter(b->b.text().startsWith("❌ ")).count());
+        friends=click(42,friends,"Вперёд");assertTrue(friends.text().contains("2/3"));
+        friends=click(42,friends,"Вперёд");assertTrue(friends.text().contains("3/3"));
         var confirm=click(42,friends,"Trusted");assertTrue(confirm.text().contains("Удалить Trusted"));
         click(42,confirm,"Да, удалить");assertFalse(guard.friends(42).get().stream().anyMatch(f->f.uuid().equals(friendId)));
     }
     String button(TelegramCommands.View view,String contains) {return view.buttons().stream().filter(b->b.text().contains(contains)).findFirst().orElseThrow().data();}
     TelegramCommands.View click(long user,TelegramCommands.View view,String contains) throws Exception {return menu.callback(user,button(view,contains)).view();}
     @Test void personalSettingsOfferOnlyThreePresetsAndAreOwnerBound() throws Exception {
-        guard.link(UUID.randomUUID(),"Alex",guard.generate(42).get().split("/vtrack link ")[1].substring(0,32)).get();
-        var settings=click(42,menu.home(42),"Настройки");String day=button(settings,"2 дня");
+        guard.link(UUID.randomUUID(),"Alex",guard.generate(42).get().split("/vtrack link ")[1].substring(0,GuardService.LINK_CODE_LENGTH)).get();
+        var settings=click(42,menu.home(42),"Настройки");assertTrue(settings.text().contains("табличку с надписью [v] или [vault]"));String day=button(settings,"2 дня");
         assertTrue(menu.callback(43,day).alert());assertNull(guard.offlineSeconds(42).get());
         settings=menu.callback(42,day).view();assertEquals(172800L,guard.offlineSeconds(42).get());
         assertFalse(settings.buttons().stream().anyMatch(b->b.text().contains("Своё время") || b.text().contains("1 дн.")));
@@ -122,7 +157,7 @@ class TelegramGuardMenuTest {
         click(42,settings,"После выхода");assertEquals(0L,guard.offlineSeconds(42).get());
     }
     @Test void customTimeInputOnlyCapturesPersonalChatAndCancelEndsIt() throws Exception {
-        guard.link(UUID.randomUUID(),"Alex",guard.generate(42).get().split("/vtrack link ")[1].substring(0,32)).get();
+        guard.link(UUID.randomUUID(),"Alex",guard.generate(42).get().split("/vtrack link ")[1].substring(0,GuardService.LINK_CODE_LENGTH)).get();
         TelegramConfig config=mock(TelegramConfig.class);when(config.pageSize()).thenReturn(8);
         var process=TelegramBotService.class.getDeclaredMethod("process",TelegramApi.Incoming.class);process.setAccessible(true);
         try(var apis=mockConstruction(TelegramApi.class);
@@ -148,7 +183,7 @@ class TelegramGuardMenuTest {
     @Test void bindingAndAccountButtonsWorkAndCannotBeUsedByAnotherUser() throws Exception {
         var home=menu.home(42);assertFalse(home.text().contains("Уведомления администратора"));
         String bind=button(home,"Привязать");assertTrue(menu.callback(43,bind).alert());
-        var challenge=menu.callback(42,bind).view();String code=challenge.text().split("/vtrack link ")[1].substring(0,32);
+        var challenge=menu.callback(42,bind).view();String code=challenge.text().split("/vtrack link ")[1].substring(0,GuardService.LINK_CODE_LENGTH);
         UUID uuid=UUID.randomUUID();guard.link(uuid,"Alex",code).get();
         var account=menu.callback(42,"vg:home").view();assertTrue(account.text().contains("Персонаж: Alex"));
         String toggle=button(click(42,account,"Настройки"),"Отключить мои");assertTrue(menu.callback(43,toggle).alert());assertTrue(guard.account(42).get().notifications());
@@ -156,7 +191,7 @@ class TelegramGuardMenuTest {
         assertTrue(menu.callback(42,toggle).alert());
     }
     @Test void settingsHaveSeparateApplyAndResetTagButtons() throws Exception {
-        guard.link(UUID.randomUUID(),"Alex",guard.generate(42).get().split("/vtrack link ")[1].substring(0,32)).get();
+        guard.link(UUID.randomUUID(),"Alex",guard.generate(42).get().split("/vtrack link ")[1].substring(0,GuardService.LINK_CODE_LENGTH)).get();
         TelegramTagManager tags=mock(TelegramTagManager.class);
         when(tags.apply(42,"Alex")).thenReturn(new TelegramTagManager.Result("applied",true,true));
         when(tags.reset(42)).thenReturn(new TelegramTagManager.Result("reset",true,true));
@@ -167,7 +202,7 @@ class TelegramGuardMenuTest {
     }
     @Test void resourcesUseUuidWhenNamesCollideAndPagesRemainBoundToRequester() throws Exception {
         UUID owner=UUID.randomUUID(),world=UUID.randomUUID();
-        guard.link(owner,"Alex",guard.generate(42).get().split("/vtrack link ")[1].substring(0,32)).get();
+        guard.link(owner,"Alex",guard.generate(42).get().split("/vtrack link ")[1].substring(0,GuardService.LINK_CODE_LENGTH)).get();
         catalogue.register(new BlockKey(world,1,1,1),owner,"Alex",List.of(new BlockKey(world,1,1,2)),Map.of("DIAMOND",5L,"IRON_INGOT",2L),1,100);
         catalogue.register(new BlockKey(world,2,1,1),UUID.randomUUID(),"Alex",List.of(new BlockKey(world,2,1,2)),Map.of("DIAMOND",999L),1,100);
         Material material=mock(Material.class);when(material.getMaxStackSize()).thenReturn(64);

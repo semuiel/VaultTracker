@@ -19,7 +19,7 @@ class GuardServiceTest {
     @BeforeEach void start() throws Exception {guard=open();guard.configure(new GuardConfig(true,120_000),Set.of(99L));}
     GuardService open() throws Exception {return new GuardService(folder.resolve("guard"),new GuardConfig(true,120_000),Logger.getAnonymousLogger(),clock::get);}
     @AfterEach void close() {guard.close();}
-    String code(long tg) throws Exception {return guard.generate(tg).get().split("/vtrack link ")[1].substring(0,32);}
+    String code(long tg) throws Exception {return guard.generate(tg).get().split("/vtrack link ")[1].substring(0,GuardService.LINK_CODE_LENGTH);}
     Snapshot snapshot(long count,long revision) {return new Snapshot(sign,generation,owner,"Alex",List.of(sign),count==0 ? Map.of() : Map.of("DIAMOND",count),true,clock.get(),revision);}
     void offline() {guard.presence(owner,"Alex",false);clock.addAndGet(120_001);}
     List<GuardService.Event> events() throws Exception {return guard.history(99,0,20).get();}
@@ -56,6 +56,25 @@ class GuardServiceTest {
         String adminText=deliveries.stream().filter(d->d.recipient()==99).findFirst().orElseThrow().text();
         assertFalse(ownerText.contains("Кто изменил"));assertTrue(adminText.contains("Кто изменил: Griefer"));
         assertEquals("Griefer",events().getFirst().actor());assertTrue(GuardService.eventText(events().getFirst(),0,8).contains("Кто изменил: Griefer"));
+    }
+    @Test void personalAdminAlertsKeepActorEvenWhenAdminChannelIsDisabledAndHideAfterDemotion() throws Exception {
+        UUID actor=UUID.randomUUID();guard.link(owner,"Alex",code(99)).get();
+        guard.toggleAdmin(99).get();guard.offlineSeconds(99,-1L).get();guard.presence(owner,"Alex",true);
+        guard.restore(List.of(snapshot(10,1)));guard.attribute(sign,actor,"Griefer");guard.accept(snapshot(9,2));
+        var delivery=ready().getFirst();assertEquals(99,delivery.recipient());assertEquals(actor,delivery.actorUuid());assertTrue(delivery.text().contains("Кто изменил: Griefer"));
+        assertEquals("Griefer",guard.ownHistory(99,0,10).get().getFirst().actor());
+        guard.configure(new GuardConfig(true,120_000),Set.of());
+        var demoted=guard.deliveries().get().getFirst();assertFalse(demoted.text().contains("Griefer"));assertNull(demoted.actorUuid());assertNull(demoted.actor());
+        assertNull(guard.ownHistory(99,0,10).get().getFirst().actor());
+    }
+    @Test void differentActorsGetSeparateNotificationsAndUuidSurvivesRestart() throws Exception {
+        UUID first=UUID.randomUUID(),second=UUID.randomUUID();guard.restore(List.of(snapshot(10,1)));offline();
+        guard.attribute(sign,first,"One");guard.accept(snapshot(9,2));events();
+        guard.attribute(sign,second,"Two");guard.accept(snapshot(8,3));events();
+        guard.close();guard=open();guard.configure(new GuardConfig(true,120_000),Set.of(99L));
+        var deliveries=ready();assertEquals(2,deliveries.size());
+        assertEquals(Set.of(first,second),new HashSet<>(deliveries.stream().map(GuardService.Delivery::actorUuid).toList()));
+        assertTrue(deliveries.stream().noneMatch(d->d.text().contains("One")&&d.text().contains("Two")));
     }
     @Test void automatedInventoryChangesUpdateBaselineWithoutBotAlerts() throws Exception {
         guard.restore(List.of(snapshot(10,1)));offline();
@@ -137,11 +156,16 @@ class GuardServiceTest {
     }
 
     @Test void bindingIsSingleUseAndCannotReplaceEitherAccount() throws Exception {
-        String token=code(42);assertTrue(guard.link(owner,"Alex",token).get().contains("привязан к Telegram"));
+        String token=code(42);assertEquals(10,token.length());assertTrue(token.matches("[A-HJ-NP-Z2-9]{10}"));assertTrue(guard.link(owner,"Alex",token.toLowerCase(Locale.ROOT)).get().contains("привязан к Telegram"));
         assertEquals(owner,guard.account(42).get().uuid());
         assertTrue(guard.link(UUID.randomUUID(),"Other",token).get().contains("неверный"));
         String second=code(43);assertTrue(guard.link(owner,"Alex",second).get().contains("уже привязан"));
         assertNull(guard.account(43).get());
+    }
+    @Test void completeLinkCommandIsOneCopyableTelegramCodeBlock() throws Exception {
+        String generated=guard.generate(42).get(),plain=TelegramEmojiMarkup.plain(generated);String token=plain.split("/vtrack link ")[1].substring(0,GuardService.LINK_CODE_LENGTH);
+        assertTrue(plain.contains("/vtrack link "+token));
+        String html=TelegramEmojiMarkup.html(generated).text();assertTrue(html.contains("<code>/vtrack link "+token+"</code>"),html);
     }
     @Test void codesExpireAndRegenerationInvalidatesEarlierCode() throws Exception {
         String old=code(42),current=code(42);

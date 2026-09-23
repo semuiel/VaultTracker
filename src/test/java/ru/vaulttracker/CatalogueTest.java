@@ -87,4 +87,12 @@ class CatalogueTest {
         c.register(p(0),OWNER,"Steve",List.of(p(1)),Map.of(),1,1);
         assertThrows(IllegalArgumentException.class,()->c.register(p(2),OWNER,"Steve",List.of(p(3)),Map.of(),1,1));
     }
+    @Test void playerCatalogueCanBeOrderedByTotalAmountAcrossAllVaults() {
+        Catalogue c=new Catalogue(v->{});UUID alex=UUID.randomUUID(),bob=UUID.randomUUID(),empty=UUID.randomUUID();
+        c.register(p(10),alex,"Alex",List.of(p(11)),Map.of("STONE",20L,"DIAMOND",5L),1,100);
+        c.register(p(12),alex,"Alex",List.of(p(13)),Map.of("STONE",10L),1,100);
+        c.register(p(14),bob,"Bob",List.of(p(15)),Map.of("DIAMOND",40L),1,100);
+        c.register(p(16),empty,"Empty",List.of(p(17)),Map.of(),1,100);
+        assertEquals(List.of("Bob","Alex","Empty"),c.ownerNamesByTotalItems());
+    }
 }

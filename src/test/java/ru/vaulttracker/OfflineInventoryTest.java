@@ -14,11 +14,15 @@ class OfflineInventoryTest {
   Path file=folder.resolve("playerdata").resolve(id+".dat");Files.createDirectories(file.getParent());
   try(var out=new DataOutputStream(new GZIPOutputStream(Files.newOutputStream(file)))) {out.writeByte(10);out.writeUTF("");write(out,root);}return file;
  }
- int type(Object o) {return o instanceof Map?10:o instanceof List?9:o instanceof Byte?1:o instanceof Integer?3:8;}
+ int type(Object o) {return o instanceof Map?10:o instanceof List?9:o instanceof Byte?1:o instanceof Integer?3:o instanceof Float?5:o instanceof Double?6:8;}
  void write(DataOutputStream out,Object value) throws Exception {
   if(value instanceof Map<?,?> map) {for(var e:map.entrySet()) {out.writeByte(type(e.getValue()));out.writeUTF(e.getKey().toString());write(out,e.getValue());}out.writeByte(0);}
   else if(value instanceof List<?> list) {out.writeByte(list.isEmpty()?10:type(list.getFirst()));out.writeInt(list.size());for(Object o:list) write(out,o);}
-  else if(value instanceof Byte n) out.writeByte(n);else if(value instanceof Integer n) out.writeInt(n);else out.writeUTF(value.toString());
+  else if(value instanceof Byte n) out.writeByte(n);else if(value instanceof Integer n) out.writeInt(n);else if(value instanceof Float n) out.writeFloat(n);else if(value instanceof Double n) out.writeDouble(n);else out.writeUTF(value.toString());
+ }
+ @Test void readsLastSavedHealthWithoutChangingPlayerData() throws Exception {
+  Path file=save(Map.of("Health",17.5f,"foodLevel",13,"Inventory",List.of(),"EnderItems",List.of()));byte[] before=Files.readAllBytes(file);
+  assertEquals(17.5,OfflineInventory.health(List.of(folder),id));assertEquals(13,OfflineInventory.food(List.of(folder),id));assertArrayEquals(before,Files.readAllBytes(file));
  }
  @Test void readsSavedInventoryArmorOffhandAndModernNestedShulkersWithoutWriting() throws Exception {
   var empty=Map.of("id","minecraft:red_shulker_box","count",1);

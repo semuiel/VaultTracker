@@ -103,6 +103,32 @@ class TelegramChatBridgeTest {
             verify(api,timeout(1500)).sendHtml(eq(-100123L),eq(486),contains("Никакой конкуренции"),eq(false),eq(List.of()));
         }
     }
+    @Test void vanishedPlayersAreHiddenFromEveryoneIncludingGroupAdministrators() throws Exception {
+        UUID playerId=player.getUniqueId();
+        FlexityVanish flexity=mock(FlexityVanish.class);when(flexity.snapshot()).thenReturn(Set.of(playerId));
+        try(var apis=mockConstruction(TelegramApi.class);var bridge=new TelegramChatBridge(plugin,config,catalogue)) {
+            bridge.start(true);var api=apis.constructed().getFirst();
+            var field=TelegramChatBridge.class.getDeclaredField("vanish");field.setAccessible(true);field.set(bridge,flexity);
+            bridge.consume(message(-100123,486,"/list"));
+            verify(api,timeout(1500)).sendHtml(eq(-100123L),eq(486),contains("Никакой конкуренции"),eq(false),eq(List.of()));
+        }
+        try(var apis=mockConstruction(TelegramApi.class);var bridge=new TelegramChatBridge(plugin,config,catalogue)) {
+            bridge.start(true);var api=apis.constructed().getFirst();when(api.memberStatus(-100123L,42)).thenReturn("administrator");
+            var field=TelegramChatBridge.class.getDeclaredField("vanish");field.setAccessible(true);field.set(bridge,flexity);
+            bridge.consume(message(-100123,486,"/list"));
+            verify(api,timeout(1500)).sendHtml(eq(-100123L),eq(486),contains("Никакой конкуренции"),eq(false),eq(List.of()));
+            verify(api,after(200).never()).sendHtml(eq(42L),anyInt(),anyString(),anyBoolean(),anyList());
+            verify(api,never()).memberStatus(anyLong(),anyLong());
+        }
+    }
+    @Test void listFailsClosedWhenInitialFlexityVanishSnapshotCannotBeRead() throws Exception {
+        FlexityVanish broken=mock(FlexityVanish.class);when(broken.snapshot()).thenThrow(new java.io.IOException("temporary"));
+        try(var apis=mockConstruction(TelegramApi.class);var bridge=new TelegramChatBridge(plugin,config,catalogue)) {
+            bridge.start(true);var field=TelegramChatBridge.class.getDeclaredField("vanish");field.setAccessible(true);field.set(bridge,broken);
+            bridge.consume(message(-100123,486,"/list"));
+            verify(apis.constructed().getFirst(),timeout(1500)).sendHtml(eq(-100123L),eq(486),contains("Никакой конкуренции"),eq(false),eq(List.of()));
+        }
+    }
     @Test void routesChatAndRussianAdvancementsToDifferentTopics() throws Exception {
         try(var apis=mockConstruction(TelegramApi.class);var bridge=new TelegramChatBridge(plugin,config,catalogue)) {
             bridge.start(true);var api=apis.constructed().getFirst();var chat=mock(AsyncChatEvent.class);when(chat.getPlayer()).thenReturn(player);
@@ -137,6 +163,10 @@ class TelegramChatBridgeTest {
             verify(api,timeout(1500)).sendHtml(eq(-100123L),eq(123),contains("Player"),eq(false),buttons.capture());
             assertEquals("1/2",buttons.getValue().getFirst().text());
             String next=buttons.getValue().getLast().data();
+            var listsField=TelegramChatBridge.class.getDeclaredField("lists");listsField.setAccessible(true);
+            @SuppressWarnings("unchecked") var sessions=(Map<String,?>)listsField.get(bridge);
+            for(int i=0;i<100&&sessions.isEmpty();i++) Thread.sleep(10);
+            assertFalse(sessions.isEmpty());
             when(world.getEnvironment()).thenReturn(World.Environment.NORMAL);
             var callback=new TelegramApi.Incoming(2,-100123,123,42,77,null,"callback",next,false,"Sender");
             assertTrue(bridge.consume(callback));

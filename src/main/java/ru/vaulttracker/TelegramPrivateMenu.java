@@ -43,7 +43,7 @@ final class TelegramPrivateMenu {
     TelegramPrivateMenu(Catalogue catalogue,StorageEngine storage,TelegramCommands commands,int pageSize,
                         Predicate<String> validItem,LongSupplier clock) {
         this.catalogue=catalogue; this.storage=storage; this.commands=commands;
-        this.pageSize=Math.max(1,pageSize); this.validItem=validItem; this.clock=clock;
+        this.pageSize=Math.min(TelegramConfig.BUTTON_PAGE_SIZE,Math.max(1,pageSize)); this.validItem=validItem; this.clock=clock;
     }
 
     TelegramCommands.View handle(long userId,long chatId,int topicId,String input,boolean admin) {
@@ -129,7 +129,7 @@ final class TelegramPrivateMenu {
     }
 
     private List<String> choices(Mode mode) {
-        if(mode==Mode.PLAYERS) return catalogue.ownerNames();
+        if(mode==Mode.PLAYERS) return catalogue.ownerNamesByTotalItems();
         Set<String> items=new HashSet<>();
         for(var snapshot:catalogue.all()) snapshot.items().forEach((item,amount)-> { if(amount>0) items.add(item); });
         List<String> sorted=new ArrayList<>(items);
@@ -160,7 +160,7 @@ final class TelegramPrivateMenu {
         String text;
         switch(state.mode) {
             case HOME -> {
-                text="VaultTracker — поиск ресурсов\nНажмите «Поиск», чтобы выбрать игрока или предмет.";
+                text="👋 Вас приветствует торговый бот FLEXITY!\n\n🔎 Хотите купить ресурс, но не знаете, у кого он есть? Нажмите «Поиск».\n🛡 Хотите защитить свои ресурсы? Откройте «Личный кабинет».";
                 add(state,buttons,"🔎 Поиск",0,ActionKind.SEARCH,"");
                 if(guard!=null) {
                     String label="👤 Личный кабинет / привязка";
@@ -170,7 +170,7 @@ final class TelegramPrivateMenu {
                 }
             }
             case SEARCH -> {
-                text="Что ищем?\nИгрок — посмотреть его ресурсы.\nПредмет — посмотреть топ владельцев.";
+                text="🔎 Поиск ресурсов в торговом боте FLEXITY\n\n«Игрок» — найти игрока и узнать, что у него есть в наличии.\n«Предмет» — найти ресурс и узнать, у кого он есть.\n\nЧтобы ваши вещи появились в списке, повесьте на сундук табличку с надписью [v] или [vault].";
                 add(state,buttons,"👤 Игрок",0,ActionKind.PLAYERS,"");
                 add(state,buttons,"📦 Предмет",0,ActionKind.ITEMS,"");
                 add(state,buttons,"⌂ Меню",1,ActionKind.HOME,"");
@@ -179,7 +179,7 @@ final class TelegramPrivateMenu {
                 int pages=Math.max(1,(state.choices.size()+pageSize-1)/pageSize);
                 state.page=Math.max(1,Math.min(state.page,pages));
                 boolean players=state.mode==Mode.PLAYERS;
-                text=(players ? "👤 Игроки каталога" : "📦 Предметы каталога")+" • "+state.page+"/"+pages
+                text=(players ? "👤 Торговый бот FLEXITY · игроки" : "📦 Торговый бот FLEXITY · предметы")+" • "+state.page+"/"+pages
                         +"\nНажмите кнопку или отправьте часть "+(players ? "ника игрока" : "названия предмета на русском или английском")+" в этот личный чат."
                         +"\nОтмена: /cancel";
                 if(!state.filter.isEmpty()) text+="\nФильтр: «"+state.filter+"» • Найдено: "+state.choices.size();
@@ -191,7 +191,7 @@ final class TelegramPrivateMenu {
                     String value=state.choices.get(i);
                     ResourceGroups.Group group=players ? null : ResourceGroups.resolve(value);
                     String label=players ? "👤 "+value : group==null ? TelegramItemIcons.label(value)
-                            : TelegramItemIcons.icon(group.displayMaterial())+" "+group.title()+" ("+group.code()+")";
+                            : group.title()+" ("+group.code()+")";
                     add(state,buttons,label,i-first+(players?0:1),ActionKind.SELECT,value);
                 }
                 int navRow=pageSize+(players?0:1);

@@ -35,9 +35,13 @@ final class TelegramApi implements AutoCloseable {
     private final List<OkHttpClient> clients;
     private final List<TelegramConfig.Proxy> proxies;
     private final java.util.concurrent.atomic.AtomicInteger route=new java.util.concurrent.atomic.AtomicInteger();
+    private java.util.function.UnaryOperator<TelegramCommands.View> viewCustomizer=java.util.function.UnaryOperator.identity();
+    private java.util.function.UnaryOperator<String> textCustomizer=java.util.function.UnaryOperator.identity();
 
-    TelegramApi(TelegramConfig config) {
+    TelegramApi(TelegramConfig config) {this(config,null);}
+    TelegramApi(TelegramConfig config,TelegramMenuText menuText) {
         this.config=config; this.baseUrl=config.botApiUrl()+"/bot"+config.token()+"/";
+        if(menuText!=null) {viewCustomizer=menuText::view;textCustomizer=menuText::text;}
         try {proxies=TelegramProxies.load(config);} catch(IOException e) {throw new java.io.UncheckedIOException(e);}
         clients=proxies.stream().map(this::client).toList();
     }
@@ -70,11 +74,9 @@ final class TelegramApi implements AutoCloseable {
         commands.add(command("item","Поиск ресурсов и игроков"));
         JsonObject body=new JsonObject(); body.add("commands",commands); call("setMyCommands",body);
         JsonArray privateCommands=new JsonArray();
-        privateCommands.add(command("menu","Открыть меню поиска"));
-        privateCommands.add(command("search","Поиск игрока или предмета"));
-        privateCommands.add(command("item","Поиск ресурсов командой"));
-        privateCommands.add(command("cancel","Отменить ввод для поиска"));
-        privateCommands.add(command("help","Помощь"));
+        // Telegram's native Menu button always opens a command list; it cannot execute a callback directly.
+        // Keep that list to one entry. Hidden commands continue to work when typed manually.
+        privateCommands.add(command("menu","Открыть главное меню"));
         JsonObject scope=new JsonObject(); scope.addProperty("type","all_private_chats");
         body.add("scope",scope); body.add("commands",privateCommands); call("setMyCommands",body);
     }
@@ -151,9 +153,15 @@ final class TelegramApi implements AutoCloseable {
                 ? object.getAsJsonObject("from").get("id").getAsLong() : 0;
     }
     int send(long chatId,int topicId,TelegramCommands.View view) throws IOException {
+        view=viewCustomizer.apply(view);
         JsonObject body=messageBody(chatId,view);
         if(topicId>0) body.addProperty("message_thread_id",topicId);
-        return call("sendMessage",body).getAsJsonObject("result").get("message_id").getAsInt();
+        try {return call("sendMessage",body).getAsJsonObject("result").get("message_id").getAsInt();}
+        catch(ApiError failure) {
+            if(!body.has("parse_mode")||failure.code!=400) throw failure;
+            body.addProperty("text",TelegramEmojiMarkup.plain(view.text()));body.remove("parse_mode");
+            return call("sendMessage",body).getAsJsonObject("result").get("message_id").getAsInt();
+        }
     }
     int sendHtml(long chatId,int topicId,String html,boolean silent) throws IOException {
         return sendHtml(chatId,topicId,html,silent,List.of());
@@ -178,10 +186,18 @@ final class TelegramApi implements AutoCloseable {
         }
     }
     void edit(long chatId,int messageId,TelegramCommands.View view) throws IOException {
+        view=viewCustomizer.apply(view);
         JsonObject body=messageBody(chatId,view); body.addProperty("message_id",messageId);
-        try {call("editMessageText",body);} catch(IOException e) {if(!benignCallbackError(e)) throw e;}
+        try {call("editMessageText",body);} catch(ApiError failure) {
+            // «message is not modified» means the current formatted message is already correct.
+            // Retrying it without HTML would replace valid custom emojis with ordinary ones.
+            if(benignCallbackError(failure)) return;
+            if(body.has("parse_mode")&&failure.code==400) {body.addProperty("text",TelegramEmojiMarkup.plain(view.text()));body.remove("parse_mode");try {call("editMessageText",body);} catch(IOException retry) {if(!benignCallbackError(retry)) throw retry;}return;}
+            throw failure;
+        } catch(IOException e) {if(!benignCallbackError(e)) throw e;}
     }
     void answerCallback(String callbackId,String text,boolean alert) throws IOException {
+        text=TelegramEmojiMarkup.plain(textCustomizer.apply(text));
         JsonObject body=new JsonObject(); body.addProperty("callback_query_id",callbackId);
         if(text!=null && !text.isBlank()) body.addProperty("text",text);
         if(alert) body.addProperty("show_alert",true);
@@ -231,7 +247,7 @@ final class TelegramApi implements AutoCloseable {
         call("setChatAdministratorCustomTitle",body);
     }
     static JsonObject messageBody(long chatId,TelegramCommands.View view) {
-        JsonObject body=new JsonObject(); body.addProperty("chat_id",chatId); body.addProperty("text",view.text());
+        JsonObject body=new JsonObject(); body.addProperty("chat_id",chatId);var rendered=TelegramEmojiMarkup.html(view.text());body.addProperty("text",rendered.text());if(rendered.custom()) body.addProperty("parse_mode","HTML");
         body.addProperty("disable_web_page_preview",true);
         addKeyboard(body,view.buttons());
         return body;
@@ -244,7 +260,7 @@ final class TelegramApi implements AutoCloseable {
                 if(row==null || button.row()!=rowNumber) {
                     row=new JsonArray(); keyboard.add(row); rowNumber=button.row();
                 }
-                JsonObject value=new JsonObject(); value.addProperty("text",button.text()); value.addProperty(button.url()==null?"callback_data":"url",button.url()==null?button.data():button.url()); row.add(value);
+                JsonObject value=new JsonObject(); value.addProperty("text",TelegramEmojiMarkup.plain(button.text())); value.addProperty(button.url()==null?"callback_data":"url",button.url()==null?button.data():button.url()); row.add(value);
             }
         }
         JsonObject markup=new JsonObject(); markup.add("inline_keyboard",keyboard); body.add("reply_markup",markup);

@@ -45,12 +45,53 @@ class TelegramModerationTest {
         moderation=new TelegramModeration(plugin,guard);
     }
     @AfterEach void close() {guard.close();}
+    @Test void privateMessageUsesOnlyTargetEntityAndRechecksAdminBeforeSending() throws Exception {
+        Player target=mock(Player.class);when(server.getPlayer(uuid)).thenReturn(target);
+        EntityScheduler scheduler=mock(EntityScheduler.class);when(target.getScheduler()).thenReturn(scheduler);
+        AtomicReference<Consumer<ScheduledTask>> pending=new AtomicReference<>();
+        doAnswer(c->{pending.set(c.getArgument(1));return mock(ScheduledTask.class);}).when(scheduler).run(eq(plugin),any(),any());
+        var result=moderation.privateMessage(99,uuid,"/op test <red>literal");pending.get().accept(mock(ScheduledTask.class));
+        assertTrue(result.get().contains("Личное сообщение"));verify(target).sendMessage(Component.text("[FLEXITY] /op test <red>literal"));
+        verify(server,never()).dispatchCommand(any(),anyString());verify(server,never()).getOnlinePlayers();
+        var revoked=moderation.privateMessage(99,uuid,"Не отправлять");guard.changeAdmin(500,99,false).get();pending.get().accept(mock(ScheduledTask.class));
+        assertThrows(ExecutionException.class,revoked::get);verify(target,never()).sendMessage(Component.text("[FLEXITY] Не отправлять"));
+    }
+    public abstract static class FreezePlugin implements Plugin {Object bootstrap;}
+    public static class Bootstrap {Object serviceRegistry;}
+    public static class Registry {
+        final FlexityFreezeTest.Service service=new FlexityFreezeTest.Service();
+        public Object getPunishmentService() {return service;}
+    }
+    @Test void freezeUsesFlexityAndCanBeDisabledForAdminsWhileSuperKeepsAccess() throws Exception {
+        PluginManager manager=mock(PluginManager.class);when(server.getPluginManager()).thenReturn(manager);
+        FreezePlugin flexity=mock(FreezePlugin.class);when(manager.getPlugin("flexity")).thenReturn(flexity);when(flexity.isEnabled()).thenReturn(true);
+        Bootstrap bootstrap=new Bootstrap();Registry registry=new Registry();bootstrap.serviceRegistry=registry;flexity.bootstrap=bootstrap;registry.service.result.complete(true);
+        Player target=mock(Player.class);when(server.getPlayer(uuid)).thenReturn(target);when(target.getScheduler()).thenReturn(mock(EntityScheduler.class));
+        assertTrue(moderation.freezeAvailable());
+        assertThrows(SecurityException.class,()->moderation.act(99,"freeze",uuid));assertNull(registry.service.target);
+        guard.capability(500,"freeze",true).get();assertTrue(moderation.act(99,"freeze",uuid).get().contains("заморожен"));
+        assertEquals(uuid,registry.service.target);assertTrue(registry.service.frozen);
+        guard.capability(500,"freeze",false).get();assertThrows(SecurityException.class,()->moderation.act(99,"unfreeze",uuid));
+        when(server.getPlayer(uuid)).thenReturn(null);assertTrue(moderation.act(500,"unfreeze",uuid).get().contains("разморожен"));
+        assertFalse(registry.service.frozen);
+    }
     @Test void temporaryBanUsesFiveMinuteNativeProfileBanAndDoesNotShortenExistingBan() throws Exception {
         guard.capability(500,"ban",true).get();
         assertTrue(moderation.act(99,"ban",uuid).get().contains("5 минут"));
         verify(bans).addBan(eq(profile),eq("Пока идёт расследование"),eq(java.time.Duration.ofMinutes(5)),eq("Telegram 99"));
         when(bans.isBanned(profile)).thenReturn(true);moderation.act(99,"ban",uuid).get();
         verify(bans,times(1)).addBan(eq(profile),anyString(),any(java.time.Duration.class),anyString());
+    }
+    @Test void playerListReadsVanishStateFromFlexity() throws Exception {
+        var manager=mock(PluginManager.class);when(server.getPluginManager()).thenReturn(manager);
+        Plugin flexity=mock(Plugin.class);when(flexity.isEnabled()).thenReturn(true);when(manager.getPlugin("flexity")).thenReturn(flexity);
+        FlexityVanish vanish=mock(FlexityVanish.class);when(vanish.snapshot()).thenReturn(Set.of(uuid));
+        var pluginField=TelegramModeration.class.getDeclaredField("flexityPlugin");pluginField.setAccessible(true);pluginField.set(moderation,flexity);
+        var vanishField=TelegramModeration.class.getDeclaredField("flexityVanish");vanishField.setAccessible(true);vanishField.set(moderation,vanish);
+        Player online=mock(Player.class);when(online.getUniqueId()).thenReturn(uuid);when(online.getName()).thenReturn("Hidden");when(online.isOnline()).thenReturn(true);when(online.getPlayerProfile()).thenReturn(profile);
+        doReturn(List.of(online)).when(server).getOnlinePlayers();
+        var result=moderation.players(99,"online").get();
+        assertEquals(1,result.size());assertTrue(result.getFirst().vanished());
     }
     @Test void onlySuperAdminCanUnbanOrSendLuckPermsRemoval() throws Exception {
         assertThrows(ExecutionException.class,()->moderation.act(99,"unban",uuid).get());verify(bans,never()).pardon(profile);
@@ -70,6 +111,18 @@ class TelegramModerationTest {
         assertThrows(ExecutionException.class,()->moderation.broadcast(99,"hello").get());
         moderation.broadcast(500,"/op Player42").get();verify(console).sendMessage(Component.text("[Консоль] /op Player42"));
         verify(server,never()).dispatchCommand(any(),anyString());
+    }
+    @Test void pluginReloadIsDelayedAndRestrictedToSuperAdmin() {
+        var scheduler=server.getGlobalRegionScheduler();
+        AtomicReference<Consumer<ScheduledTask>> pending=new AtomicReference<>();
+        doAnswer(call->{pending.set(call.getArgument(1));return mock(ScheduledTask.class);}).when(scheduler).runDelayed(eq(plugin),any(),eq(20L));
+        var console=mock(ConsoleCommandSender.class);when(server.getConsoleSender()).thenReturn(console);when(server.dispatchCommand(console,"vtrack reload")).thenReturn(true);
+
+        assertThrows(SecurityException.class,()->moderation.reloadPlugin(99));
+        moderation.reloadPlugin(500);
+        verify(server,never()).dispatchCommand(any(),anyString());
+        pending.get().accept(mock(ScheduledTask.class));
+        verify(server).dispatchCommand(console,"vtrack reload");
     }
     @Test void kickRechecksPermissionOnPlayerScheduler() throws Exception {
         guard.capability(500,"kick",true).get();

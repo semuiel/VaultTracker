@@ -48,4 +48,7 @@ class TelegramApiTest {
         assertEquals("Вперёд ▶",button.get("text").getAsString());
         assertEquals("vt:token:2",button.get("callback_data").getAsString());
     }
+    @Test void unchangedFormattedMessageIsBenignAndMustNotBeRewrittenAsPlainText() {
+        assertTrue(TelegramApi.benignCallbackError(new java.io.IOException("Bad Request: message is not modified")));
+    }
 }

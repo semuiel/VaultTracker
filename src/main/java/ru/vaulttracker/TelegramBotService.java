@@ -30,7 +30,9 @@ final class TelegramBotService implements AutoCloseable {
         this(config,catalogue,storage,log,guard,null);
     }
     TelegramBotService(TelegramConfig config,Catalogue catalogue,StorageEngine storage,Logger log,GuardService guard,TelegramModeration moderation) {
-        this.config=config; this.api=new TelegramApi(config); this.commands=new TelegramCommands(catalogue,storage,config.pageSize()); this.log=log;
+        this.config=config;this.log=log;
+        var offset=config.offsetFile();var menuFolder=offset==null||offset.getParent()==null?java.nio.file.Path.of("."):offset.getParent();
+        var menuText=TelegramMenuText.load(menuFolder,log);this.api=new TelegramApi(config,menuText);this.commands=new TelegramCommands(catalogue,storage,config.pageSize());
         this.privateMenu=new TelegramPrivateMenu(catalogue,storage,commands,config.pageSize());
         this.guard=guard;this.moderation=moderation;this.guardMenu=guard==null ? null : new TelegramGuardMenu(guard,commands,moderation,new TelegramTagManager(config,api),api);
         privateMenu.guard(guard);
@@ -192,21 +194,12 @@ final class TelegramBotService implements AutoCloseable {
     private void notifyGuard() {
         if(stopping.get()) return;
         try {
-            var grouped=new java.util.LinkedHashMap<Long,java.util.List<GuardService.Delivery>>();
-            for(var delivery:guard.deliveries().get()) grouped.computeIfAbsent(delivery.recipient(),ignored->new java.util.ArrayList<>()).add(delivery);
-            for(var entry:grouped.entrySet()) {
+            for(var delivery:guard.deliveries().get()) {
                 if(stopping.get()) return;
-                var batch=new java.util.ArrayList<GuardService.Delivery>();StringBuilder text=new StringBuilder();
-                for(var delivery:entry.getValue()) {
-                    if(text.length()+delivery.text().length()+5>3500) break;
-                    if(!text.isEmpty()) text.append("\n\n—\n\n");
-                    text.append(delivery.text());batch.add(delivery);
-                }
-                if(batch.isEmpty()) continue;
                 boolean success=false;
-                try {api.send(entry.getKey(),0,new TelegramCommands.View(text.toString()));success=true;}
-                catch(Exception e) {log.warning("Уведомление охраны не доставлено Telegram-пользователю "+entry.getKey()+": "+api.safe(e)+". Повтор через 5 минут; получатель должен открыть личный чат бота.");}
-                for(var delivery:batch) guard.delivered(delivery.id(),success).get();
+                try {api.send(delivery.recipient(),0,guardMenu.notification(delivery));success=true;}
+                catch(Exception e) {log.warning("Уведомление охраны не доставлено Telegram-пользователю "+delivery.recipient()+": "+api.safe(e)+". Повтор через 5 минут; получатель должен открыть личный чат бота.");}
+                guard.delivered(delivery.id(),success).get();
             }
         } catch(InterruptedException e) {Thread.currentThread().interrupt();}
         catch(Exception e) {log.warning("Ошибка очереди уведомлений охраны: "+e.getClass().getSimpleName());}

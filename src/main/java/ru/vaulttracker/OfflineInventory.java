@@ -8,6 +8,18 @@ import java.util.zip.GZIPInputStream;
 /** Read-only bounded NBT reader. Never instantiates or saves an offline player. */
 final class OfflineInventory {
  static List<TelegramModeration.ItemView> read(List<Path> folders,UUID uuid,boolean ender) throws IOException {
+  Map<?,?> root=readRoot(folders,uuid);
+  return items(root.get(ender?"EnderItems":"Inventory"),0);
+ }
+ static Double health(List<Path> folders,UUID uuid) throws IOException {
+  Object value=readRoot(folders,uuid).get("Health");
+  return value instanceof Number number?number.doubleValue():null;
+ }
+ static Integer food(List<Path> folders,UUID uuid) throws IOException {
+  Object value=readRoot(folders,uuid).get("foodLevel");
+  return value instanceof Number number?number.intValue():null;
+ }
+ private static Map<?,?> readRoot(List<Path> folders,UUID uuid) throws IOException {
   Path file=null;long newest=Long.MIN_VALUE;
   for(Path folder:folders) {
    for(Path candidate:playerFiles(folder,uuid)) {
@@ -20,8 +32,7 @@ final class OfflineInventory {
    if(bytes.length>16*1024*1024) throw new IOException("Данные игрока превышают лимит безопасного чтения.");
    DataInputStream in=new DataInputStream(new ByteArrayInputStream(bytes));
    if(in.readUnsignedByte()!=10) throw new IOException("Некорректный NBT игрока.");
-   in.readUTF();Map<?,?> root=map(tag(in,10,0,new int[]{0}));
-   return items(root.get(ender?"EnderItems":"Inventory"),0);
+   in.readUTF();return map(tag(in,10,0,new int[]{0}));
   } catch(EOFException e) {throw new IOException("Файл игрока неполный. Повторите просмотр после сохранения.",e);}
  }
  private static List<Path> playerFiles(Path folder,UUID uuid) {

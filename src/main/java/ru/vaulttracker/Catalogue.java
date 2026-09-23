@@ -123,6 +123,17 @@ public final class Catalogue {
     public synchronized List<String> ownerNames() {
         return vaults.values().stream().map(Snapshot::playerName).distinct().sorted(String.CASE_INSENSITIVE_ORDER).toList();
     }
+    /** Registered players ordered by the summed amount of every item in all their vaults. */
+    public synchronized List<String> ownerNamesByTotalItems() {
+        Map<UUID,Long> amounts=new HashMap<>();Map<UUID,String> names=new HashMap<>();
+        for(Snapshot vault:vaults.values()) {
+            names.put(vault.owner(),vault.playerName());amounts.putIfAbsent(vault.owner(),0L);
+            for(long amount:vault.items().values()) if(amount>0) amounts.merge(vault.owner(),amount,Math::addExact);
+        }
+        return amounts.entrySet().stream().sorted(Map.Entry.<UUID,Long>comparingByValue().reversed()
+                        .thenComparing(entry->names.get(entry.getKey()),String.CASE_INSENSITIVE_ORDER).thenComparing(Map.Entry::getKey))
+                .map(entry->names.get(entry.getKey())).distinct().toList();
+    }
     public synchronized List<String> find(String material, int limit) {
         return findTotals(material,limit).stream().map(row -> row.name()+" — "+row.amount()).toList();
     }

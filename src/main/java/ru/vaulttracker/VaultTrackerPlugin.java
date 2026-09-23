@@ -40,6 +40,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
     @Override public void onEnable() {
         saveDefaultConfig();
         ensureTelegramConfig();
+        TelegramItemIcons.configure(getDataFolder().toPath(),getLogger());
         String id = getConfig().getString("server-id", "test");
         if (!id.matches("[a-zA-Z0-9_-]{1,48}")) throw new IllegalArgumentException("Invalid server-id");
         RemoteStore.Settings database = null;
@@ -57,7 +58,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
         for(Player player:getServer().getOnlinePlayers()) guard.presence(player.getUniqueId(),player.getName(),true);
         storage = new StorageEngine(getDataFolder().toPath().resolve("cache-"+id), database, getLogger());
         catalogue = new Catalogue(snapshot-> {storage.accept(snapshot);guard.accept(snapshot);});
-        searchCompass=new SearchCompass(this);
+        searchCompass=new SearchCompass(this,catalogue);
         childPlayers=new ChildPlayers(this,guard);
         getServer().getPluginManager().registerEvents(childPlayers,this);childPlayers.start();
         getServer().getPluginManager().registerEvents(searchCompass,this);
@@ -74,7 +75,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
         getLogger().info("VaultTracker " + getPluginMeta().getVersion() + ": каталог ресурсов. /vtrack help");
     }
     private void ensureTelegramConfig() {
-        for(String name:List.of("telegram.yml","telegramchat.yml","donations.yml")) {
+        for(String name:List.of("telegram.yml","telegramchat.yml","donations.yml","telegram-menu.yml")) {
             java.io.File file=new java.io.File(getDataFolder(),name);
             if(file.exists()) continue;
             saveResource(name,false);
@@ -119,7 +120,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
         }
     }
     private void reloadPlugin(CommandSender sender) {
-        reloadConfig(); applyRuntimeConfig();
+        reloadConfig(); applyRuntimeConfig();TelegramItemIcons.configure(getDataFolder().toPath(),getLogger());
         tell(sender,"Перечитываю настройки и перезапускаю Telegram-бот...");
         Thread.ofVirtual().name("VaultTracker-reload").start(()-> {
             String result;
@@ -344,11 +345,18 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
         if(args.length>1&&args[args.length-1].matches("[0-9]+")) {try {requested=Integer.parseInt(args[--end]);} catch(NumberFormatException e) {tell(sender,"Слишком большой номер страницы.");return true;}}
         String query=String.join(" ",Arrays.copyOf(args,end));if(query.isBlank()||query.length()>64) {tell(sender,"Введите название предмета до 64 символов.");return true;}
         var loc=player.getLocation();var rows=OwnResourceSearch.find(catalogue,player.getUniqueId(),query,new BlockKey(loc.getWorld().getUID(),loc.getBlockX(),loc.getBlockY(),loc.getBlockZ()));
-        searchCompass.point(player,rows);
+        if(end==args.length) searchCompass.point(player,rows);
         int pages=Math.max(1,(rows.size()+19)/20),page=Math.max(1,Math.min(requested,pages));
         tell(sender,"Ваши сундуки · "+query+" · "+page+"/"+pages+". Ближайшие в вашем мире сначала.");
         if(rows.isEmpty()) tell(sender,"Не найдено в зарегистрированных хранилищах.");
-        for(var row:rows.subList((page-1)*20,Math.min(page*20,rows.size()))) {World world=getServer().getWorld(row.chest().world());tell(sender,OwnResourceSearch.line(row,world==null?row.chest().world().toString():world.getName()));}
+        for(var row:rows.subList((page-1)*20,Math.min(page*20,rows.size()))) {
+            BlockKey chest=row.chest();World world=getServer().getWorld(chest.world());
+            Component coordinates=Component.text(chest.x()+" "+chest.y()+" "+chest.z(),net.kyori.adventure.text.format.NamedTextColor.AQUA)
+                .clickEvent(net.kyori.adventure.text.event.ClickEvent.runCommand("/vtrack compass "+chest.world()+" "+chest.x()+" "+chest.y()+" "+chest.z()))
+                .hoverEvent(Component.text("Направить компас на этот сундук"));
+            player.sendMessage(Component.text(RussianItems.name(row.material())+" ×"+row.amount()+" — "+(world==null?chest.world():world.getName())+" · ")
+                .append(coordinates).append(Component.text(Double.isFinite(row.distance())?" · "+Math.round(row.distance())+" м":"")));
+        }
         Component navigation=Component.text("◀ Назад");
         if(page>1) navigation=navigation.clickEvent(net.kyori.adventure.text.event.ClickEvent.runCommand("/find "+query+" "+(page-1)));
         Component next=Component.text("Вперёд ▶");if(page<pages) next=next.clickEvent(net.kyori.adventure.text.event.ClickEvent.runCommand("/find "+query+" "+(page+1)));
@@ -360,7 +368,14 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
             return new TopItemCommand(catalogue,storage::ready).execute(sender,args);
         }
         String action=args.length==0 ? "help" : args[0].toLowerCase(Locale.ROOT);
-        if(action.equals("link")) {
+        if(action.equals("compass")) {
+            if(!(sender instanceof Player player)) {tell(sender,"Выберите сундук в игре.");return true;}
+            if(!storage.ready()) {tell(sender,"Каталог загружается.");return true;}
+            try {
+                if(args.length!=5) throw new IllegalArgumentException();
+                tell(sender,searchCompass.select(player,new BlockKey(UUID.fromString(args[1]),Integer.parseInt(args[2]),Integer.parseInt(args[3]),Integer.parseInt(args[4]))));
+            } catch(IllegalArgumentException invalid) {tell(sender,"Повторите поиск и нажмите на координаты сундука.");}
+        } else if(action.equals("link")) {
             if(!(sender instanceof Player player)) {tell(sender,"Привязка выполняется только игроком в Minecraft.");return true;}
             if(!player.hasPermission("vaulttracker.link")) {tell(sender,"Нет права vaulttracker.link.");return true;}
             if(args.length!=2 || !args[1].matches("[0-9a-f]{32}")) {tell(sender,"Получите готовую команду в личном кабинете Telegram-бота.");return true;}

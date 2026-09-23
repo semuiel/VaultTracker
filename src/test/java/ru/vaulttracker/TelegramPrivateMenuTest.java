@@ -43,6 +43,13 @@ class TelegramPrivateMenuTest {
         return click(click(say("/start"),"🔎 Поиск"),label);
     }
 
+    @Test void searchHomeUsesTheSameFlexityGreetingAsTheMainMenu() {
+        var home=say("/start");assertTrue(home.text().contains("Вас приветствует торговый бот FLEXITY"));assertTrue(home.text().contains("защитить свои ресурсы"));
+    }
+    @Test void searchChoiceExplainsPlayersItemsAndVaultSigns() {
+        var search=click(say("/start"),"🔎 Поиск");assertTrue(search.text().contains("«Игрок» — найти игрока и узнать, что у него есть в наличии"));assertTrue(search.text().contains("«Предмет» — найти ресурс"));assertTrue(search.text().contains("[v] или [vault]"));
+    }
+
     @Test void totalTopIsAboveItemsRanksWholeCatalogueAndReturnsToFilter() {
         register("Leader",Map.of("STONE",1728L,"DIAMOND",864L));
         var list=open("📦 Предмет");assertEquals("🏆 Топ по всем предметам",list.buttons().getFirst().text());
@@ -61,6 +68,14 @@ class TelegramPrivateMenuTest {
         var rows=catalogue.allItemTotals();assertEquals(1728,rows.getFirst().amount());assertEquals("Combined",rows.getFirst().name());
         assertEquals(1,rows.stream().filter(r->r.name().equals("Combined")).count());
     }
+    @Test void configuredTwentyRowsAreCappedAtTenForButtonCatalogues() {
+        Catalogue many=new Catalogue(v->{});Map<String,Long> items=new LinkedHashMap<>();for(int i=0;i<15;i++) items.put("ITEM_"+i,1L);
+        UUID world=UUID.randomUUID();
+        many.register(new BlockKey(world,1,2,1),UUID.randomUUID(),"Many",List.of(new BlockKey(world,1,1,1)),items,1,1);
+        var cmd=new TelegramCommands(many,storage,20,id->true);var compact=new TelegramPrivateMenu(many,storage,cmd,20,id->true,clock::get);
+        var search=compact.handle(42,42,0,"/search",false);var list=compact.callback(42,42,0,data(search,"📦 Предмет")).view();
+        assertTrue(list.text().contains("1/2"));assertEquals(10,list.buttons().stream().filter(button->button.row()>=1&&button.row()<=10).count());
+    }
     @Test void browsesPlayersAndTheirResourcePagesWithReturnToList() {
         var list=open("👤 Игрок");
         assertTrue(list.text().contains("1/2"));
@@ -76,7 +91,7 @@ class TelegramPrivateMenuTest {
         assertTrue(alex.text().contains("1/3"));
         var resourcePage=click(alex,"Вперёд ▶");
         assertTrue(resourcePage.text().contains("Ресурсы Alex • 2/3"));
-        assertTrue(click(resourcePage,"◀ К списку").text().contains("Игроки каталога"));
+        assertTrue(click(resourcePage,"◀ К списку").text().contains("Торговый бот FLEXITY · игроки"));
     }
 
     @Test void acceptsNicknameOnlyDuringPlayerSearchIncludingMaterialName() {
@@ -99,7 +114,7 @@ class TelegramPrivateMenuTest {
         assertTrue(ores.text().contains("Alex — 7 шт."));
         list=click(ores,"◀ К списку");
         int pages=0;
-        while(list.buttons().stream().noneMatch(b->b.text().equals("💎 Алмаз"))) {
+        while(list.buttons().stream().noneMatch(b->b.text().equals("Алмаз"))) {
             assertTrue(pages++<10); list=click(list,"Вперёд ▶");
         }
         var top=click(list,"Алмаз");
@@ -199,6 +214,6 @@ class TelegramPrivateMenuTest {
         assertNull(say("Alex"));
         when(storage.status()).thenReturn("Работает");
         assertTrue(menu.handle(42,42,0,"/status",true).text().contains("Работает"));
-        assertTrue(say("/item Alex diamond").text().contains("Alex — 💎 Алмаз: 12 шт."));
+        assertTrue(say("/item Alex diamond").text().contains("Alex — Алмаз: 12 шт."));
     }
 }
