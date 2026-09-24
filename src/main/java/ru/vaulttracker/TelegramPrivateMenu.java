@@ -176,7 +176,8 @@ final class TelegramPrivateMenu {
                 add(state,buttons,"⌂ Меню",1,ActionKind.HOME,"");
             }
             case PLAYERS, ITEMS -> {
-                int pages=Math.max(1,(state.choices.size()+pageSize-1)/pageSize);
+                int choiceSize=state.mode==Mode.ITEMS ? Math.min(pageSize,6) : pageSize;
+                int pages=Math.max(1,(state.choices.size()+choiceSize-1)/choiceSize);
                 state.page=Math.max(1,Math.min(state.page,pages));
                 boolean players=state.mode==Mode.PLAYERS;
                 text=(players ? "👤 Торговый бот FLEXITY · игроки" : "📦 Торговый бот FLEXITY · предметы")+" • "+state.page+"/"+pages
@@ -185,16 +186,16 @@ final class TelegramPrivateMenu {
                 if(!state.filter.isEmpty()) text+="\nФильтр: «"+state.filter+"» • Найдено: "+state.choices.size();
                 if(state.choices.isEmpty()) text+=state.filter.isEmpty() ? "\nЗарегистрированных игроков пока нет."
                         : "\nНичего не найдено. Введите другую часть названия или сбросьте фильтр.";
-                int first=(state.page-1)*pageSize;
+                int first=(state.page-1)*choiceSize;
                 if(!players) add(state,buttons,"🏆 Топ по всем предметам",0,ActionKind.TOTAL_TOP,"");
-                for(int i=first;i<Math.min(first+pageSize,state.choices.size());i++) {
+                for(int i=first;i<Math.min(first+choiceSize,state.choices.size());i++) {
                     String value=state.choices.get(i);
                     ResourceGroups.Group group=players ? null : ResourceGroups.resolve(value);
                     String label=players ? "👤 "+value : group==null ? TelegramItemIcons.label(value)
                             : group.title()+" ("+group.code()+")";
                     add(state,buttons,label,i-first+(players?0:1),ActionKind.SELECT,value);
                 }
-                int navRow=pageSize+(players?0:1);
+                int navRow=choiceSize+(players?0:1);
                 if(state.page>1) add(state,buttons,"◀ Назад",navRow,ActionKind.PAGE,Integer.toString(state.page-1));
                 if(state.page<pages) add(state,buttons,"Вперёд ▶",navRow,ActionKind.PAGE,Integer.toString(state.page+1));
                 if(!state.filter.isEmpty()) add(state,buttons,"✖ Сбросить фильтр",navRow+1,ActionKind.CLEAR,"");

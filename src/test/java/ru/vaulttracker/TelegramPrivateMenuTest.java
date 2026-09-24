@@ -39,6 +39,16 @@ class TelegramPrivateMenuTest {
         assertFalse(result.alert(),result.notice()); assertNotNull(result.view());
         return result.view();
     }
+    @Test void itemChoicesUseSixButtonsPerPageWhilePaginationStillWorks() {
+        var larger=new TelegramPrivateMenu(catalogue,storage,commands,10,valid,clock::get);
+        var search=larger.handle(42,42,0,"/search",false);
+        String items=data(search,"Предмет");
+        var first=larger.callback(42,42,0,items).view();
+        assertTrue(first.text().contains("1/2"),first.text());
+        assertEquals(6,first.buttons().stream().filter(b->b.row()>=1 && b.row()<=6).count());
+        var second=larger.callback(42,42,0,data(first,"Вперёд ▶")).view();
+        assertTrue(second.text().contains("2/2"),second.text());
+    }
     private TelegramCommands.View open(String label) {
         return click(click(say("/start"),"🔎 Поиск"),label);
     }
@@ -68,13 +78,13 @@ class TelegramPrivateMenuTest {
         var rows=catalogue.allItemTotals();assertEquals(1728,rows.getFirst().amount());assertEquals("Combined",rows.getFirst().name());
         assertEquals(1,rows.stream().filter(r->r.name().equals("Combined")).count());
     }
-    @Test void configuredTwentyRowsAreCappedAtTenForButtonCatalogues() {
+    @Test void configuredTwentyRowsAreCappedAtSixForButtonCatalogues() {
         Catalogue many=new Catalogue(v->{});Map<String,Long> items=new LinkedHashMap<>();for(int i=0;i<15;i++) items.put("ITEM_"+i,1L);
         UUID world=UUID.randomUUID();
         many.register(new BlockKey(world,1,2,1),UUID.randomUUID(),"Many",List.of(new BlockKey(world,1,1,1)),items,1,1);
         var cmd=new TelegramCommands(many,storage,20,id->true);var compact=new TelegramPrivateMenu(many,storage,cmd,20,id->true,clock::get);
         var search=compact.handle(42,42,0,"/search",false);var list=compact.callback(42,42,0,data(search,"📦 Предмет")).view();
-        assertTrue(list.text().contains("1/2"));assertEquals(10,list.buttons().stream().filter(button->button.row()>=1&&button.row()<=10).count());
+        assertTrue(list.text().contains("1/3"));assertEquals(6,list.buttons().stream().filter(button->button.row()>=1&&button.row()<=6).count());
     }
     @Test void browsesPlayersAndTheirResourcePagesWithReturnToList() {
         var list=open("👤 Игрок");

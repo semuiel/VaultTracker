@@ -80,6 +80,7 @@ final class TelegramGuardMenu {
             case "event" -> view=detail(user,Long.parseLong(a.value()),a.page(),false);
             case "ownEvent" -> view=detail(user,Long.parseLong(a.value()),a.page(),true);
             case "superHome" -> view=superHome(user);
+            case "rootHome" -> view=rootHome(user);
             case "donations" -> view=donations(user);
             case "donationPay" -> view=donationPay(user);
             case "donationCode" -> {requireDonations(user);view=prompt(user,"donationCode","Введите одноразовый код из чата вашего оплаченного заказа FunPay. Не пересылайте код другим людям.");}
@@ -282,12 +283,20 @@ final class TelegramGuardMenu {
     }
     private TelegramCommands.View superHome(long user) {
         guard.requireSuper(user);
-        return new TelegramCommands.View("👑 Суперадминистратор",List.of(
+        List<TelegramCommands.Button> buttons=new ArrayList<>(List.of(
                 b(user,"👮 Администраторы бота","admins","",0,0),
                 b(user,"👥 Список игроков","browse:online","",0,1),
                 b(user,"⏱ Личный срок админских супер уведомлений","rootSettings","",0,2),b(user,"🧒 Дети","children","",0,3),
-                b(user,"💝 Пожертвования","donationAdmin","",0,4),b(user,"♻️ Перезагрузить VaultTracker","reloadPlugin","",0,5),
-                new TelegramCommands.Button("↩ Назад","vg:home",6),homeButton(7)));
+                b(user,"💝 Пожертвования","donationAdmin","",0,4),b(user,"♻️ Перезагрузить VaultTracker","reloadPlugin","",0,5)));
+        int row=6;
+        if(guard.rootAdmin(user)) buttons.add(b(user,"🔐 Root","rootHome","",0,row++));
+        buttons.add(new TelegramCommands.Button("↩ Назад","vg:home",row++));buttons.add(homeButton(row));
+        return new TelegramCommands.View("👑 Суперадминистратор",List.copyOf(buttons));
+    }
+    private TelegramCommands.View rootHome(long user) {
+        guard.requireRoot(user);
+        return new TelegramCommands.View("🔐 Root\nФункции этого раздела добавим позже.",List.of(
+                b(user,"↩ Назад","superHome","",0,0),homeButton(1)));
     }
     private void requireDonations(long user) throws Exception {
         if(guard.account(user).get()==null || !guard.donationsVisible().get()) throw new IllegalArgumentException("Раздел пожертвований недоступен.");

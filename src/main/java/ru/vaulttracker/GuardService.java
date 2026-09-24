@@ -140,6 +140,8 @@ final class GuardService implements AutoCloseable {
     });}
     void configure(GuardConfig config,Set<Long> admins) { this.config=config; this.admins=Set.copyOf(admins); }
     boolean superAdmin(long user) {return user>0 && (config.superAdminUserId()==user || extraSupers.contains(user));}
+    boolean rootAdmin(long user) {return user>0 && config.superAdminUserId()==user;}
+    void requireRoot(long user) {if(!rootAdmin(user)) throw new SecurityException("Раздел Root доступен только основному суперадминистратору");}
     boolean admin(long user) { return superAdmin(user) || adminOverrides.getOrDefault(user,admins.contains(user)); }
     Set<Long> adminIds() {
         Set<Long> ids=new TreeSet<>(admins);adminOverrides.forEach((id,enabled)-> {if(enabled) ids.add(id);else ids.remove(id);});

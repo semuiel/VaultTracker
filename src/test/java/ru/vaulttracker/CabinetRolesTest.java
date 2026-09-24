@@ -35,6 +35,17 @@ class CabinetRolesTest {
         var settings=click(42,home,"Настройки");assertNotNull(button(settings,"Отключить мои"));assertNotNull(button(settings,"Всегда"));assertNotNull(button(settings,"2 дня"));
         assertNotNull(button(settings,"Применить тег"));assertNotNull(button(settings,"Сбросить тег"));
     }
+    @Test void rootButtonBelongsOnlyToConfiguredMainSuperAdmin() throws Exception {
+        guard.changeSuper(500,501,true).get();
+        var main=click(500,menu.home(500),"Суперадминистратор");
+        var extra=click(501,menu.home(501),"Суперадминистратор");
+        String rootButton=button(main,"Root");
+        assertFalse(extra.buttons().stream().anyMatch(b->b.text().contains("Root")));
+        assertTrue(menu.callback(501,rootButton).alert());
+        assertTrue(menu.callback(500,rootButton).view().text().contains("Функции этого раздела"));
+        guard.configure(new GuardConfig(true,120000,0),Set.of(99L));
+        assertThrows(SecurityException.class,()->menu.callback(500,rootButton));
+    }
     @Test void linkedCabinetShowsHeartsAndCurrentCoordinates() throws Exception {
         when(moderation.cabinetProfile(42,owner)).thenReturn(CompletableFuture.completedFuture(
                 new TelegramModeration.CabinetProfile(true,17.0,20.0,13,"world",223,64,1004,java.time.Instant.parse("2026-02-09T13:57:00Z").toEpochMilli(),90061L)));

@@ -1,6 +1,6 @@
-# VaultTracker 0.16.3-preview
+# VaultTracker 0.16.4-preview
 
-Актуальная сборка для Folia 26 и Java 25: [`outputs/VaultTracker-0.16.3-preview-folia26.jar`](outputs/VaultTracker-0.16.3-preview-folia26.jar). Исходный код находится в `src/main`, тесты — в `src/test`, встроенный сервис пожертвований — в `donations`. Собрать и проверить проект: `gradlew.bat test shadowJar` (Windows, Java 25) или `./gradlew test shadowJar` (Linux, Java 25). Готовый JAR появится в `build/libs`.
+Актуальная сборка для Folia 26 и Java 25: [`outputs/VaultTracker-0.16.4-preview-folia26.jar`](outputs/VaultTracker-0.16.4-preview-folia26.jar). Исходный код находится в `src/main`, тесты — в `src/test`, встроенный сервис пожертвований — в `donations`. Собрать и проверить проект: `gradlew.bat test shadowJar` (Windows, Java 25) или `./gradlew test shadowJar` (Linux, Java 25). Готовый JAR появится в `build/libs`.
 
 Плагин ведёт каталог ресурсов в сундуках с табличкой `[v]` или `[vault]`, обслуживает торгового Telegram-бота FLEXITY, уведомления об изменениях сундуков, личный кабинет и функции администраторов. В поиске собственных ресурсов можно выбрать точный сундук для компаса. Бот умеет показывать администратору участника события и предложить личное сообщение, бан на пять минут и заморозку через установленный Flexity. У обычного игрока имя участника в уведомлении скрыто. Дополнительные настройки прав администратора находятся в меню суперадминистратора.
 
