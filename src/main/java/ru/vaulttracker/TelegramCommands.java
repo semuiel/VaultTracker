@@ -151,12 +151,13 @@ final class TelegramCommands {
     private View ownerPage(String token,Catalogue.OwnerItems owner,int requested) {
         var rows=owner.items().entrySet().stream().sorted(Map.Entry.<String,Long>comparingByValue().reversed()
                 .thenComparing(Map.Entry.comparingByKey())).toList();
-        int pages=pages(rows.size()); int page=clamp(requested,pages);
+        int ownerPageSize=Math.min(pageSize,10);
+        int pages=Math.max(1,(rows.size()+ownerPageSize-1)/ownerPageSize); int page=clamp(requested,pages);
         StringBuilder text=new StringBuilder("📦 Ресурсы ").append(owner.name()).append(" • ").append(page).append('/').append(pages)
                 .append("\nЧтобы вещи появились в этом списке, повесьте на сундук табличку с надписью [v] или [vault].\n\n");
         if(rows.isEmpty()) text.append("В зарегистрированных хранилищах пока нет предметов.");
-        int first=(page-1)*pageSize;
-        for(int i=first;i<Math.min(first+pageSize,rows.size());i++) {
+        int first=(page-1)*ownerPageSize;
+        for(int i=first;i<Math.min(first+ownerPageSize,rows.size());i++) {
             var row=rows.get(i);
             text.append(i+1).append(". ").append(TelegramItemIcons.label(row.getKey())).append(" — ")
                     .append(ItemAmount.format(row.getKey(),row.getValue())).append('\n');

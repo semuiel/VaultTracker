@@ -74,12 +74,14 @@ class TelegramGuardMenuTest {
         when(moderation.worldLabels()).thenReturn(java.util.concurrent.CompletableFuture.completedFuture(Map.of(world,"world")));
         BlockKey chosen=new BlockKey(world,9,64,0);when(moderation.selectOwnCompass(42,owner,chosen)).thenReturn(java.util.concurrent.CompletableFuture.completedFuture("Компас направлен"));
         menu=new TelegramGuardMenu(guard,new TelegramCommands(catalogue,storage,20,v->true),moderation);
-        menu.callback(42,"vg:resourceSearch");var page=menu.input(42,"алмаз");assertEquals(10,page.buttons().stream().filter(b->b.text().startsWith("🧭")).count());
+        menu.callback(42,"vg:resourceSearch");var page=menu.input(42,"алмаз");assertEquals(6,page.buttons().stream().filter(b->b.text().startsWith("🧭")).count());
+        assertTrue(page.text().contains("1/2"));
         assertTrue(page.buttons().stream().anyMatch(b->b.text().equals("🧭 Алмаз ×1")));
-        String token=page.buttons().stream().filter(b->b.text().equals("🧭 Алмаз ×1")).skip(9).findFirst().orElseThrow().data();
+        var second=click(42,page,"Вперёд");assertEquals(6,second.buttons().stream().filter(b->b.text().startsWith("🧭")).count());
+        String token=second.buttons().stream().filter(b->b.text().equals("🧭 Алмаз ×1")).skip(3).findFirst().orElseThrow().data();
         assertTrue(menu.callback(43,token).alert());
         assertNull(menu.callback(42,token).view());verify(moderation).selectOwnCompass(42,owner,chosen);
-        click(42,click(42,page,"Вперёд"),"Назад");verify(moderation,times(1)).pointOwnCompass(eq(42L),eq(owner),anyList());
+        click(42,second,"Назад");verify(moderation,times(1)).pointOwnCompass(eq(42L),eq(owner),anyList());
     }
     @Test void donationCodeWorksWithoutPromptAndHasNoInputDeadline() throws Exception {
         guard.configure(new GuardConfig(true,0,99),Set.of());UUID owner=UUID.randomUUID();

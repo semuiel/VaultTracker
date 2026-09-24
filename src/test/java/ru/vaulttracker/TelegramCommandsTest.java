@@ -24,6 +24,23 @@ class TelegramCommandsTest {
                 Map.of("DIAMOND",10L),1,100);
     }
 
+    @Test void ownerResourcesUseTenTextRowsPerPage() {
+        Catalogue many=new Catalogue(v->{});
+        Map<String,Long> items=new LinkedHashMap<>();
+        for(int i=0;i<22;i++) items.put("ITEM_"+i,(long)(22-i));
+        UUID world=UUID.randomUUID(),owner=UUID.randomUUID();
+        many.register(new BlockKey(world,1,2,3),owner,"Many",List.of(new BlockKey(world,1,2,4)),items,1,100);
+        TelegramCommands paged=new TelegramCommands(many,storage,20,id->true);
+        var first=paged.ownResources(42,owner);
+        assertTrue(first.text().contains("1/3"),first.text());
+        assertTrue(first.text().contains("10. "));
+        assertFalse(first.text().contains("11. "));
+        var second=paged.callback(42,first.buttons().getFirst().data()).view();
+        assertTrue(second.text().contains("2/3"));
+        assertTrue(second.text().contains("11. "));
+        assertFalse(second.text().contains("21. "));
+    }
+
     @Test void topAndPlayerListsUsePrivateInteractivePages() {
         Material diamond=mock(Material.class); when(diamond.getMaxStackSize()).thenReturn(64);
         Material iron=mock(Material.class); when(iron.getMaxStackSize()).thenReturn(64);

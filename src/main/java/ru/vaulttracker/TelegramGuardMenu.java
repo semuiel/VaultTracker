@@ -150,7 +150,7 @@ final class TelegramGuardMenu {
         var account=guard.account(user).get();if(account==null) return home(user);
         BlockKey origin=moderation==null?null:moderation.ownPosition(user,account.uuid()).get();
         Map<UUID,String> worlds=moderation==null?Map.of():moderation.worldLabels().get();
-        var rows=commands.ownSearch(account.uuid(),query,origin);int size=moderation==null?TEXT_PAGE_SIZE:PAGE_SIZE;
+        var rows=commands.ownSearch(account.uuid(),query,origin);int size=moderation==null?TEXT_PAGE_SIZE:6;
         int pages=Math.max(1,(rows.size()+size-1)/size),page=Math.max(0,Math.min(requested,pages-1));
         if(initial && moderation!=null&&origin!=null) moderation.pointOwnCompass(user,account.uuid(),rows);
         StringBuilder text=new StringBuilder("🔎 "+query+" · "+(page+1)+"/"+pages+"\n"+(origin==null?"Игрок офлайн: сортировка по миру и координатам.":"Ближайшие сундуки в вашем мире сначала.")+"\n");
