@@ -25,6 +25,7 @@ import io.papermc.paper.block.TileStateInventoryHolder;
 import org.bukkit.event.world.*;
 import org.bukkit.inventory.*;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.plugin.Plugin;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
@@ -73,6 +74,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
         getServer().getPluginManager().registerEvents(childPlayers,this);childPlayers.start();
         getServer().getPluginManager().registerEvents(searchCompass,this);
         getServer().getPluginManager().registerEvents(this,this);
+        registerVotifier();
         // Vanilla remains the source; a sparse UUID-keyed snapshot protects history across world moves.
         getServer().getGlobalRegionScheduler().runAtFixedRate(this,task->{
             if(stopping) return;
@@ -96,6 +98,29 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
         synchronized(telegramLock) { replaceTelegram(); }
         if(telegramChat!=null) telegramChat.serverEvent(true);
         getLogger().info("VaultTracker " + getPluginMeta().getVersion() + ": каталог ресурсов. /vtrack help");
+    }
+    @SuppressWarnings("unchecked")
+    private void registerVotifier() {
+        Plugin votifier=getServer().getPluginManager().getPlugin("VotifierPlus");
+        if(votifier==null||!votifier.isEnabled()) {getLogger().warning("VotifierPlus не найден: награды за голос сервера выключены.");return;}
+        try {
+            Class<?> raw=Class.forName("com.vexsoftware.votifier.model.VotifierEvent",true,votifier.getClass().getClassLoader());
+            Class<? extends Event> type=(Class<? extends Event>)raw.asSubclass(Event.class);
+            Listener listener=new Listener(){};
+            getServer().getPluginManager().registerEvent(type,listener,EventPriority.MONITOR,(ignored,event)->{
+                try {
+                    Object vote=event.getClass().getMethod("getVote").invoke(event);
+                    String nickname=(String)vote.getClass().getMethod("getUsername").invoke(vote);
+                    String service=(String)vote.getClass().getMethod("getServiceName").invoke(vote);
+                    String timestamp=(String)vote.getClass().getMethod("getTimeStamp").invoke(vote);
+                    Thread.ofVirtual().name("VaultTracker-vote").start(()->{
+                        try {guard.donations.recordServerVote(nickname,service,timestamp);}
+                        catch(Exception failure){getLogger().warning("Голос сервера не записан: "+failure.getClass().getSimpleName()+"; восстановление выполнит повторную проверку.");}
+                    });
+                } catch(Exception failure) {getLogger().warning("Некорректное событие VotifierPlus: "+failure.getClass().getSimpleName());}
+            },this,true);
+            getLogger().info("VotifierPlus подключён: награды за голоса конкретного сервера активны.");
+        } catch(Exception failure) {getLogger().severe("Не удалось подключить VotifierPlus: "+failure.getClass().getSimpleName());}
     }
     private void ensureTelegramConfig() {
         for(String name:List.of("telegram.yml","telegramchat.yml","donations.yml","telegram-menu.yml")) {

@@ -14,6 +14,7 @@ from urllib.parse import parse_qs
 from ledger import Ledger
 from funpay_provider import FunPayProvider
 from vote_providers import configured_providers
+from vote_reconcile import MinecraftRatingHistory
 from voting import VoteService
 
 LOG = logging.getLogger('donations')
@@ -114,6 +115,25 @@ class Service:
             else:
                 self.check_warnings[reason] = (last, skipped + 1)
 
+    def poll_votes(self, stop):
+        item=self.config.get('voting',{}).get('providers',{}).get('minecraft_rating',{})
+        url=item.get('vote_url','')
+        if item.get('reconcile_enabled') is not True or not isinstance(url,str) or not url.startswith('https://minecraftrating.ru/'):
+            return
+        history=MinecraftRatingHistory(url)
+        interval=max(60,int(item.get('reconcile_seconds',300)))
+        while not stop.is_set():
+            try:
+                recovered=0
+                for event in history.fetch():
+                    if self.voting.repository.accept(event)['status']=='pending':
+                        recovered+=1
+                if recovered:
+                    LOG.info('Vote history recovery accepted=%s provider=minecraft_rating',recovered)
+            except Exception as error:
+                LOG.warning('Vote history recovery unavailable (%s); retry scheduled',type(error).__name__)
+            stop.wait(interval)
+
 
 def handler(service):
     class Handler(BaseHTTPRequestHandler):
@@ -179,6 +199,8 @@ def handler(service):
                     result = {'players': service.voting.repository.pending()}
                 elif self.path == '/voting-resolve':
                     result = service.voting.repository.resolve(str(body['nickname']),str(body['owner']),str(body['displayName']))
+                elif self.path == '/voting-record':
+                    result = service.voting.record_votifier(str(body['nickname']),str(body['service']),str(body['timestamp']))
                 else:
                     owner = str(uuid.UUID(body['owner']))
                     if self.path == '/wallet':
@@ -214,6 +236,9 @@ def handler(service):
 
         def minecraft_rating(self, payload):
             try:
+                item=service.config.get('voting',{}).get('providers',{}).get('minecraft_rating',{})
+                if item.get('callback_enabled') is not True:
+                    raise ValueError('provider-disabled')
                 content_type=self.headers.get('Content-Type','').split(';',1)[0].strip().lower()
                 if content_type not in ('','application/x-www-form-urlencoded'):
                     raise ValueError('invalid-content-type')
@@ -283,6 +308,8 @@ def main():
     server = ThreadingHTTPServer((bind_host, config.get('port', 18763)), handler(service))
     thread = threading.Thread(target=service.poll, args=(stop,), daemon=True)
     thread.start()
+    vote_thread = threading.Thread(target=service.poll_votes, args=(stop,), daemon=True)
+    vote_thread.start()
     LOG.info('Payment and voting service listening on %s:%s',bind_host,server.server_port)
     try:
         server.serve_forever()

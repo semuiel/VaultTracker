@@ -11,12 +11,14 @@ from urllib.parse import urlencode
 from ledger import Ledger
 from service import Service, handler
 from vote_providers import MinecraftRatingProvider, VoteEvent
+from vote_reconcile import MinecraftRatingHistory
 from voting import VoteRepository, VoteService
 
 
 def config(reward=500, enabled=True):
     return {'api_key':'a'*48,'voting':{'providers':{'minecraft_rating':{
-        'enabled':enabled,'reward_minor':reward,'secret':'secret-value','vote_url':'https://minecraftrating.ru/'}}}}
+        'enabled':enabled,'reward_minor':reward,'secret':'secret-value','vote_url':'https://minecraftrating.ru/',
+        'callback_enabled':True}}}}
 
 
 def callback(username='Player_1', timestamp='1700000000', secret='secret-value', **changes):
@@ -85,6 +87,22 @@ class VotingTests(unittest.TestCase):
         repo.update('minecraft_rating','root',enabled=False)
         self.assertTrue(next(p for p in repo.providers_view() if p['id']=='other')['enabled'])
         self.assertEqual(700,repo.resolve('Player_1',self.owner,'Player_1')['creditedMinor'])
+
+    def test_history_parser_and_callback_in_same_minute_are_one_vote(self):
+        html='''<h3>Последние 10 голосов:</h3><table><tbody><tr><td class="player-nick"><img> Player_1</td>
+            <td>14.09.2026, в 12:34</td></tr></tbody></table>'''
+        event=MinecraftRatingHistory.parse(html)[0]
+        self.assertEqual('Player_1',event.nickname)
+        self.assertEqual('pending',self.service.repository.accept(event)['status'])
+        same_minute=str(event.source_timestamp+25)
+        self.assertEqual('duplicate',self.service.callback('minecraft_rating',callback(timestamp=same_minute))['status'])
+        self.assertEqual(1,self.service.repository.pending()[0]['count'])
+
+    def test_votifier_record_is_idempotent(self):
+        first=self.service.record_votifier('Player_1','MinecraftRating.ru','1700001234')
+        second=self.service.record_votifier('Player_1','MinecraftRating.ru','1700001234')
+        self.assertEqual('pending',first['status'])
+        self.assertEqual('duplicate',second['status'])
 
 
 class VotingHttpTests(unittest.TestCase):

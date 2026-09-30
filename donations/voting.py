@@ -1,9 +1,11 @@
 """Durable voting domain. Uses the donation wallet transaction, but no payment provider code."""
+import hashlib
 import re
 import time
 import uuid
 
 from ledger import Ledger
+from vote_providers import VoteEvent
 
 
 class VoteRepository:
@@ -92,6 +94,15 @@ class VoteRepository:
             setting=db.execute('SELECT * FROM vote_provider_settings WHERE provider=?',(event.provider,)).fetchone()
             existing=db.execute('SELECT * FROM vote_events WHERE provider=? AND replay_key=?',
                                 (event.provider,event.replay_key)).fetchone()
+            if not existing:
+                minute=event.source_timestamp-event.source_timestamp%60
+                history=event.replay_key.startswith('history:')
+                sql=('SELECT * FROM vote_events WHERE provider=? AND normalized_nickname=? '
+                     'AND source_timestamp BETWEEN ? AND ?')
+                args=[event.provider,event.nickname.lower(),minute,minute+59]
+                if not history:
+                    sql += " AND replay_key LIKE 'history:%'"
+                existing=db.execute(sql,args).fetchone()
             if existing:
                 return {'id':existing['id'],'status':'duplicate'}
             if not setting or not setting['enabled']:
@@ -162,3 +173,14 @@ class VoteService:
         if provider is None:
             raise ValueError('unknown-provider')
         return self.repository.accept(provider.parse(fields))
+
+    def record_votifier(self, nickname, service_name, timestamp):
+        if not re.fullmatch(r'[A-Za-z0-9_]{1,16}',nickname or ''):
+            raise ValueError('invalid-fields')
+        if not isinstance(service_name,str) or not 1 <= len(service_name) <= 80:
+            raise ValueError('invalid-fields')
+        text=str(timestamp)
+        if not text.isdigit() or int(text)<=0:
+            raise ValueError('invalid-fields')
+        replay=hashlib.sha256(('minecraft_rating\0votifier\0'+service_name+'\0'+nickname.lower()+'\0'+text).encode()).hexdigest()
+        return self.repository.accept(VoteEvent('minecraft_rating',nickname,int(text),replay))

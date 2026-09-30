@@ -75,6 +75,10 @@ final class DonationClient {
             call("voting-resolve",body);
         }
     }
+    void recordServerVote(String nickname,String service,String timestamp) throws Exception {
+        var body=new JsonObject();body.addProperty("nickname",nickname);body.addProperty("service",service);body.addProperty("timestamp",timestamp);
+        call("voting-record",body);
+    }
     private static JsonObject owner(UUID owner) {var body=new JsonObject();body.addProperty("owner",owner.toString());return body;}
     static String money(long minor) {return java.math.BigDecimal.valueOf(minor,2).toPlainString();}
 }

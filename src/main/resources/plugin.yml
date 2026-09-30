@@ -5,7 +5,7 @@ name: VaultTracker
 
 version: 0.12.1-folia26
 
-softdepend: [flexity, Bastion, bastion, LuckPerms]
+softdepend: [flexity, Bastion, bastion, LuckPerms, VotifierPlus]
 
 main: ru.vaulttracker.VaultTrackerPlugin
 

@@ -15,7 +15,10 @@
         "enabled": false,
         "reward_minor": 500,
         "secret": "",
-        "vote_url": ""
+        "vote_url": "",
+        "callback_enabled": false,
+        "reconcile_enabled": true,
+        "reconcile_seconds": 300
       }
     }
   }
