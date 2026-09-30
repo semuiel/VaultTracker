@@ -1,10 +1,21 @@
+# Служебное описание плагина: команды и права.
+# Это не пользовательский конфиг. Версию при сборке подставляет Gradle.
+
 name: VaultTracker
+
 version: 0.12.1-folia26
+
 softdepend: [flexity, Bastion, bastion, LuckPerms]
+
 main: ru.vaulttracker.VaultTrackerPlugin
+
 api-version: '26.1.2'
+
 folia-supported: true
+
 description: Chest resource catalogue with durable MariaDB synchronization
+
+# Игровые команды и их псевдонимы.
 commands:
   unlink:
     description: Unlink your Minecraft character from Telegram
@@ -22,6 +33,8 @@ commands:
   vaulttracker:
     description: Chest catalogue commands
     aliases: [vtrack]
+
+# Права доступа. default определяет доступ по умолчанию.
 permissions:
   vaulttracker.message:
     default: true
