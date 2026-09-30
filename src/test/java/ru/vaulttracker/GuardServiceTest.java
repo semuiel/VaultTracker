@@ -76,6 +76,16 @@ class GuardServiceTest {
         guard.presence(second,"OldNick",true);guard.account(0).get();
         assertNull(guard.knownPlayerUuid("OldNick"));
     }
+    @Test void serverVotesStayQueuedAcrossRestartUntilPaymentServiceAcceptsThem() throws Exception {
+        guard.queueServerVote("Player_1","MinecraftRating.ru","1700001234").get();
+        guard.queueServerVote("Player_1","MinecraftRating.ru","1700001234").get();
+        assertEquals(1,guard.pendingServerVotes(10).get().size());
+        String id=guard.pendingServerVotes(10).get().getFirst().id();
+        guard.close();guard=open();
+        assertEquals(id,guard.pendingServerVotes(10).get().getFirst().id());
+        guard.serverVoteDelivered(id).get();
+        assertTrue(guard.pendingServerVotes(10).get().isEmpty());
+    }
     @Test void directMessagesPersistUnreadAndUseUuidAcrossNameChange() throws Exception {
         UUID alice=UUID.randomUUID(),bob=UUID.randomUUID(),carol=UUID.randomUUID();
         guard.link(alice,"Alice",code(41)).get();guard.link(bob,"Bob",code(42)).get();guard.link(carol,"Carol",code(43)).get();

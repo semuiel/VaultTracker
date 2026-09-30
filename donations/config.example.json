@@ -17,7 +17,7 @@
         "secret": "",
         "vote_url": "",
         "callback_enabled": false,
-        "reconcile_enabled": true,
+        "reconcile_enabled": false,
         "reconcile_seconds": 300
       }
     }

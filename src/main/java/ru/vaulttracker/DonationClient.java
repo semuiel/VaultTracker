@@ -79,6 +79,14 @@ final class DonationClient {
         var body=new JsonObject();body.addProperty("nickname",nickname);body.addProperty("service",service);body.addProperty("timestamp",timestamp);
         call("voting-record",body);
     }
+    JsonArray voteNotifications() throws Exception {
+        var body=new JsonObject();body.addProperty("limit",50);
+        return call("voting-notifications",body).getAsJsonArray("notifications");
+    }
+    void voteNotificationAck(String id,boolean success) throws Exception {
+        var body=new JsonObject();body.addProperty("id",id);body.addProperty("success",success);
+        call("voting-notification-ack",body);
+    }
     private static JsonObject owner(UUID owner) {var body=new JsonObject();body.addProperty("owner",owner.toString());return body;}
     static String money(long minor) {return java.math.BigDecimal.valueOf(minor,2).toPlainString();}
 }

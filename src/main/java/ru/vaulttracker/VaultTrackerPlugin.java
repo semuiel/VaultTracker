@@ -27,7 +27,7 @@ import org.bukkit.inventory.*;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.plugin.Plugin;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.*;
 import java.util.regex.Pattern;
 
 public final class VaultTrackerPlugin extends JavaPlugin implements Listener, TabExecutor {
@@ -42,6 +42,8 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
     private ChildPlayers childPlayers;
     private final Object telegramLock=new Object();
     private final Set<BlockKey> scheduled = ConcurrentHashMap.newKeySet();
+    private final ScheduledExecutorService voteDeliveries=Executors.newSingleThreadScheduledExecutor(
+            task->Thread.ofVirtual().name("VaultTracker-vote-delivery").unstarted(task));
     private volatile boolean stopping;
     private volatile long debounceTicks;
     private volatile int playerLimit;
@@ -75,6 +77,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
         getServer().getPluginManager().registerEvents(searchCompass,this);
         getServer().getPluginManager().registerEvents(this,this);
         registerVotifier();
+        voteDeliveries.scheduleWithFixedDelay(this::deliverServerVotes,2,10,TimeUnit.SECONDS);
         // Vanilla remains the source; a sparse UUID-keyed snapshot protects history across world moves.
         getServer().getGlobalRegionScheduler().runAtFixedRate(this,task->{
             if(stopping) return;
@@ -113,14 +116,26 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
                     String nickname=(String)vote.getClass().getMethod("getUsername").invoke(vote);
                     String service=(String)vote.getClass().getMethod("getServiceName").invoke(vote);
                     String timestamp=(String)vote.getClass().getMethod("getTimeStamp").invoke(vote);
-                    Thread.ofVirtual().name("VaultTracker-vote").start(()->{
-                        try {guard.donations.recordServerVote(nickname,service,timestamp);}
-                        catch(Exception failure){getLogger().warning("Голос сервера не записан: "+failure.getClass().getSimpleName()+"; восстановление выполнит повторную проверку.");}
+                    guard.queueServerVote(nickname,service,timestamp).exceptionally(failure->{
+                        getLogger().severe("Голос VotifierPlus не сохранён в локальную очередь: "+failure.getClass().getSimpleName());return null;
                     });
                 } catch(Exception failure) {getLogger().warning("Некорректное событие VotifierPlus: "+failure.getClass().getSimpleName());}
             },this,true);
             getLogger().info("VotifierPlus подключён: награды за голоса конкретного сервера активны.");
         } catch(Exception failure) {getLogger().severe("Не удалось подключить VotifierPlus: "+failure.getClass().getSimpleName());}
+    }
+    private void deliverServerVotes() {
+        if(stopping||guard==null) return;
+        try {
+            for(var vote:guard.pendingServerVotes(100).get()) {
+                if(stopping) return;
+                try {guard.donations.recordServerVote(vote.nickname(),vote.service(),vote.timestamp());}
+                catch(Exception unavailable) {getLogger().fine("Платёжный сервис недоступен; голос остаётся в локальной очереди.");return;}
+                guard.serverVoteDelivered(vote.id()).get();
+            }
+            guard.donations.resolveKnownVotes(guard);
+        } catch(InterruptedException interrupted) {Thread.currentThread().interrupt();}
+        catch(Exception failure) {getLogger().fine("Очередь голосов ожидает следующей попытки: "+failure.getClass().getSimpleName());}
     }
     private void ensureTelegramConfig() {
         for(String name:List.of("telegram.yml","telegramchat.yml","donations.yml","telegram-menu.yml")) {
@@ -621,6 +636,8 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
     }
     @Override public void onDisable() {
         stopping=true;
+        voteDeliveries.shutdownNow();
+        try {voteDeliveries.awaitTermination(5,TimeUnit.SECONDS);} catch(InterruptedException interrupted) {Thread.currentThread().interrupt();}
         getServer().getGlobalRegionScheduler().cancelTasks(this);
         synchronized(telegramLock) { if(telegram!=null) { telegram.close(); telegram=null; } if(telegramChat!=null) {telegramChat.shutdown();telegramChat=null;} }
         if (storage != null) storage.close();

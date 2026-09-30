@@ -26,13 +26,13 @@
 
 ## MinecraftRating
 
-Официальный `promotion.php` принимает `POST application/x-www-form-urlencoded` с полями `username`, `ip`, `timestamp`, `signature`. Подпись равна `SHA1(username + timestamp + SECRET_KEY)`. Успешный ответ — `ok`; ошибка — HTTP 500 с `site_error`. Уникального ID в callback нет, поэтому replay key строится из подписанных nickname и timestamp. Повтор получает `ok`, но не начисляет награду второй раз.
+Для награды за голос конкретного сервера MinecraftRating отправляет голос в VotifierPlus. На странице сервера укажите публичный адрес и внешний TCP-порт, публичный ключ возьмите из `plugins/VotifierPlus/rsa/public.key`. В роутере внешний порт направляется на внутренний порт из `plugins/VotifierPlus/config.yml`.
 
-Добавьте в закрытый `config.local.json` секцию `voting` по образцу `config.example.json`. `secret` — Secret Key проекта MinecraftRating, `reward_minor: 500` означает 5.00 монет, `vote_url` показывается игрокам, но secret никогда не возвращается Java-плагину. Root меняет только enabled и reward; изменения сохраняются в SQLite и действуют на будущие голоса.
+Добавьте в закрытый `config.local.json` секцию `voting` по образцу `config.example.json`. `reward_minor: 500` означает 5.00 монет, а `vote_url` ведёт на страницу конкретного сервера. Для Votifier-варианта `callback_enabled` и `reconcile_enabled` оставьте выключенными. Root меняет enabled и reward; изменения сохраняются в SQLite и действуют на будущие голоса.
 
-Endpoint: `POST /voting/minecraft-rating`. MinecraftRating должен видеть полный публичный HTTP/HTTPS URL. При локальном reverse proxy оставьте `bind_host: "127.0.0.1"`; если прокси нет, используйте `bind_host: "0.0.0.0"` и ограничьте firewall только нужным портом. При внешнем bind финансовые маршруты всё равно отвергают не-localhost клиентов. TLS и домен настраиваются вне VaultTracker.
+VaultTracker сохраняет событие VotifierPlus в локальной H2-очереди до ответа платёжного сервиса. Временная остановка Python-процесса поэтому не теряет голос. После начисления Python-сервис хранит отдельное уведомление до успешной отправки связанному Telegram-пользователю.
 
-Валидный голос сохраняется как pending, пока Java не сопоставит ник с единственным известным серверу UUID. Затем `vote:<internal-id>` атомарно зачисляет reward в общий donation wallet, а событие получает UUID, отображаемый ник, provider, source/received/credited timestamps и фактическую сумму. История и индексы позволяют позже строить TOP по UUID, provider, периоду и сумме.
+Валидный голос сохраняется как pending, пока Java не сопоставит ник с единственным известным серверу UUID. Затем `vote:<internal-id>` атомарно зачисляет reward в общий donation wallet, а событие получает UUID, отображаемый ник, provider, source/received/credited timestamps и фактическую сумму. Повтор одного события не начисляет награду второй раз.
 
 Для нового сайта добавьте подкласс `VoteProvider` в `vote_providers.py`, его config и регистрацию в `configured_providers`. Общие таблицы, начисление, статистика и Java UI менять не требуется.
 

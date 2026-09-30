@@ -104,6 +104,17 @@ class VotingTests(unittest.TestCase):
         self.assertEqual('pending',first['status'])
         self.assertEqual('duplicate',second['status'])
 
+    def test_credit_notification_is_durable_and_contains_current_balance(self):
+        self.service.record_votifier('Player_1','MinecraftRating.ru','1700001234')
+        self.service.repository.resolve('Player_1',self.owner,'Player_1')
+        notice=self.service.repository.notifications()[0]
+        self.assertEqual((self.owner,'Player_1',500,500),
+                         (notice['owner'],notice['nickname'],notice['rewardMinor'],notice['balanceMinor']))
+        restarted=VoteService(config(),Ledger(self.path),{'minecraft_rating':MinecraftRatingProvider(config()['voting']['providers']['minecraft_rating'])})
+        self.assertEqual(notice['id'],restarted.repository.notifications()[0]['id'])
+        restarted.repository.acknowledge_notification(notice['id'])
+        self.assertEqual([],restarted.repository.notifications())
+
 
 class VotingHttpTests(unittest.TestCase):
     def test_form_endpoint_matches_official_contract_and_payment_api_still_works(self):
@@ -128,6 +139,11 @@ class VotingHttpTests(unittest.TestCase):
                 self.assertEqual('Player_1',json.loads(pending)['players'][0]['nickname'])
                 status,resolved=post('/voting-resolve',{'nickname':'Player_1','owner':owner,'displayName':'Player_1'},auth=True)
                 self.assertEqual(1,json.loads(resolved)['votes'])
+                status,notices=post('/voting-notifications',{'limit':20},auth=True);self.assertEqual(200,status)
+                notice=json.loads(notices)['notifications'][0]
+                self.assertEqual((owner,500),(notice['owner'],notice['rewardMinor']))
+                self.assertEqual(200,post('/voting-notification-ack',{'id':notice['id'],'success':True},auth=True)[0])
+                self.assertEqual([],json.loads(post('/voting-notifications',{},auth=True)[1])['notifications'])
                 status,wallet=post('/wallet',{'owner':owner},auth=True);self.assertEqual(500,json.loads(wallet)['balanceMinor'])
                 self.assertEqual(500,post('/voting/minecraft-rating',callback(signature='wrong'),True)[0])
                 self.assertEqual(500,post('/voting/minecraft-rating',{'username':'Player_1'},True)[0])

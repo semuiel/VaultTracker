@@ -30,6 +30,11 @@ class VoteRepository:
                 CREATE TABLE IF NOT EXISTS vote_settings_audit(
                     id INTEGER PRIMARY KEY AUTOINCREMENT, actor TEXT NOT NULL, provider TEXT NOT NULL,
                     setting TEXT NOT NULL, old_value TEXT NOT NULL, new_value TEXT NOT NULL, created INTEGER NOT NULL);
+                CREATE TABLE IF NOT EXISTS vote_notifications(
+                    event_id TEXT PRIMARY KEY, owner TEXT NOT NULL, nickname TEXT NOT NULL,
+                    reward INTEGER NOT NULL, created INTEGER NOT NULL,
+                    delivered INTEGER NOT NULL DEFAULT 0, due INTEGER NOT NULL DEFAULT 0);
+                CREATE INDEX IF NOT EXISTS vote_notifications_due ON vote_notifications(delivered,due,created);
             ''')
             configured = config.get('voting', {}).get('providers', {})
             now = int(time.time())
@@ -133,8 +138,32 @@ class VoteRepository:
                 Ledger.entry(db,'vote:'+row['id'],owner,row['actual_reward'])
                 db.execute("UPDATE vote_events SET owner=?,display_nickname=?,credited=?,status='credited' WHERE id=? AND status='pending'",
                            (owner,display_name,now,row['id']))
+                db.execute('INSERT OR IGNORE INTO vote_notifications(event_id,owner,nickname,reward,created) VALUES(?,?,?,?,?)',
+                           (row['id'],owner,display_name,row['actual_reward'],now))
                 credited+=row['actual_reward'];votes+=1
         return {'votes':votes,'creditedMinor':credited}
+
+    def notifications(self, limit=20):
+        limit=max(1,min(int(limit),100))
+        with self.ledger.connection() as db:
+            rows=db.execute('''SELECT n.event_id AS id,n.owner,n.nickname,n.reward AS rewardMinor,
+                COALESCE(w.balance,0) AS balanceMinor
+                FROM vote_notifications n LEFT JOIN wallets w ON w.owner=n.owner
+                WHERE n.delivered=0 AND n.due<=? ORDER BY n.created,n.event_id LIMIT ?''',
+                (int(time.time()),limit)).fetchall()
+            return [dict(row) for row in rows]
+
+    def acknowledge_notification(self, event_id, success=True):
+        if not isinstance(event_id,str) or not re.fullmatch(r'[0-9a-f]{32}',event_id):
+            raise ValueError('Invalid notification')
+        if type(success) is not bool:
+            raise ValueError('Invalid notification state')
+        with self.ledger.connection() as db:
+            if success:
+                db.execute('UPDATE vote_notifications SET delivered=1 WHERE event_id=?',(event_id,))
+            else:
+                db.execute('UPDATE vote_notifications SET due=? WHERE event_id=? AND delivered=0',
+                           (int(time.time())+300,event_id))
 
     def statistics(self, provider=None):
         if provider is not None and provider not in self.providers:

@@ -201,6 +201,11 @@ def handler(service):
                     result = service.voting.repository.resolve(str(body['nickname']),str(body['owner']),str(body['displayName']))
                 elif self.path == '/voting-record':
                     result = service.voting.record_votifier(str(body['nickname']),str(body['service']),str(body['timestamp']))
+                elif self.path == '/voting-notifications':
+                    result = {'notifications': service.voting.repository.notifications(body.get('limit',20))}
+                elif self.path == '/voting-notification-ack':
+                    service.voting.repository.acknowledge_notification(str(body['id']),body.get('success',True))
+                    result = {'ok': True}
                 else:
                     owner = str(uuid.UUID(body['owner']))
                     if self.path == '/wallet':

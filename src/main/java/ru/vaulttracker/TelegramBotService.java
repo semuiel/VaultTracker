@@ -2,6 +2,7 @@ package ru.vaulttracker;
 
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.*;
 import java.util.logging.Logger;
@@ -47,7 +48,7 @@ final class TelegramBotService implements AutoCloseable {
         commands.adminAccess(this::isAdmin);
         worker=Thread.ofVirtual().name("VaultTracker-telegram").unstarted(this::run);
     }
-    void start() {worker.start();if(guard!=null) {donationNotifications.scheduleWithFixedDelay(this::notifyDonations,60,60,TimeUnit.SECONDS);donationNotifications.scheduleWithFixedDelay(()->{try {guard.donations.resolveKnownVotes(guard);if(moderation!=null) moderation.syncDonations();}catch(Exception | LinkageError pending){log.fine("Синхронизация премиума или голосов ожидает повторения.");}},5,10,TimeUnit.SECONDS);if(support!=null) {notifications.scheduleWithFixedDelay(support::expirePending,5,15,TimeUnit.SECONDS);notifications.scheduleWithFixedDelay(support::retryDeliveries,5,15,TimeUnit.SECONDS);}} }
+    void start() {worker.start();if(guard!=null) {donationNotifications.scheduleWithFixedDelay(this::notifyDonations,60,60,TimeUnit.SECONDS);donationNotifications.scheduleWithFixedDelay(()->{try {notifyVoteCredits();if(moderation!=null) moderation.syncDonations();}catch(Exception | LinkageError pending){log.fine("Синхронизация премиума или голосов ожидает повторения.");}},5,10,TimeUnit.SECONDS);if(support!=null) {notifications.scheduleWithFixedDelay(support::expirePending,5,15,TimeUnit.SECONDS);notifications.scheduleWithFixedDelay(support::retryDeliveries,5,15,TimeUnit.SECONDS);}} }
     private void notifyDonations() {
         if(stopping.get()) return;
         try {
@@ -69,6 +70,19 @@ final class TelegramBotService implements AutoCloseable {
             }
         } catch(InterruptedException interrupted) {Thread.currentThread().interrupt();}
         catch(Exception unavailable) {log.fine("Сервис пожертвований временно недоступен.");}
+    }
+    private void notifyVoteCredits() throws Exception {
+        for(var item:guard.donations.voteNotifications()) {
+            var notification=item.getAsJsonObject();String id=notification.get("id").getAsString();
+            UUID owner=UUID.fromString(notification.get("owner").getAsString());
+            long user=guard.linkedTelegram(owner).get();
+            if(user<=0) {guard.donations.voteNotificationAck(id,false);continue;}
+            String text="🗳 Голос за FLEXITY учтён.\nНачислено: "+DonationClient.money(notification.get("rewardMinor").getAsLong())+
+                    ".\nБаланс: "+DonationClient.money(notification.get("balanceMinor").getAsLong())+".";
+            try {api.send(user,notificationTopic(user),new TelegramCommands.View(text));}
+            catch(Exception unavailable) {guard.donations.voteNotificationAck(id,false);continue;}
+            guard.donations.voteNotificationAck(id,true);
+        }
     }
     void chatBridge(TelegramChatBridge bridge) {chatBridge=bridge;}
     private boolean isAdmin(long user) {return guard==null ? config.admin(user) : guard.admin(user);}
