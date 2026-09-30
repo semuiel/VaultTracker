@@ -26,25 +26,90 @@ class CabinetRolesTest {
     void link(long tg,UUID uuid) throws Exception {String code=guard.generate(tg).get().split("/vtrack link ")[1].substring(0,GuardService.LINK_CODE_LENGTH);guard.link(uuid,"Player"+tg,code).get();}
     @AfterEach void close() {guard.close();}
     String button(TelegramCommands.View view,String text) {return view.buttons().stream().filter(b->b.text().contains(text)).findFirst().orElseThrow().data();}
-    TelegramCommands.View click(long user,TelegramCommands.View view,String text) throws Exception {return menu.callback(user,button(view,text)).view();}
+    TelegramCommands.View click(long user,TelegramCommands.View view,String text) throws Exception {
+        String label=switch(text) {case "Бан на 5 минут" -> "Бан 5 мин";case "Скорость полёта" -> "Полёт";
+            case "Скорость передвижения" -> "Ходьба";case "на координаты" -> "На координаты";
+            case "к игроку" -> "К игроку";case "Отправить сообщение в игровой чат" -> "В игровой чат";default -> text;};
+        for(int i=0;i<10;i++) {
+            var match=view.buttons().stream().filter(b->b.text().contains(label)).findFirst();
+            if(match.isPresent()) return menu.callback(user,match.get().data()).view();
+            var next=view.buttons().stream().filter(b->b.text().contains("Вперёд")).findFirst();
+            if(next.isEmpty()) break;
+            view=menu.callback(user,next.get().data()).view();
+        }
+        throw new NoSuchElementException("Кнопка: "+text);
+    }
     Snapshot snap(UUID uuid,long amount,long revision) {return new Snapshot(new BlockKey(world,uuid.equals(owner) ? 1 : 2,64,0),generation,uuid,"SameName",List.of(new BlockKey(world,uuid.equals(owner) ? 1 : 2,64,1)),Map.of("DIAMOND",amount),true,clock.get(),revision);}
     @Test void cabinetRowsAndSettingsAreSeparatedByRole() throws Exception {
-        var home=menu.home(42);assertEquals(List.of("📦 Мои ресурсы","📜 События","⚙️ Настройки игрока","⌂ Меню"),home.buttons().stream().map(TelegramCommands.Button::text).toList());
+        var home=menu.home(42);assertEquals(List.of("📦 Мои ресурсы","📊 Статистика","⚙️ Настройки","💬 Сообщения","⌂ Меню"),home.buttons().stream().map(TelegramCommands.Button::text).toList());
         assertFalse(menu.home(99).buttons().stream().anyMatch(b->b.text().contains("Супер")));
-        assertTrue(menu.home(500).buttons().stream().anyMatch(b->b.row()==5 && b.text().contains("Супер")));
-        var settings=click(42,home,"Настройки");assertNotNull(button(settings,"Отключить мои"));assertNotNull(button(settings,"Всегда"));assertNotNull(button(settings,"2 дня"));
-        assertNotNull(button(settings,"Применить тег"));assertNotNull(button(settings,"Сбросить тег"));
+        assertTrue(menu.home(500).buttons().stream().anyMatch(b->b.text().equals("🛠 Админ")));
+        var settings=click(42,home,"Настройки");assertNotNull(button(settings,"🔔 Уведомления"));assertNotNull(button(settings,"🏷 Тег"));
+        assertFalse(settings.buttons().stream().anyMatch(b->b.text().contains("Всегда")||b.text().contains("Применить тег")));
+        var notifications=click(42,settings,"Уведомления");var own=click(42,notifications,"Личные уведомления");
+        assertNotNull(button(own,"Всегда"));assertNotNull(button(own,"2 дня"));
+        var tag=click(42,settings,"Тег");assertNotNull(button(tag,"Применить тег"));assertNotNull(button(tag,"Сбросить тег"));
+    }
+    @Test void itemSortingMenuPersistsChoiceAndReturnsToSettings() throws Exception {
+        var settings=click(42,menu.home(42),"Настройки");
+        var sorting=click(42,settings,"Сортировка предметов");
+        assertTrue(sorting.buttons().stream().anyMatch(b->b.text().equals("✅ 🌍 Популярное в Minecraft")));
+        sorting=click(42,sorting,"По количеству");
+        assertTrue(sorting.buttons().stream().anyMatch(b->b.text().equals("✅ 📊 По количеству")));
+        assertEquals(ItemSorting.Mode.AMOUNT,guard.itemSortMode(42));
+        assertTrue(click(42,sorting,"Назад").buttons().stream().anyMatch(b->b.text().contains("Сортировка предметов")));
+    }
+    @Test void superAdminPreviewUsesRegularAdminActionsAndResourcesLeadToEvents() throws Exception {
+        guard.changeAdmin(500,77,true).get();
+        var superCabinet=menu.home(500);
+        assertFalse(superCabinet.buttons().stream().anyMatch(b->b.text().contains("Суперадминистратор")));
+        var adminMenu=click(500,superCabinet,"🛠 Админ");
+        assertEquals(List.of("🛠 Функции администратора","👑 Суперадминистратор","↩️ Назад","⌂ Меню"),
+                adminMenu.buttons().stream().map(TelegramCommands.Button::text).toList());
+        var normal=click(77,menu.home(77),"Функции администратора");
+        var preview=click(500,adminMenu,"Функции администратора");
+        assertEquals(normal.buttons().stream().map(TelegramCommands.Button::text).toList(),
+                preview.buttons().stream().map(TelegramCommands.Button::text).toList());
+        var person=new TelegramModeration.Person(other,"Target",true,"");
+        when(moderation.players(500,"online")).thenReturn(CompletableFuture.completedFuture(List.of(person)));
+        when(moderation.info(500,other)).thenReturn(CompletableFuture.completedFuture(person));
+        var card=click(500,click(500,preview,"Список игроков"),"Target");
+        assertFalse(card.buttons().stream().anyMatch(b->b.text().contains("Забанить")));
+        guard.capability(500,"permanentBan",true).get();
+        card=click(500,click(500,card,"К игрокам"),"Target");
+        assertTrue(card.buttons().stream().anyMatch(b->b.text().contains("Забанить")));
+        var resources=click(42,menu.home(42),"Мои ресурсы");
+        var events=click(42,resources,"События");
+        assertTrue(click(42,events,"Назад").buttons().stream().anyMatch(b->b.text().contains("События")));
     }
     @Test void rootButtonBelongsOnlyToConfiguredMainSuperAdmin() throws Exception {
         guard.changeSuper(500,501,true).get();
-        var main=click(500,menu.home(500),"Суперадминистратор");
-        var extra=click(501,menu.home(501),"Суперадминистратор");
+        var main=click(500,click(500,menu.home(500),"🛠 Админ"),"Суперадминистратор");
+        var extra=click(501,click(501,menu.home(501),"🛠 Админ"),"Суперадминистратор");
         String rootButton=button(main,"Root");
         assertFalse(extra.buttons().stream().anyMatch(b->b.text().contains("Root")));
         assertTrue(menu.callback(501,rootButton).alert());
-        assertTrue(menu.callback(500,rootButton).view().text().contains("Функции этого раздела"));
+        var root=menu.callback(500,rootButton).view();
+        var supers=click(500,root,"Суперадминистраторы");
+        assertTrue(supers.buttons().stream().anyMatch(b->b.text().contains("ID 501")));
+        assertFalse(supers.buttons().stream().anyMatch(b->b.text().contains("ID 99")));
+        String reload=button(root,"Перезагрузить"),children=button(root,"Дети");
+        click(500,supers,"Добавить суперадминистратора");
+        var confirmation=menu.input(500,"502");
+        String grant=button(confirmation,"Подтвердить");
+        assertThrows(ExecutionException.class,()->guard.changeSuper(501,502,true).get());
+        assertThrows(ExecutionException.class,()->guard.child(501,owner,"Player",true).get());
+        assertThrows(SecurityException.class,()->guard.children(501));
+        var ordinary=click(501,extra,"Администраторы бота");
+        assertFalse(ordinary.buttons().stream().anyMatch(b->b.text().contains("суперадминистратора") || b.text().contains("ID 500") || b.text().contains("ID 501")));
+        assertFalse(extra.buttons().stream().anyMatch(b->b.text().contains("Дети") || b.text().contains("Перезагрузить")));
         guard.configure(new GuardConfig(true,120000,0),Set.of(99L));
         assertThrows(SecurityException.class,()->menu.callback(500,rootButton));
+        assertThrows(SecurityException.class,()->menu.callback(500,reload));
+        assertThrows(SecurityException.class,()->menu.callback(500,children));
+        assertThrows(SecurityException.class,()->menu.callback(500,grant));
+        assertFalse(guard.superAdmin(502));
+        verify(moderation,never()).reloadPlugin(500);
     }
     @Test void linkedCabinetShowsHeartsAndCurrentCoordinates() throws Exception {
         when(moderation.cabinetProfile(42,owner)).thenReturn(CompletableFuture.completedFuture(
@@ -54,8 +119,8 @@ class CabinetRolesTest {
         assertTrue(home.text().contains("\n\nГолод: ◆◆◆◆◆◆◇○○○"),home.text());
         var rendered=TelegramEmojiMarkup.html(home.text());assertTrue(rendered.custom());assertTrue(rendered.text().startsWith("<b>"));assertTrue(rendered.text().endsWith("</b>"));
         assertFalse(home.text().contains("17/20"),home.text());
-        assertTrue(TelegramEmojiMarkup.plain(home.text()).contains("📍 Координаты: world · 223 64 1004"),home.text());
-        assertTrue(TelegramEmojiMarkup.plain(home.text()).contains("⏱ Наиграно: 1 дн. 1 ч. 1 мин."),home.text());
+        assertTrue(TelegramEmojiMarkup.plain(home.text()).contains("📍 world · 223 64 1004"),home.text());
+        assertTrue(TelegramEmojiMarkup.plain(home.text()).contains("⏱ 1 дн. 1 ч. 1 мин."),home.text());
         assertTrue(TelegramEmojiMarkup.html(home.text()).text().contains("world · </b><code>223 64 1004</code>"),TelegramEmojiMarkup.html(home.text()).text());
     }
     @Test void cabinetOmitsUnknownFirstJoinInsteadOfShowingNoData() throws Exception {
@@ -63,12 +128,12 @@ class CabinetRolesTest {
                 new TelegramModeration.CabinetProfile(false,20.0,20.0,20,"world",1,64,2,0,3600L)));
         assertFalse(TelegramEmojiMarkup.plain(menu.home(42).text()).contains("Первый вход:"));
     }
-    @Test void personalHistoryUsesUuidAnd48HoursAndNeverExposesActor() throws Exception {
+    @Test void personalHistoryUsesUuidAnd48HoursAndShowsActorName() throws Exception {
         guard.restore(List.of(snap(owner,10,1),snap(other,10,1)));clock.addAndGet(120001);
         guard.attribute(snap(owner,10,1).sign(),"Actor");guard.accept(snap(owner,9,2));guard.accept(snap(other,8,2));
-        var own=guard.ownHistory(42,0,10).get();assertEquals(1,own.size());assertNull(own.getFirst().actor());
+        var own=guard.ownHistory(42,0,10).get();assertEquals(1,own.size());assertEquals("Actor",own.getFirst().actor());
         assertNull(guard.ownEvent(43,own.getFirst().id()).get());
-        var events=click(42,menu.home(42),"События");var view=click(42,click(42,events,"Список событий"),"#");assertFalse(view.text().contains("Actor"));assertFalse(view.text().contains("Кто изменил"));
+        var events=click(42,click(42,menu.home(42),"Мои ресурсы"),"События");var view=click(42,click(42,events,"Список событий"),"#");assertTrue(view.text().contains("Кто изменил: Actor"));
         clock.addAndGet(2L*86400_000+1);assertTrue(guard.ownHistory(42,0,10).get().isEmpty());assertEquals(2,guard.history(99,0,10).get().size());
     }
     @Test void onlineNotificationsAndSuperDelayAreIndependentOfAdminDelay() throws Exception {
@@ -78,7 +143,7 @@ class CabinetRolesTest {
         assertThrows(ExecutionException.class,()->guard.superDelay(99,0).get());
     }
     @Test void rootAdminChangesRequireConfirmationAndRevocationIsImmediate() throws Exception {
-        var root=click(500,click(500,menu.home(500),"Супер"),"Администраторы бота");click(500,root,"Добавить администратора");var confirm=menu.input(500,"77");
+        var root=click(500,click(500,click(500,menu.home(500),"🛠 Админ"),"Суперадминистратор"),"Администраторы бота");click(500,root,"Добавить администратора");var confirm=menu.input(500,"77");
         assertFalse(guard.admin(77));String yes=button(confirm,"Подтвердить");assertTrue(menu.callback(99,yes).alert());menu.callback(500,yes);assertTrue(guard.admin(77));assertTrue(menu.callback(500,yes).alert());
         var adminScreen=click(77,menu.home(77),"Функции администратора");String stale=button(adminScreen,"Отключить");
         guard.changeAdmin(500,77,false).get();assertThrows(Exception.class,()->menu.callback(77,stale));
@@ -100,14 +165,14 @@ class CabinetRolesTest {
         var person=new TelegramModeration.Person(other,"Target",true,"");
         when(moderation.players(anyLong(),eq("online"))).thenReturn(CompletableFuture.completedFuture(List.of(person)));
         when(moderation.info(anyLong(),eq(other))).thenReturn(CompletableFuture.completedFuture(person));
-        var superCard=click(500,click(500,click(500,menu.home(500),"Супер"),"Список игроков"),"Target");
+        var superCard=click(500,click(500,click(500,click(500,menu.home(500),"🛠 Админ"),"Суперадминистратор"),"Список игроков"),"Target");
         assertNotNull(button(superCard,"Забанить"));
         var adminCard=click(99,click(99,click(99,menu.home(99),"Функции администратора"),"Список игроков"),"Target");
         assertFalse(adminCard.buttons().stream().anyMatch(b->b.text().contains("Забанить")));
         guard.capability(500,"permanentBan",true).get();
         adminCard=click(99,click(99,click(99,menu.home(99),"Функции администратора"),"Список игроков"),"Target");
         assertNotNull(button(adminCard,"Забанить"));
-        var capabilities=click(500,click(500,click(500,menu.home(500),"Супер"),"Администраторы бота"),"Возможности администратора");
+        var capabilities=click(500,click(500,click(500,click(500,menu.home(500),"🛠 Админ"),"Суперадминистратор"),"Администраторы бота"),"Возможности администратора");
         assertTrue(capabilities.buttons().stream().anyMatch(b->b.text().contains("Бессрочный бан")));
     }
     @Test void regularAdminCanChooseOnlinePlayersForTemporaryBan() throws Exception {
@@ -123,12 +188,12 @@ class CabinetRolesTest {
         when(moderation.players(99,"online")).thenReturn(CompletableFuture.completedFuture(List.of(hidden)));
         when(moderation.players(500,"online")).thenReturn(CompletableFuture.completedFuture(List.of(hidden)));
         var adminList=click(99,click(99,menu.home(99),"Функции администратора"),"Список игроков");
-        var superList=click(500,click(500,menu.home(500),"Супер"),"Список игроков");
+        var superList=click(500,click(500,click(500,menu.home(500),"🛠 Админ"),"Суперадминистратор"),"Список игроков");
         assertTrue(adminList.buttons().stream().anyMatch(button->button.text().equals("🕶 HiddenAdmin")));
         assertTrue(superList.buttons().stream().anyMatch(button->button.text().equals("🕶 HiddenAdmin")));
     }
     @Test void onlySuperAdminCanScheduleVaultTrackerReload() throws Exception {
-        var root=click(500,menu.home(500),"Супер");
+        var root=click(500,click(500,click(500,menu.home(500),"🛠 Админ"),"Суперадминистратор"),"Root");
         assertTrue(root.buttons().stream().anyMatch(b->b.text().contains("Перезагрузить VaultTracker")));
         var result=click(500,root,"Перезагрузить VaultTracker");
         assertTrue(result.text().contains("запланирована"));
@@ -141,7 +206,7 @@ class CabinetRolesTest {
         var second=new TelegramModeration.Person(UUID.randomUUID(),"Semui",false,"");
         when(moderation.players(500,"online")).thenReturn(CompletableFuture.completedFuture(List.of(first,second)));
         when(moderation.adminGroup(500,other)).thenReturn(CompletableFuture.completedFuture(false));
-        var list=click(500,click(500,menu.home(500),"Супер"),"Список игроков");
+        var list=click(500,click(500,click(500,menu.home(500),"🛠 Админ"),"Суперадминистратор"),"Список игроков");
 
         var prompt=click(500,list,"Поиск");
         var filtered=menu.input(500,"tapo");
@@ -156,7 +221,7 @@ class CabinetRolesTest {
         when(moderation.info(500,other)).thenReturn(CompletableFuture.completedFuture(person));
         when(moderation.adminGroup(500,other)).thenReturn(CompletableFuture.completedFuture(false));
         when(moderation.speed(500,other,"fly",20)).thenReturn(CompletableFuture.completedFuture("Скорость полёта установлена"));
-        var root=click(500,menu.home(500),"Супер");var list=click(500,root,"Список игроков");var card=click(500,list,"Target");
+        var root=click(500,click(500,menu.home(500),"🛠 Админ"),"Суперадминистратор");var list=click(500,root,"Список игроков");var card=click(500,list,"Target");
         var actions=card;
         var fly=click(500,actions,"Скорость полёта");
         assertTrue(fly.text().contains("1.0 — значение по умолчанию"));
@@ -172,17 +237,19 @@ class CabinetRolesTest {
         when(moderation.info(500,other)).thenReturn(CompletableFuture.completedFuture(person));
         when(moderation.playerProfile(500,other)).thenReturn(CompletableFuture.completedFuture(new TelegramModeration.CabinetProfile(true,18.0,20.0,15,"world",10,64,-20,first,93784L)));
         when(moderation.adminGroup(500,other)).thenReturn(CompletableFuture.completedFuture(false));
-        var card=click(500,click(500,click(500,menu.home(500),"Супер"),"Список игроков"),"Target");String plain=TelegramEmojiMarkup.plain(card.text());
-        assertTrue(plain.contains("Онлайн: да\nOP: да\nЗабанен: нет"),plain);assertTrue(plain.contains("09.02.2026 16:57"),plain);
+        var card=click(500,click(500,click(500,click(500,menu.home(500),"🛠 Админ"),"Суперадминистратор"),"Список игроков"),"Target");String plain=TelegramEmojiMarkup.plain(card.text());
+        assertTrue(plain.contains("Онлайн: да · OP: да · Бан: нет"),plain);assertTrue(plain.contains("09.02.2026 16:57"),plain);
         assertTrue(plain.contains("♥♥♥♥♥♥♥♥♥♤"),plain);assertTrue(plain.contains("◆◆◆◆◆◆◆◇○○"),plain);
-        assertTrue(plain.contains("Наиграно: 1 дн. 2 ч. 3 мин."),plain);String html=TelegramEmojiMarkup.html(card.text()).text();assertTrue(html.contains("world · </b><code>10 64 -20</code>"),html);assertFalse(html.contains("<b><code>"),html);
+        assertTrue(plain.contains("⏱ 1 дн. 2 ч. 3 мин."),plain);String html=TelegramEmojiMarkup.html(card.text()).text();assertTrue(html.contains("world · </b><code>10 64 -20</code>"),html);assertFalse(html.contains("<b><code>"),html);
+        while(card.buttons().stream().anyMatch(b->b.text().contains("Вперёд"))) card=click(500,card,"Вперёд");
+        var copy=card.buttons().stream().filter(b->b.copyText()!=null).findFirst().orElseThrow();assertEquals(other.toString(),copy.copyText());
     }
     TelegramCommands.View rootActions() throws Exception {
         var target=new TelegramModeration.Person(other,"Target",true,"");
         when(moderation.players(500,"online")).thenReturn(CompletableFuture.completedFuture(List.of(target)));
         when(moderation.info(500,other)).thenReturn(CompletableFuture.completedFuture(target));
         when(moderation.adminGroup(500,other)).thenReturn(CompletableFuture.completedFuture(false));
-        return click(500,click(500,click(500,menu.home(500),"Супер"),"Список игроков"),"Target");
+        return click(500,click(500,click(500,click(500,menu.home(500),"🛠 Админ"),"Суперадминистратор"),"Список игроков"),"Target");
     }
     @Test void customNumbersValidateConfirmAndCancel() throws Exception {
         var actions=rootActions();
@@ -241,13 +308,13 @@ class CabinetRolesTest {
     }
     @Test void mainMenuAlwaysOffersSearchAndCabinetEvenBeforeBinding() throws Exception {
         for(long user:List.of(42L,500L,12345L)) {
-            var main=menu.mainMenu(user);assertEquals(List.of("🔎 Поиск","👤 Личный кабинет"),main.buttons().stream().map(TelegramCommands.Button::text).toList());assertTrue(main.text().contains("торговый бот FLEXITY"));assertTrue(main.text().contains("не знаете, у кого он есть"));assertTrue(main.text().contains("защитить свои ресурсы"));
+            var main=menu.mainMenu(user);assertEquals(List.of("🔎 Поиск","👤 Личный кабинет","🆘 Поддержка"),main.buttons().stream().map(TelegramCommands.Button::text).toList());assertTrue(main.text().contains("торговый бот FLEXITY"));assertTrue(main.text().contains("не знаете, у кого он есть"));assertTrue(main.text().contains("защитить свои ресурсы"));
         }
         assertNotNull(button(click(12345,menu.mainMenu(12345),"Личный кабинет"),"Привязать"));
     }
     @Test void removesSuperByTypedIdOnlyAfterConfirmation() throws Exception {
         long target=123456789L;guard.changeSuper(500,target,true).get();
-        var admins=click(500,click(500,menu.home(500),"Супер"),"Администраторы бота");
+        var admins=click(500,click(500,click(500,click(500,menu.home(500),"🛠 Админ"),"Суперадминистратор"),"Root"),"Суперадминистраторы");
         String remove=button(admins,"Удалить суперадминистратора");
         assertTrue(menu.callback(99,remove).alert());menu.callback(500,remove);
         assertTrue(menu.input(500,"abc").text().contains("Telegram ID"));
@@ -260,7 +327,7 @@ class CabinetRolesTest {
     @Test void buttonListsUseTenButTextInventoryUsesTwentyEntriesWithoutSkipping() throws Exception {
         var people=java.util.stream.IntStream.range(0,21).mapToObj(i->new TelegramModeration.Person(UUID.randomUUID(),"Player_"+i,true,"")).toList();
         when(moderation.players(500,"online")).thenReturn(CompletableFuture.completedFuture(people));
-        var first=click(500,click(500,menu.home(500),"Супер"),"Список игроков");
+        var first=click(500,click(500,click(500,menu.home(500),"🛠 Админ"),"Суперадминистратор"),"Список игроков");
         assertEquals(10,first.buttons().stream().filter(b->b.text().contains("Player_")).count());
         var next=click(500,first,"Вперёд");assertEquals(10,next.buttons().stream().filter(b->b.text().contains("Player_")).count());
         var last=click(500,next,"Вперёд");assertEquals(1,last.buttons().stream().filter(b->b.text().contains("Player_")).count());assertNotNull(button(last,"Player_20"));
@@ -280,7 +347,14 @@ class CabinetRolesTest {
         assertFalse(card.buttons().stream().anyMatch(b->b.text().contains("Забрать OP") || b.text().contains("Эндер")));
         var confirmation=click(99,card,"Выдать OP");guard.capability(500,"op",false).get();
         assertThrows(SecurityException.class,()->click(99,confirmation,"Подтвердить"));verify(moderation,never()).act(anyLong(),anyString(),any());
-        var superCard=rootActions();assertNotNull(button(superCard,"Выдать OP"));assertNotNull(button(superCard,"Забрать OP"));
+        var superCard=rootActions();boolean canGrant=false,canRevoke=false;
+        for(int i=0;i<10;i++) {
+            canGrant|=superCard.buttons().stream().anyMatch(b->b.text().contains("Выдать OP"));
+            canRevoke|=superCard.buttons().stream().anyMatch(b->b.text().contains("Забрать OP"));
+            if(superCard.buttons().stream().noneMatch(b->b.text().contains("Вперёд"))) break;
+            superCard=click(500,superCard,"Вперёд");
+        }
+        assertTrue(canGrant);assertTrue(canRevoke);
     }
     @Test void addedSuperRolesAndTelegramLabelsPersistAndHaveIndependentAlerts() throws Exception {
         assertThrows(ExecutionException.class,()->guard.changeSuper(99,77,true).get());

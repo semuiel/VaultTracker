@@ -48,6 +48,14 @@ class TelegramApiTest {
         assertEquals("Вперёд ▶",button.get("text").getAsString());
         assertEquals("vt:token:2",button.get("callback_data").getAsString());
     }
+    @Test void uuidButtonUsesNativeTelegramCopyText() {
+        String uuid="658aacc4-3ee7-4cad-bb1a-10d8d80b2942";
+        var view=new TelegramCommands.View("UUID: 658aacc4…",List.of(TelegramCommands.Button.copy("📋 UUID · 658aacc4…",uuid,0)));
+        var button=TelegramApi.messageBody(42,view).getAsJsonObject("reply_markup").getAsJsonArray("inline_keyboard")
+                .get(0).getAsJsonArray().get(0).getAsJsonObject();
+        assertEquals(uuid,button.getAsJsonObject("copy_text").get("text").getAsString());
+        assertFalse(button.has("callback_data"));
+    }
     @Test void unchangedFormattedMessageIsBenignAndMustNotBeRewrittenAsPlainText() {
         assertTrue(TelegramApi.benignCallbackError(new java.io.IOException("Bad Request: message is not modified")));
     }

@@ -73,6 +73,14 @@ reports:
   # Ответом на сообщение: /mute 10m, /unmute, /ban [7d], /unban,
   # /warn причина, /warnings, /unwarn, /clearwarns. Справка: /modhelp.
 
+# Темы обращений игроков в административном чате reports.chatId.
+# Узнайте ID через /id в каждой теме. 0 означает, что тема ещё не настроена.
+support:
+  complaintsTopicId: 0
+  suggestionsTopicId: 0
+  bugsTopicId: 0
+  unbanRequestsTopicId: 0
+
 list:
   enabled: true
   # /list и /list@имя_бота работают в теме чата и в теме достижений.

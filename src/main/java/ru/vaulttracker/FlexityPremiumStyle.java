@@ -28,6 +28,9 @@ final class FlexityPremiumStyle {
         paint=colors.getClass().getMethod("paint",Component.class,String.class);
     }
     Component render(GuardService.Account account,String text) throws Exception {
+        return render(account,Component.text(text));
+    }
+    Component render(GuardService.Account account,Component text) throws Exception {
         // readAsync checks the current live cache, falling back to saved style for offline players.
         Object saved=((CompletableFuture<?>)read.invoke(styles,account.uuid())).get(5,TimeUnit.SECONDS);
         Predicate<String> allowed=permissions.read(account.uuid());
@@ -42,7 +45,7 @@ final class FlexityPremiumStyle {
             default -> throw new UnsupportedOperationException(method.getName());
         });
         Object style=visible.invoke(saved,callback);Class<?> type=style.getClass();
-        Component message=(Component)paint.invoke(colors,Component.text(text),(String)type.getMethod("getChat").invoke(style));
+        Component message=(Component)paint.invoke(colors,text,(String)type.getMethod("getChat").invoke(style));
         // White is only the default. Selected colours and gradients are preserved.
         message=message.colorIfAbsent(NamedTextColor.WHITE);
         Component formatted=(Component)format.invoke(formatter,true,account.name(),message,

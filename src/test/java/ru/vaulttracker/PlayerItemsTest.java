@@ -55,6 +55,12 @@ class PlayerItemsTest {
         assertTrue(text(run(true,true,"all","0")).contains("от 1 до 2"));
         add(UUID.randomUUID(),"all",Map.of("STONE",3L));assertTrue(text(run(true,true,"player","all")).contains("ресурсы хранилищ"));
     }
+    @Test void itemTopOwnerNameSuggestsPrivateMessage() {
+        add(alex,"Alex",Map.of("DIAMOND",4L));
+        Component line=run(true,true,"diamond").get(1);
+        assertEquals("Alex — 4 шт.",PlainTextComponentSerializer.plainText().serialize(line));
+        assertTrue(line.children().stream().anyMatch(child->ClickEvent.suggestCommand("/tg Alex ").equals(child.clickEvent())));
+    }
     @Test void everyPageHasEightRowsWithCorrectBoundaryButtonsAndNoMissingItems() {
         Map<String,Long> items=new HashMap<>(); for(int i=1;i<=17;i++) items.put("TEST_"+i,(long)i);
         add(alex,"Alex",items);

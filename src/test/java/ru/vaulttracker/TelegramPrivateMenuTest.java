@@ -2,6 +2,9 @@ package ru.vaulttracker;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import java.nio.file.Path;
+import java.util.logging.Logger;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicLong;
@@ -10,6 +13,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 class TelegramPrivateMenuTest {
+    @TempDir Path folder;
     private final Catalogue catalogue=new Catalogue(v->{});
     private final StorageEngine storage=mock(StorageEngine.class);
     private final AtomicLong clock=new AtomicLong(1000);
@@ -55,6 +59,16 @@ class TelegramPrivateMenuTest {
 
     @Test void searchHomeUsesTheSameFlexityGreetingAsTheMainMenu() {
         var home=say("/start");assertTrue(home.text().contains("Вас приветствует торговый бот FLEXITY"));assertTrue(home.text().contains("защитить свои ресурсы"));
+    }
+    @Test void returningFromSearchUsesTheSharedRootKeyboardIncludingSupport() {
+        menu.homeRenderer(user->new TelegramCommands.View("Главное меню",List.of(
+                new TelegramCommands.Button("🔎 Поиск","vg:search",0),
+                new TelegramCommands.Button("👤 Личный кабинет","vg:home",1),
+                new TelegramCommands.Button("🆘 Поддержка","vg:support",2))));
+        var direct=say("/menu");
+        var returned=click(say("/search"),"⌂ Меню");
+        assertEquals(direct.buttons(),returned.buttons());
+        assertTrue(returned.buttons().stream().anyMatch(button->button.text().equals("🆘 Поддержка")));
     }
     @Test void searchChoiceExplainsPlayersItemsAndVaultSigns() {
         var search=click(say("/start"),"🔎 Поиск");assertTrue(search.text().contains("«Игрок» — найти игрока и узнать, что у него есть в наличии"));assertTrue(search.text().contains("«Предмет» — найти ресурс"));assertTrue(search.text().contains("[v] или [vault]"));
@@ -103,6 +117,32 @@ class TelegramPrivateMenuTest {
         assertTrue(resourcePage.text().contains("Ресурсы Alex • 2/3"));
         assertTrue(click(resourcePage,"◀ К списку").text().contains("Торговый бот FLEXITY · игроки"));
     }
+    @Test void searchOffersChatOnlyForLinkedPlayersAndReturnsToResults() throws Exception {
+        UUID buyer=UUID.randomUUID(),alex=catalogue.ownerItems("Alex").getFirst().owner(),bob=catalogue.ownerItems("Bob").getFirst().owner();
+        try(var guard=new GuardService(folder.resolve("guard"),new GuardConfig(true,0),Logger.getAnonymousLogger())) {
+            guard.link(buyer,"Buyer",guard.generate(42).get().split("/vtrack link ")[1].substring(0,GuardService.LINK_CODE_LENGTH)).get();
+            guard.link(alex,"Alex",guard.generate(43).get().split("/vtrack link ")[1].substring(0,GuardService.LINK_CODE_LENGTH)).get();
+            guard.link(bob,"Bob",guard.generate(44).get().split("/vtrack link ")[1].substring(0,GuardService.LINK_CODE_LENGTH)).get();
+            menu.guard(guard);
+            var players=open("👤 Игрок");
+            var alexResult=click(players,"👤 Alex");
+            assertNotNull(data(alexResult,"💬"));
+            var prompt=click(alexResult,"💬");
+            assertEquals("vg:dialog:"+alex,data(prompt,"Написать"));
+            alexResult=click(prompt,"◀ Назад");assertTrue(alexResult.text().contains("Ресурсы Alex"));
+            players=click(alexResult,"◀ К списку");
+            var stone=click(click(players,"Вперёд ▶"),"👤 Stone");
+            assertFalse(stone.buttons().stream().anyMatch(button->button.text().equals("💬")));
+            var items=open("📦 Предмет");
+            while(items.buttons().stream().noneMatch(button->button.text().equals("Алмаз"))) items=click(items,"Вперёд ▶");
+            var top=click(items,"Алмаз");
+            var sellers=click(top,"💬");
+            assertNotNull(data(sellers,"Alex"));assertNotNull(data(sellers,"Bob"));
+            var bobPrompt=click(sellers,"Bob");
+            assertEquals("vg:dialog:"+bob,data(bobPrompt,"Написать"));
+            assertTrue(click(click(bobPrompt,"◀ Назад"),"◀ К результатам").text().contains("топ владельцев"));
+        }
+    }
 
     @Test void acceptsNicknameOnlyDuringPlayerSearchIncludingMaterialName() {
         assertNull(say("Alex"));
@@ -120,9 +160,11 @@ class TelegramPrivateMenuTest {
 
     @Test void selectsItemAndPagesTopOrTypesRussianItemAndOreGroup() {
         var list=open("📦 Предмет");
+        while(list.buttons().stream().noneMatch(b->b.text().equals("Алмазная руда (обычная + глубинная) (AR)")))
+            list=click(list,"Вперёд ▶");
         var ores=click(list,"Алмазная руда (обычная + глубинная) (AR)");
         assertTrue(ores.text().contains("Alex — 7 шт."));
-        list=click(ores,"◀ К списку");
+        list=open("📦 Предмет");
         int pages=0;
         while(list.buttons().stream().noneMatch(b->b.text().equals("Алмаз"))) {
             assertTrue(pages++<10); list=click(list,"Вперёд ▶");

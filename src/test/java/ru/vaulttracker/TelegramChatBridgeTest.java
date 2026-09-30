@@ -12,6 +12,7 @@ import io.papermc.paper.event.player.AsyncChatEvent;
 import io.papermc.paper.threadedregions.scheduler.*;
 import io.papermc.paper.advancement.AdvancementDisplay;
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.event.ClickEvent;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.atomic.*;
@@ -38,6 +39,118 @@ class TelegramChatBridgeTest {
         when(player.getUniqueId()).thenReturn(UUID.randomUUID());when(player.getName()).thenReturn("Alex");when(player.displayName()).thenReturn(Component.text("DisplayAlex"));when(player.getWorld()).thenReturn(world);when(world.getEnvironment()).thenReturn(World.Environment.NETHER);when(world.getName()).thenReturn("world_nether");
     }
     TelegramApi.Incoming message(long chat,int topic,String text) {return new TelegramApi.Incoming(1,chat,topic,42,1,text,null,null,false,"Sender");}
+    @Test void everyMediaLabelOpensTelegramWithoutChangingCaptionOrOrdinaryText() throws Exception {
+        try(var apis=mockConstruction(TelegramApi.class);var bridge=new TelegramChatBridge(plugin,config,catalogue)) {
+            bridge.start(true);
+            List<String> labels=List.of("[Фото]","[Видео]","[GIF]","[Документ]","[Аудио]","[Голосовое сообщение]","[Видеосообщение]","[Стикер]","[Опрос]");
+            for(String label:labels) {
+                assertTrue(bridge.consume(new TelegramApi.Incoming(1,-100123,486,42,1,label+" подпись",null,null,false,"Sender",false,true)));
+            }
+            assertTrue(bridge.consume(message(-100123,486,"Обычное сообщение")));
+            var sent=org.mockito.ArgumentCaptor.forClass(Component.class);
+            verify(player,times(labels.size()+1)).sendMessage(sent.capture());
+            for(int i=0;i<labels.size();i++) {
+                Component chat=sent.getAllValues().get(i);
+                assertEquals("[TG] Sender: "+labels.get(i)+" подпись",TelegramChatBridge.plain(chat));
+                Component media=findText(chat,labels.get(i));
+                assertNotNull(media,chat.toString());
+                assertEquals(ClickEvent.openUrl("https://t.me/flexityfun"),media.clickEvent());
+                assertNotNull(media.hoverEvent());
+                assertNull(findText(chat," подпись").clickEvent());
+            }
+            Component ordinary=sent.getAllValues().getLast();
+            assertEquals("[TG] Sender: Обычное сообщение",TelegramChatBridge.plain(ordinary));
+            assertFalse(hasClick(ordinary));
+        }
+    }
+    private Component findText(Component component,String text) {
+        if(component instanceof net.kyori.adventure.text.TextComponent value && value.content().equals(text)) return component;
+        for(Component child:component.children()) {Component found=findText(child,text);if(found!=null) return found;}
+        return null;
+    }
+    private boolean hasClick(Component component) {
+        if(component.clickEvent()!=null) return true;
+        return component.children().stream().anyMatch(this::hasClick);
+    }
+    @Test void replyPreviewIsMutedCompactAndKeepsMainMessageStyle() throws Exception {
+        try(var apis=mockConstruction(TelegramApi.class);var bridge=new TelegramChatBridge(plugin,config,catalogue)) {
+            bridge.start(true);
+            var reply=new TelegramApi.Reply(2,55,"Друг","Очень длинное сообщение ".repeat(10)+"\nконец",false);
+            var update=new TelegramApi.Incoming(1,-100123,486,42,3,"Ответ",null,null,false,"Sender",false,false,"Sender",reply,false);
+            assertTrue(bridge.consume(update));
+            var sent=org.mockito.ArgumentCaptor.forClass(Component.class);verify(player).sendMessage(sent.capture());
+            Component result=sent.getValue();String text=TelegramChatBridge.plain(result);
+            assertTrue(text.startsWith("↪ Друг: Очень длинное сообщение"),text);
+            assertTrue(text.contains("…\n[TG] Sender: Ответ"),text);
+            assertTrue(text.length()<120,text);
+            assertEquals(net.kyori.adventure.text.format.NamedTextColor.GRAY,result.children().getFirst().color());
+            assertFalse(hasClick(result));
+        }
+    }
+    @Test void replyToFlexityChatOmitsBotNameButKeepsQuote() throws Exception {
+        try(var apis=mockConstruction(TelegramApi.class);var bridge=new TelegramChatBridge(plugin,config,catalogue)) {
+            bridge.start(true);
+            var reply=new TelegramApi.Reply(2,55,"FlexityChat","[MRTtamir] я иду",true);
+            var update=new TelegramApi.Incoming(1,-100123,486,42,3,"test",null,null,false,"Sender",false,false,"Sender",reply,false);
+            assertTrue(bridge.consume(update));
+            var sent=org.mockito.ArgumentCaptor.forClass(Component.class);verify(player).sendMessage(sent.capture());
+            assertEquals("↪ [MRTtamir] я иду\n[TG] Sender: test",TelegramChatBridge.plain(sent.getValue()));
+        }
+    }
+    @Test void replyToRenamedOwnBotOmitsNameButKeepsOtherBotName() throws Exception {
+        try(var apis=mockConstruction(TelegramApi.class);var bridge=new TelegramChatBridge(plugin,config,catalogue)) {
+            bridge.start(true);
+            var own=new TelegramApi.Reply(2,123456,"FlexityBot","[Semuiel] test",true);
+            var update=new TelegramApi.Incoming(1,-100123,486,42,3,"Ответ",null,null,false,"Sender",false,false,"Sender",own,false);
+            assertTrue(bridge.consume(update));
+            var other=new TelegramApi.Reply(4,987654,"OtherBot","чужое сообщение",true);
+            assertTrue(bridge.consume(new TelegramApi.Incoming(2,-100123,486,42,5,"Ответ",null,null,false,"Sender",false,false,"Sender",other,false)));
+            var sent=org.mockito.ArgumentCaptor.forClass(Component.class);verify(player,times(2)).sendMessage(sent.capture());
+            assertEquals("↪ [Semuiel] test\n[TG] Sender: Ответ",TelegramChatBridge.plain(sent.getAllValues().getFirst()));
+            assertEquals("↪ OtherBot: чужое сообщение\n[TG] Sender: Ответ",TelegramChatBridge.plain(sent.getAllValues().getLast()));
+        }
+    }
+    @Test void forumTopicServiceReferenceDoesNotAddReplyPreview() throws Exception {
+        var update=TelegramApi.parseUpdate(com.google.gson.JsonParser.parseString("""
+            {"update_id":4,"message":{"message_id":10,"chat":{"id":-100123,"type":"supergroup"},"message_thread_id":486,
+             "from":{"id":42,"first_name":"Sender"},"text":"test",
+             "reply_to_message":{"message_id":486,"from":{"id":55,"first_name":"Semi"},"forum_topic_created":{"name":"Торговля"}}}}
+            """).getAsJsonObject());
+        try(var apis=mockConstruction(TelegramApi.class);var bridge=new TelegramChatBridge(plugin,config,catalogue)) {
+            bridge.start(true);assertTrue(bridge.consume(update));
+            var sent=org.mockito.ArgumentCaptor.forClass(Component.class);verify(player).sendMessage(sent.capture());
+            assertEquals("[TG] Sender: test",TelegramChatBridge.plain(sent.getValue()));
+        }
+    }
+    @Test void linkedPlayerFallbackKeepsMediaClickable() throws Exception {
+        GuardService guard=mock(GuardService.class);
+        when(guard.telegramGameChatEnabled(any())).thenReturn(true);
+        when(guard.account(42)).thenReturn(java.util.concurrent.CompletableFuture.completedFuture(new GuardService.Account(UUID.randomUUID(),"Alex",true)));
+        try(var apis=mockConstruction(TelegramApi.class);var bridge=new TelegramChatBridge(plugin,config,catalogue)) {
+            bridge.linkedAccounts(guard);bridge.start(true);
+            assertTrue(bridge.consume(new TelegramApi.Incoming(1,-100123,486,42,1,"[Фото] подпись",null,null,false,"Sender",false,true)));
+            var sent=org.mockito.ArgumentCaptor.forClass(Component.class);verify(player).sendMessage(sent.capture());
+            assertEquals("[TG] Alex: [Фото] подпись",TelegramChatBridge.plain(sent.getValue()));
+            assertEquals(ClickEvent.openUrl("https://t.me/flexityfun"),findText(sent.getValue(),"[Фото]").clickEvent());
+            assertNull(findText(sent.getValue()," подпись").clickEvent());
+        }
+    }
+    @Test void telegramChatToggleFiltersOnlyTheChosenOnlineRecipient() throws Exception {
+        Player other=mock(Player.class);UUID disabled=player.getUniqueId(),enabled=UUID.randomUUID();
+        when(other.getUniqueId()).thenReturn(enabled);
+        var scheduler=mock(EntityScheduler.class);when(other.getScheduler()).thenReturn(scheduler);
+        doAnswer(c->{c.getArgument(1,Consumer.class).accept(mock(ScheduledTask.class));return mock(ScheduledTask.class);}).when(scheduler).run(eq(plugin),any(),any());
+        doReturn(List.of(player,other)).when(server).getOnlinePlayers();
+        GuardService guard=mock(GuardService.class);
+        when(guard.telegramGameChatEnabled(disabled)).thenReturn(false);
+        when(guard.telegramGameChatEnabled(enabled)).thenReturn(true);
+        try(var apis=mockConstruction(TelegramApi.class);var bridge=new TelegramChatBridge(plugin,config,catalogue)) {
+            bridge.linkedAccounts(guard);bridge.start(true);
+            assertTrue(bridge.consume(message(-100123,486,"Привет")));
+            verify(player,never()).sendMessage(any(Component.class));
+            verify(other).sendMessage(any(Component.class));
+        }
+    }
     @Test void telegramMarkerCanBeDisabledWithLegacyTemplateAndTextIsWhite() throws Exception {
         var settings=TelegramChatConfig.parse(TelegramChatConfigTest.SETTINGS+"\nmessages:\n  showTelegramTag: false\nformats:\n  telegramChat: '<aqua>[TG] {sender}</aqua> {text}'\n");
         try(var apis=mockConstruction(TelegramApi.class);var bridge=new TelegramChatBridge(plugin,settings,catalogue)) {

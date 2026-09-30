@@ -56,7 +56,7 @@ class TelegramCommandsTest {
             assertTrue(second.view().text().contains("Bob — 10 шт."));
 
             var player=commands.handle(42,10,20,"/topitem Alex",false);
-            assertTrue(player.text().contains("Ресурсы Alex"));assertTrue(player.text().contains("табличку с надписью [v] или [vault]")); assertFalse(player.buttons().isEmpty());
+            assertTrue(player.text().contains("Ресурсы Alex"));assertTrue(player.text().contains("табличку [v] или [vault] либо вставьте бумагу в рамку")); assertFalse(player.buttons().isEmpty());
             var quantity=commands.handle(42,10,20,"/topitem Alex diamond",false);
             assertEquals("Alex — Алмаз: 2000 шт. (1 шалкер + 272 шт.)",quantity.text());
             assertTrue(commands.handle(42,10,20,"/item алмаз",false).text().contains("Alex — 2000 шт."));
@@ -82,6 +82,9 @@ class TelegramCommandsTest {
         for(String text:List.of("/list","/list@VaultBot","/item@OtherBot алмаз","/id@TGBridge","/status@TGBridge","/itemfoo","/item@","/menu","обычный текст"))
             assertFalse(TelegramBotService.acceptsCommand(text,"VaultBot",false),text);
         assertTrue(TelegramBotService.acceptsCommand("/menu@VaultBot","VaultBot",true));
+        assertTrue(TelegramBotService.acceptsCommand("/cmd@VaultBot list","VaultBot",true));
+        assertTrue(TelegramBotService.acceptsCommand("/log md 200","VaultBot",true));
+        assertFalse(TelegramBotService.acceptsCommand("/cmd list","VaultBot",false));
         assertFalse(TelegramBotService.acceptsCommand("/menu@OtherBot","VaultBot",true));
         assertFalse(TelegramBotService.acceptsCommand("/id@VaultBot",null,true));
     }

@@ -19,10 +19,24 @@ final class GuardService implements AutoCloseable {
     record Account(UUID uuid,String name,boolean notifications) {}
     record LinkResult(String message,boolean linked) {}
     record Child(UUID uuid,String name,double size) {}
-    record Friend(UUID uuid,String name) {}
+    record Friend(UUID uuid,String name,boolean muted,boolean shared,boolean notified) {}
+    record DirectMessage(long id,UUID sender,UUID recipient,String senderName,String text,long created) {}
+    record PendingDirect(long id,long telegram,UUID sender,String senderName,String text) {}
+    record Dialog(UUID peer,String name,long unread,long latest) {}
+    record Conversation(List<DirectMessage> messages,boolean older) {}
+    record RootCommand(long id,String command) {}
+    record OnlineLinked(UUID uuid,String name) {}
+    record UnbanState(String id,long telegram,UUID uuid,boolean linked,int attempt,long inviteUntil,
+                      int inviteMessage,long accessUntil,String banReason,long banExpiry,String banSource,long actor) {}
     final DonationClient donations;
     private final Map<UUID,Child> children=new ConcurrentHashMap<>();
-    private final Map<UUID,Map<UUID,String>> friends=new ConcurrentHashMap<>();
+    private final Map<UUID,String> linkedNames=new ConcurrentHashMap<>();
+    private final Map<UUID,String> currentNames=new ConcurrentHashMap<>();
+    private final Map<String,Set<UUID>> knownPlayerNames=new ConcurrentHashMap<>();
+    private final Map<UUID,Boolean> telegramGameChat=new ConcurrentHashMap<>();
+    private final Map<Long,ItemSorting.Mode> itemSortModes=new ConcurrentHashMap<>();
+    private final Map<String,Long> itemSearchCounts=new ConcurrentHashMap<>();
+    private final Map<UUID,Map<UUID,Friend>> friends=new ConcurrentHashMap<>();
     record Event(long id,long time,String name,String location,Map<String,Long> changes,boolean removed,String actor,UUID actorUuid) {
         Event(long id,long time,String name,String location,Map<String,Long> changes,boolean removed,String actor) {this(id,time,name,location,changes,removed,actor,null);}
     }
@@ -47,6 +61,7 @@ final class GuardService implements AutoCloseable {
     private volatile Set<Long> admins=Set.of();
     private final Map<Long,Boolean> adminOverrides=new ConcurrentHashMap<>();
     private final Set<Long> extraSupers=ConcurrentHashMap.newKeySet();
+    private final Set<Long> extraRoots=ConcurrentHashMap.newKeySet();
     private final Map<Long,String> telegramProfiles=new ConcurrentHashMap<>();
     private final Map<Long,Long> superDelays=new ConcurrentHashMap<>();
     private final Map<String,Boolean> adminCapabilities=new ConcurrentHashMap<>();
@@ -61,10 +76,15 @@ final class GuardService implements AutoCloseable {
             s.execute("CREATE TABLE IF NOT EXISTS accounts (tg BIGINT PRIMARY KEY, uuid VARCHAR(36) UNIQUE NOT NULL, nickname VARCHAR(64) NOT NULL, alerts BOOLEAN NOT NULL DEFAULT TRUE)");
             s.execute("CREATE TABLE IF NOT EXISTS children (uuid VARCHAR(36) PRIMARY KEY, nickname VARCHAR(64) NOT NULL, size DOUBLE PRECISION NOT NULL)");
             s.execute("CREATE TABLE IF NOT EXISTS guard_friends (owner_uuid VARCHAR(36) NOT NULL, friend_uuid VARCHAR(36) NOT NULL, nickname VARCHAR(64) NOT NULL, PRIMARY KEY(owner_uuid,friend_uuid))");
+            s.execute("ALTER TABLE guard_friends ADD COLUMN IF NOT EXISTS muted BOOLEAN DEFAULT TRUE NOT NULL");
+            s.execute("ALTER TABLE guard_friends ADD COLUMN IF NOT EXISTS shared BOOLEAN DEFAULT FALSE NOT NULL");
+            s.execute("ALTER TABLE guard_friends ADD COLUMN IF NOT EXISTS notified BOOLEAN DEFAULT FALSE NOT NULL");
             s.execute("CREATE TABLE IF NOT EXISTS donation_settings (id INT PRIMARY KEY, visible BOOLEAN NOT NULL)");
             s.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS offline_seconds BIGINT");
             s.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS telegram_tag BOOLEAN NOT NULL DEFAULT FALSE");
             s.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS bastion_pending BOOLEAN NOT NULL DEFAULT FALSE");
+            s.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS friend_alerts BOOLEAN NOT NULL DEFAULT TRUE");
+            s.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS game_message_notifications BOOLEAN NOT NULL DEFAULT TRUE");
             s.execute("CREATE TABLE IF NOT EXISTS guard_admins (tg BIGINT PRIMARY KEY, enabled BOOLEAN NOT NULL)");
             s.execute("CREATE TABLE IF NOT EXISTS guard_supers (tg BIGINT PRIMARY KEY)");
             s.execute("CREATE TABLE IF NOT EXISTS telegram_profiles (tg BIGINT PRIMARY KEY, label VARCHAR(512) NOT NULL)");
@@ -82,9 +102,46 @@ final class GuardService implements AutoCloseable {
             s.execute("ALTER TABLE outbox ADD COLUMN IF NOT EXISTS batch CLOB");
             s.execute("CREATE INDEX IF NOT EXISTS guard_event_time ON events(happened)");
             s.execute("CREATE INDEX IF NOT EXISTS guard_outbox_due ON outbox(due)");
+            s.execute("CREATE TABLE IF NOT EXISTS player_messages (id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY, sender_uuid VARCHAR(36) NOT NULL, recipient_uuid VARCHAR(36) NOT NULL, sender_name VARCHAR(64) NOT NULL, recipient_name VARCHAR(64) NOT NULL, body VARCHAR(500) NOT NULL, created BIGINT NOT NULL, read_at BIGINT)");
+            s.execute("CREATE INDEX IF NOT EXISTS player_messages_inbox ON player_messages(recipient_uuid,read_at,id)");
+            s.execute("CREATE INDEX IF NOT EXISTS player_messages_sender ON player_messages(sender_uuid,id)");
+            s.execute("CREATE INDEX IF NOT EXISTS player_messages_pair ON player_messages(sender_uuid,recipient_uuid,id)");
+            s.execute("ALTER TABLE player_messages ADD COLUMN IF NOT EXISTS notified_at BIGINT");
+            s.execute("ALTER TABLE player_messages ADD COLUMN IF NOT EXISTS from_game BOOLEAN NOT NULL DEFAULT TRUE");
+            s.execute("CREATE INDEX IF NOT EXISTS player_messages_notify ON player_messages(notified_at,read_at,id)");
+            s.execute("CREATE TABLE IF NOT EXISTS telegram_notification_topics (tg BIGINT PRIMARY KEY, thread_id INT NOT NULL)");
+            s.execute("CREATE TABLE IF NOT EXISTS telegram_game_chat (uuid VARCHAR(36) PRIMARY KEY, enabled BOOLEAN NOT NULL)");
+            s.execute("CREATE TABLE IF NOT EXISTS player_stat_counters (uuid VARCHAR(36) NOT NULL, stat_key VARCHAR(128) NOT NULL, total BIGINT NOT NULL, last_vanilla INT NOT NULL, PRIMARY KEY(uuid,stat_key))");
+            s.execute("CREATE TABLE IF NOT EXISTS known_player_names (nickname VARCHAR(64) NOT NULL, uuid VARCHAR(36) NOT NULL, PRIMARY KEY(nickname,uuid))");
+            s.execute("CREATE TABLE IF NOT EXISTS item_sort_preferences (tg BIGINT PRIMARY KEY, mode VARCHAR(32) NOT NULL)");
+            s.execute("CREATE TABLE IF NOT EXISTS item_search_counts (item VARCHAR(128) PRIMARY KEY, searches BIGINT NOT NULL)");
+            s.execute("CREATE TABLE IF NOT EXISTS support_requests (id VARCHAR(32) PRIMARY KEY, payload CLOB NOT NULL, status VARCHAR(48) NOT NULL, created BIGINT NOT NULL)");
+            s.execute("CREATE TABLE IF NOT EXISTS support_unban (id VARCHAR(32) PRIMARY KEY, tg BIGINT NOT NULL, uuid VARCHAR(36) NOT NULL, linked BOOLEAN NOT NULL, attempt INT NOT NULL, invite_until BIGINT NOT NULL DEFAULT 0, invite_message INT NOT NULL DEFAULT 0, access_until BIGINT NOT NULL DEFAULT 0, ban_reason CLOB, ban_expiry BIGINT NOT NULL DEFAULT 0, ban_source VARCHAR(256), actor BIGINT NOT NULL DEFAULT 0)");
+            s.execute("CREATE INDEX IF NOT EXISTS support_unban_uuid ON support_unban(uuid)");
+            s.execute("CREATE INDEX IF NOT EXISTS support_unban_tg ON support_unban(tg)");
+            s.execute("CREATE TABLE IF NOT EXISTS root_commands (id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY, command VARCHAR(2048) NOT NULL)");
+            s.execute("ALTER TABLE root_commands ADD COLUMN IF NOT EXISTS tg BIGINT NOT NULL DEFAULT 0");
+            s.execute("CREATE TABLE IF NOT EXISTS guard_roots (tg BIGINT PRIMARY KEY)");
         }
+        if(config.superAdminUserId()>0) execute("UPDATE root_commands SET tg=? WHERE tg=0",config.superAdminUserId());
         try(var s=db.createStatement();var rs=s.executeQuery("SELECT uuid,offline_seconds FROM accounts WHERE offline_seconds IS NOT NULL")) {
             while(rs.next()) personalAbsence.put(UUID.fromString(rs.getString(1)),rs.getLong(2)*1000);
+        }
+        try(var s=db.createStatement();var rs=s.executeQuery("SELECT uuid,nickname FROM accounts")) {
+            while(rs.next()) {UUID uuid=UUID.fromString(rs.getString(1));String name=rs.getString(2);linkedNames.put(uuid,name);currentNames.put(uuid,name);rememberKnownName(uuid,name);}
+        }
+        try(var s=db.createStatement();var rs=s.executeQuery("SELECT nickname,uuid FROM known_player_names")) {
+            while(rs.next()) rememberKnownName(UUID.fromString(rs.getString(2)),rs.getString(1));
+        }
+        try(var s=db.createStatement();var rs=s.executeQuery("SELECT uuid,enabled FROM telegram_game_chat")) {
+            while(rs.next()) telegramGameChat.put(UUID.fromString(rs.getString(1)),rs.getBoolean(2));
+        }
+        try(var s=db.createStatement();var rs=s.executeQuery("SELECT tg,mode FROM item_sort_preferences")) {
+            while(rs.next()) try {itemSortModes.put(rs.getLong(1),ItemSorting.Mode.valueOf(rs.getString(2)));}
+            catch(IllegalArgumentException invalid) {log.warning("Неизвестный режим сортировки предметов; используется режим по умолчанию.");}
+        }
+        try(var s=db.createStatement();var rs=s.executeQuery("SELECT item,searches FROM item_search_counts")) {
+            while(rs.next()) itemSearchCounts.put(rs.getString(1),rs.getLong(2));
         }
         try(var s=db.createStatement();var rs=s.executeQuery("SELECT uuid,world_name FROM guard_worlds")) {
             while(rs.next()) worlds.put(UUID.fromString(rs.getString(1)),rs.getString(2));
@@ -95,41 +152,68 @@ final class GuardService implements AutoCloseable {
         execute("UPDATE presence SET departed=? WHERE departed<0",started);
         try(var s=db.createStatement();var rs=s.executeQuery("SELECT tg,enabled FROM guard_admins")) {while(rs.next()) adminOverrides.put(rs.getLong(1),rs.getBoolean(2));}
         try(var s=db.createStatement();var rs=s.executeQuery("SELECT tg FROM guard_supers")) {while(rs.next()) extraSupers.add(rs.getLong(1));}
+        try(var s=db.createStatement();var rs=s.executeQuery("SELECT tg FROM guard_roots")) {while(rs.next()) extraRoots.add(rs.getLong(1));}
         try(var s=db.createStatement();var rs=s.executeQuery("SELECT tg,label FROM telegram_profiles")) {while(rs.next()) telegramProfiles.put(rs.getLong(1),rs.getString(2));}
         try(var s=db.createStatement();var rs=s.executeQuery("SELECT tg,seconds FROM super_delays")) {while(rs.next()) superDelays.put(rs.getLong(1),rs.getLong(2));}
         try(var s=db.createStatement();var rs=s.executeQuery("SELECT capability,enabled FROM admin_capabilities")) {while(rs.next()) adminCapabilities.put(rs.getString(1),rs.getBoolean(2));}
         disk.scheduleWithFixedDelay(()-> {try {prune();} catch(Exception e) {log.warning("Не удалось очистить историю охраны.");}},1,60,TimeUnit.MINUTES);
         try(var s=db.createStatement();var rs=s.executeQuery("SELECT uuid,nickname,size FROM children")) {while(rs.next()) {var child=new Child(UUID.fromString(rs.getString(1)),rs.getString(2),rs.getDouble(3));children.put(child.uuid(),child);}}
-        try(var s=db.createStatement();var rs=s.executeQuery("SELECT owner_uuid,friend_uuid,nickname FROM guard_friends")) {while(rs.next()) {
+        try(var s=db.createStatement();var rs=s.executeQuery("SELECT owner_uuid,friend_uuid,nickname,muted,shared,notified FROM guard_friends")) {while(rs.next()) {
             UUID owner=UUID.fromString(rs.getString(1)),friend=UUID.fromString(rs.getString(2));
-            friends.computeIfAbsent(owner,ignored->new ConcurrentHashMap<>()).put(friend,rs.getString(3));
+            friends.computeIfAbsent(owner,ignored->new ConcurrentHashMap<>()).put(friend,new Friend(friend,rs.getString(3),rs.getBoolean(4),rs.getBoolean(5),rs.getBoolean(6)));
         }}
     }
     CompletableFuture<List<Friend>> friends(long user) {return submit(()->{
         Account account=accountNow(user);if(account==null) throw new SecurityException("Сначала привяжите персонажа");
         return friends.getOrDefault(account.uuid(),Map.of()).entrySet().stream()
-                .map(e->new Friend(e.getKey(),e.getValue())).sorted(Comparator.comparing(Friend::name,String.CASE_INSENSITIVE_ORDER)).toList();
+                .map(Map.Entry::getValue).sorted(Comparator.comparing(Friend::name,String.CASE_INSENSITIVE_ORDER)).toList();
     });}
     CompletableFuture<Void> addFriend(long user,UUID uuid,String name) {return submit(()->{
         Account account=accountNow(user);if(account==null) throw new SecurityException("Сначала привяжите персонажа");
         if(account.uuid().equals(uuid)) throw new IllegalArgumentException("Нельзя добавить себя в друзья");
         String nickname=Objects.requireNonNull(name).strip();if(nickname.isEmpty()||nickname.length()>64) throw new IllegalArgumentException("Некорректный игровой ник");
-        execute("MERGE INTO guard_friends KEY(owner_uuid,friend_uuid) VALUES(?,?,?)",account.uuid().toString(),uuid.toString(),nickname);
-        friends.computeIfAbsent(account.uuid(),ignored->new ConcurrentHashMap<>()).put(uuid,nickname);return null;
+        var prior=friends.getOrDefault(account.uuid(),Map.of()).get(uuid);
+        Friend value=new Friend(uuid,nickname,prior==null||prior.muted(),prior!=null&&prior.shared(),prior!=null&&prior.notified());
+        execute("MERGE INTO guard_friends (owner_uuid,friend_uuid,nickname,muted,shared,notified) KEY(owner_uuid,friend_uuid) VALUES(?,?,?,?,?,?)",account.uuid().toString(),uuid.toString(),nickname,value.muted(),value.shared(),value.notified());
+        friends.computeIfAbsent(account.uuid(),ignored->new ConcurrentHashMap<>()).put(uuid,value);return null;
     });}
     CompletableFuture<Void> removeFriend(long user,UUID uuid) {return submit(()->{
         Account account=accountNow(user);if(account==null) throw new SecurityException("Сначала привяжите персонажа");
         execute("DELETE FROM guard_friends WHERE owner_uuid=? AND friend_uuid=?",account.uuid().toString(),uuid.toString());
-        Map<UUID,String> ownerFriends=friends.get(account.uuid());if(ownerFriends!=null) {ownerFriends.remove(uuid);if(ownerFriends.isEmpty()) friends.remove(account.uuid(),ownerFriends);}
+        execute("DELETE FROM outbox WHERE owner_uuid=? AND tg=(SELECT tg FROM accounts WHERE uuid=?) AND own_channel=FALSE AND admin_channel=FALSE",account.uuid().toString(),uuid.toString());
+        Map<UUID,Friend> ownerFriends=friends.get(account.uuid());if(ownerFriends!=null) {ownerFriends.remove(uuid);if(ownerFriends.isEmpty()) friends.remove(account.uuid(),ownerFriends);}
         return null;
     });}
-    private boolean friend(UUID owner,UUID actor) {Map<UUID,String> ownerFriends=friends.get(owner);return ownerFriends!=null&&ownerFriends.containsKey(actor);}
+    private boolean friend(UUID owner,UUID actor) {var entry=friends.getOrDefault(owner,Map.of()).get(actor);return entry!=null&&entry.muted();}
+    CompletableFuture<Void> toggleFriend(long user,UUID uuid,boolean sharing) {return submit(()->{
+        Account account=accountNow(user);if(account==null) throw new SecurityException("Сначала привяжите персонажа");
+        var entries=friends.getOrDefault(account.uuid(),Map.of());var old=entries.get(uuid);
+        if(old==null) throw new SecurityException("Друг больше не в списке");
+        Friend value=new Friend(uuid,old.name(),sharing?old.muted():!old.muted(),sharing?!old.shared():old.shared(),old.notified());
+        execute("UPDATE guard_friends SET muted=?,shared=? WHERE owner_uuid=? AND friend_uuid=?",value.muted(),value.shared(),account.uuid().toString(),uuid.toString());
+        entries.put(uuid,value);return null;
+    });}
+    CompletableFuture<Void> toggleFriendNotifications(long user,UUID uuid) {return submit(()->{
+        Account account=accountNow(user);if(account==null) throw new SecurityException("Сначала привяжите персонажа");
+        var entries=friends.getOrDefault(account.uuid(),Map.of());var old=entries.get(uuid);
+        if(old==null) throw new SecurityException("Друг больше не в списке");
+        Friend value=new Friend(uuid,old.name(),old.muted(),old.shared(),!old.notified());
+        execute("UPDATE guard_friends SET notified=? WHERE owner_uuid=? AND friend_uuid=?",value.notified(),account.uuid().toString(),uuid.toString());
+        if(!value.notified()) execute("DELETE FROM outbox WHERE owner_uuid=? AND tg=(SELECT tg FROM accounts WHERE uuid=?) AND own_channel=FALSE AND admin_channel=FALSE",account.uuid().toString(),uuid.toString());
+        entries.put(uuid,value);return null;
+    });}
+    boolean canSearch(UUID viewer,UUID owner) {
+        if(viewer.equals(owner)) return true;
+        var entry=friends.getOrDefault(owner,Map.of()).get(viewer);return entry!=null&&entry.shared();
+    }
+    Set<UUID> sharedOwners(UUID viewer) {return friends.entrySet().stream().filter(e->!e.getKey().equals(viewer)&&canSearch(viewer,e.getKey())).map(Map.Entry::getKey).collect(java.util.stream.Collectors.toUnmodifiableSet());}
     Child child(UUID uuid) {return children.get(uuid);}
-    List<Child> children(long user) {requireSuper(user);return children.values().stream().sorted(Comparator.comparing(Child::name,String.CASE_INSENSITIVE_ORDER)).toList();}
+    List<Child> children(long user) {requireRoot(user);return children.values().stream().sorted(Comparator.comparing(Child::name,String.CASE_INSENSITIVE_ORDER)).toList();}
     CompletableFuture<Void> child(long user,UUID uuid,String name,boolean enabled) {return submit(()->{
-        requireSuper(user);
+        requireRoot(user);
         if(enabled) {var prior=children.get(uuid);double size=prior==null?1:prior.size();execute("MERGE INTO children KEY(uuid) VALUES(?,?,?)",uuid.toString(),name,size);children.put(uuid,new Child(uuid,name,size));}
         else {execute("DELETE FROM children WHERE uuid=?",uuid.toString());children.remove(uuid);}
+        log.info("Telegram "+user+": "+(enabled?"addChild":"removeChild")+" → "+uuid);
         return null;
     });}
     CompletableFuture<UUID> childSize(long user,double size) {return submit(()->{
@@ -139,13 +223,103 @@ final class GuardService implements AutoCloseable {
         execute("UPDATE children SET size=? WHERE uuid=?",size,child.uuid().toString());children.put(child.uuid(),new Child(child.uuid(),child.name(),size));return child.uuid();
     });}
     void configure(GuardConfig config,Set<Long> admins) { this.config=config; this.admins=Set.copyOf(admins); }
-    boolean superAdmin(long user) {return user>0 && (config.superAdminUserId()==user || extraSupers.contains(user));}
-    boolean rootAdmin(long user) {return user>0 && config.superAdminUserId()==user;}
-    void requireRoot(long user) {if(!rootAdmin(user)) throw new SecurityException("Раздел Root доступен только основному суперадминистратору");}
+    boolean superAdmin(long user) {return user>0 && (rootAdmin(user) || extraSupers.contains(user));}
+    boolean rootAdmin(long user) {return user>0 && (config.superAdminUserId()==user || extraRoots.contains(user));}
+    void requireRoot(long user) {if(!rootAdmin(user)) throw new SecurityException("Раздел доступен только Root");}
+    void requirePrimaryRoot(long user) {if(!primaryRoot(user)) throw new SecurityException("Управлять Root может только основной ID из guard.yml");}
+    List<Long> rootIds(long user) {
+        requirePrimaryRoot(user);
+        List<Long> ids=new ArrayList<>(extraRoots);
+        ids.remove(config.superAdminUserId());
+        ids.sort(Long::compareTo);
+        if(config.superAdminUserId()>0) ids.addFirst(config.superAdminUserId());
+        return List.copyOf(ids);
+    }
+    boolean primaryRoot(long target) {return target>0 && target==config.superAdminUserId();}
+    boolean canRemoveRoot(long user,long target) {return primaryRoot(user) && target>0 && target!=user && !primaryRoot(target) && extraRoots.contains(target);}
+    CompletableFuture<Void> addRoot(long user,long target) {return submit(()-> {
+        requirePrimaryRoot(user);
+        if(target<=0 || rootAdmin(target)) throw new IllegalArgumentException("Некорректный или уже добавленный Root ID");
+        execute("MERGE INTO guard_roots KEY(tg) VALUES(?)",target);
+        extraRoots.add(target);
+        log.info("Telegram "+user+": addRoot → "+target);
+        return null;
+    });}
+    CompletableFuture<Void> removeRoot(long user,long target) {return submit(()-> {
+        requirePrimaryRoot(user);
+        if(!canRemoveRoot(user,target)) throw new IllegalArgumentException("Этого Root нельзя удалить");
+        execute("DELETE FROM guard_roots WHERE tg=?",target);
+        extraRoots.remove(target);
+        log.info("Telegram "+user+": removeRoot → "+target);
+        return null;
+    });}
+    CompletableFuture<List<RootCommand>> rootCommands(long user) {return submit(()-> {
+        requireRoot(user);List<RootCommand> rows=new ArrayList<>();
+        try(var s=db.prepareStatement("SELECT id,command FROM root_commands WHERE tg=? ORDER BY id DESC LIMIT 20")) {
+            s.setLong(1,user);try(var rs=s.executeQuery()) {
+            while(rs.next()) rows.add(new RootCommand(rs.getLong(1),rs.getString(2)));
+            }
+        }
+        return List.copyOf(rows);
+    });}
+    CompletableFuture<String> rootCommand(long user,long id) {return submit(()-> {
+        requireRoot(user);
+        try(var s=db.prepareStatement("SELECT command FROM root_commands WHERE id=? AND tg=?")) {
+            s.setLong(1,id);s.setLong(2,user);try(var rs=s.executeQuery()) {return rs.next()?rs.getString(1):null;}
+        }
+    });}
+    CompletableFuture<Void> rememberRootCommand(long user,String command) {return submit(()-> {
+        requireRoot(user);
+        if(command==null || command.isBlank() || command.length()>2048) throw new IllegalArgumentException("Некорректная команда");
+        execute("DELETE FROM root_commands WHERE tg=? AND command=?",user,command);
+        execute("INSERT INTO root_commands(tg,command) VALUES(?,?)",user,command);
+        try(var s=db.prepareStatement("SELECT id FROM root_commands WHERE tg=? ORDER BY id DESC LIMIT 1 OFFSET 19")) {
+            s.setLong(1,user);try(var rs=s.executeQuery()) {
+                if(rs.next()) execute("DELETE FROM root_commands WHERE tg=? AND id<?",user,rs.getLong(1));
+            }
+        }
+        return null;
+    });}
+    CompletableFuture<Void> clearRootCommands(long user) {return submit(()-> {requireRoot(user);execute("DELETE FROM root_commands WHERE tg=?",user);return null;});}
     boolean admin(long user) { return superAdmin(user) || adminOverrides.getOrDefault(user,admins.contains(user)); }
+    boolean telegramGameChatEnabled(UUID uuid) {return telegramGameChat.getOrDefault(uuid,true);}
+    CompletableFuture<Void> mergeStatistics(UUID uuid,Map<String,Integer> raw) {return submit(()-> {
+        Objects.requireNonNull(uuid);Objects.requireNonNull(raw);
+        try(var select=db.prepareStatement("SELECT total,last_vanilla FROM player_stat_counters WHERE uuid=? AND stat_key=?");
+            var upsert=db.prepareStatement("MERGE INTO player_stat_counters(uuid,stat_key,total,last_vanilla) KEY(uuid,stat_key) VALUES(?,?,?,?)")) {
+            for(var entry:raw.entrySet()) {
+                String key=entry.getKey();int observed=entry.getValue();
+                if(observed<=0 || key==null || key.length()>128) continue;
+                select.setString(1,uuid.toString());select.setString(2,key);
+                PlayerStatistics.Counter prior=null;
+                try(var rs=select.executeQuery()) {if(rs.next()) prior=new PlayerStatistics.Counter(rs.getLong(1),rs.getInt(2));}
+                PlayerStatistics.Counter next=PlayerStatistics.merge(prior,observed);
+                if(next==null || next.equals(prior)) continue;
+                upsert.setString(1,uuid.toString());upsert.setString(2,key);upsert.setLong(3,next.total());upsert.setInt(4,next.lastVanilla());upsert.addBatch();
+            }
+            upsert.executeBatch();
+        }
+        return null;
+    });}
+    CompletableFuture<Map<String,Long>> statistics(UUID uuid) {return submit(()-> {
+        Map<String,Long> values=new HashMap<>();
+        try(var statement=db.prepareStatement("SELECT stat_key,total FROM player_stat_counters WHERE uuid=?")) {
+            statement.setString(1,uuid.toString());
+            try(var rs=statement.executeQuery()) {while(rs.next()) values.put(rs.getString(1),rs.getLong(2));}
+        }
+        return Map.copyOf(values);
+    });}
+    CompletableFuture<Boolean> toggleTelegramGameChat(long user) {return submit(()-> {
+        Account account=accountNow(user);
+        if(account==null) throw new SecurityException("Сначала привяжите персонажа");
+        UUID uuid=account.uuid();boolean enabled=!telegramGameChatEnabled(uuid);
+        execute("MERGE INTO telegram_game_chat(uuid,enabled) KEY(uuid) VALUES(?,?)",uuid.toString(),enabled);
+        telegramGameChat.put(uuid,enabled);
+        return enabled;
+    });}
     Set<Long> adminIds() {
         Set<Long> ids=new TreeSet<>(admins);adminOverrides.forEach((id,enabled)-> {if(enabled) ids.add(id);else ids.remove(id);});
-        ids.addAll(extraSupers);if(config.superAdminUserId()>0) ids.add(config.superAdminUserId());return ids;
+        ids.addAll(extraSupers);ids.addAll(extraRoots);if(config.superAdminUserId()>0) ids.add(config.superAdminUserId());return ids;
     }
     void requireAdmin(long user) {if(!admin(user)) throw new SecurityException("Требуются права администратора");}
     String telegramProfile(long user) {return telegramProfiles.getOrDefault(user,"Telegram-пользователь");}
@@ -159,21 +333,23 @@ final class GuardService implements AutoCloseable {
     boolean capability(String name) {return adminCapabilities.getOrDefault(name, false);}
     void requireCapability(long user,String name) {if(superAdmin(user)) return;requireAdmin(user);if(!capability(name)) throw new SecurityException("Эта функция отключена суперадминистратором");}
     void requireAnyCapability(long user,Collection<String> names) {if(superAdmin(user)) return;requireAdmin(user);if(names.stream().noneMatch(this::capability)) throw new SecurityException("Действия с игроками отключены суперадминистратором");}
-    CompletableFuture<Void> capability(long user,String name,boolean enabled) {return submit(()-> {requireSuper(user);if(!ADMIN_CAPABILITIES.contains(name)) throw new IllegalArgumentException("Неизвестная функция");execute("MERGE INTO admin_capabilities KEY(capability) VALUES(?,?)",name,enabled);adminCapabilities.put(name,enabled);return null;});}
+    CompletableFuture<Void> capability(long user,String name,boolean enabled) {return submit(()-> {requireSuper(user);if(!ADMIN_CAPABILITIES.contains(name)) throw new IllegalArgumentException("Неизвестная функция");execute("MERGE INTO admin_capabilities KEY(capability) VALUES(?,?)",name,enabled);adminCapabilities.put(name,enabled);log.info("Telegram "+user+": capability "+name+" → "+enabled);return null;});}
     CompletableFuture<Void> changeAdmin(long user,long target,boolean enabled) {return submit(()-> {
         requireSuper(user);if(target<=0 || superAdmin(target)) throw new IllegalArgumentException("Нельзя изменить эту роль");
         execute("MERGE INTO guard_admins KEY(tg) VALUES(?,?)",target,enabled);adminOverrides.put(target,enabled);
+        log.info("Telegram "+user+": "+(enabled?"addAdmin":"removeAdmin")+" → "+target);
         return null;
     });}
     CompletableFuture<Void> changeSuper(long user,long target,boolean enabled) {return submit(()-> {
-        requireSuper(user);
-        if(target<=0 || target==config.superAdminUserId() || target==user) throw new IllegalArgumentException("Основного суперадминистратора и собственную роль изменить нельзя");
+        requireRoot(user);
+        if(target<=0 || rootAdmin(target) || target==user) throw new IllegalArgumentException("Root и собственную роль изменить нельзя");
         if(!enabled && !extraSupers.contains(target)) throw new IllegalArgumentException("Суперадминистратор не найден");
         if(enabled) {execute("MERGE INTO guard_supers KEY(tg) VALUES(?)",target);extraSupers.add(target);}
         else {execute("DELETE FROM guard_supers WHERE tg=?",target);extraSupers.remove(target);execute("MERGE INTO guard_admins KEY(tg) VALUES(?,?)",target,false);adminOverrides.put(target,false);}
+        log.info("Telegram "+user+": "+(enabled?"addSuper":"removeSuper")+" → "+target);
         return null;
     });}
-    boolean canRemoveSuper(long user,long target) {return superAdmin(user) && extraSupers.contains(target) && target!=user && target!=config.superAdminUserId();}
+    boolean canRemoveSuper(long user,long target) {return rootAdmin(user) && extraSupers.contains(target) && target!=user && !rootAdmin(target);}
     CompletableFuture<Boolean> tag(long user,boolean toggle) {return submit(()-> {
         if(accountNow(user)==null) throw new SecurityException("Сначала привяжите персонажа");
         if(toggle) execute("UPDATE accounts SET telegram_tag=NOT telegram_tag WHERE tg=?",user);
@@ -185,9 +361,9 @@ final class GuardService implements AutoCloseable {
     });}
     long superDelay(long user) {requireSuper(user);return superDelays.getOrDefault(user,defaultOfflineSeconds());}
     CompletableFuture<Void> superDelay(long user,long seconds) {return submit(()-> {
-        if(seconds== -2) {requireSuper(user);execute("DELETE FROM super_delays WHERE tg=?",user);superDelays.remove(user);return null;}
+        if(seconds== -2) {requireSuper(user);execute("DELETE FROM super_delays WHERE tg=?",user);superDelays.remove(user);log.info("Telegram "+user+": resetSuperDelay");return null;}
         requireSuper(user);if(seconds < -1 || seconds>MAX_OFFLINE_SECONDS) throw new IllegalArgumentException("Время вне диапазона");
-        execute("MERGE INTO super_delays KEY(tg) VALUES(?,?)",user,seconds);superDelays.put(user,seconds);return null;
+        execute("MERGE INTO super_delays KEY(tg) VALUES(?,?)",user,seconds);superDelays.put(user,seconds);log.info("Telegram "+user+": setSuperDelay → "+seconds);return null;
     });}
     boolean enabled() { return config.enabled(); }
     long defaultOfflineSeconds() {return config.absenceMillis()/1000;}
@@ -226,12 +402,29 @@ final class GuardService implements AutoCloseable {
     /** Marks the next inventory snapshot as produced by a server-side mechanism. */
     void automated(BlockKey sign) { automated.put(sign,clock.getAsLong()+30_000); }
     void presence(UUID uuid,String name,boolean online) {
+        rememberKnownName(uuid,name);
+        if(name!=null && !name.isBlank()) currentNames.put(uuid,name);
+        if(online && linkedNames.containsKey(uuid)) linkedNames.put(uuid,name);
         long time=online ? -1 : clock.getAsLong(); presence.put(uuid,time);
         enqueue(()-> {
             execute("MERGE INTO presence KEY(uuid) VALUES(?,?)",uuid.toString(),time);
-            if(online) execute("UPDATE accounts SET nickname=? WHERE uuid=?",name,uuid.toString());
+            execute("MERGE INTO known_player_names(nickname,uuid) KEY(nickname,uuid) VALUES(?,?)",name.toLowerCase(Locale.ROOT),uuid.toString());
+            if(online) {
+                execute("UPDATE accounts SET nickname=? WHERE uuid=?",name,uuid.toString());
+                if(linkedNames.containsKey(uuid)) linkedNames.put(uuid,name);
+            }
         });
     }
+    private void rememberKnownName(UUID uuid,String name) {
+        if(uuid==null || name==null || name.isBlank()) return;
+        knownPlayerNames.computeIfAbsent(name.toLowerCase(Locale.ROOT),ignored->ConcurrentHashMap.newKeySet()).add(uuid);
+    }
+    UUID knownPlayerUuid(String oldName) {
+        if(oldName==null) return null;
+        Set<UUID> matches=knownPlayerNames.getOrDefault(oldName.toLowerCase(Locale.ROOT),Set.of());
+        return matches.size()==1?matches.iterator().next():null;
+    }
+    String knownPlayerName(UUID uuid) {return currentNames.get(uuid);}
     void accept(Snapshot snapshot) {
         Actor attributed=actors.remove(snapshot.sign());
         Actor actorInfo=attributed!=null && attributed.expires()>=clock.getAsLong() ? attributed : null;
@@ -256,7 +449,8 @@ final class GuardService implements AutoCloseable {
         boolean rootEligible=root>0 && (rootDelay<0 || (departed>=0 && now-departed>=rootDelay));
         boolean extraEligible=extraSupers.stream().anyMatch(id->eligibleSuper(id,departed,now));
         boolean trustedFriend=actorInfo!=null&&actorInfo.uuid()!=null&&friend(snapshot.owner(),actorInfo.uuid());
-        if(ownEligible || adminEligible || rootEligible || extraEligible) enqueue(()->observe(old,snapshot,now,ownEligible,adminEligible,actor,actorInfo==null?null:actorInfo.uuid(),rootEligible,root,trustedFriend));
+        boolean friendEligible=friends.getOrDefault(snapshot.owner(),Map.of()).values().stream().anyMatch(Friend::notified);
+        if(ownEligible || adminEligible || rootEligible || extraEligible || friendEligible) enqueue(()->observe(old,snapshot,now,ownEligible,adminEligible,actor,actorInfo==null?null:actorInfo.uuid(),rootEligible,root,trustedFriend));
     }
     private boolean eligibleSuper(long user,long departed,long now) {long delay=superDelays.getOrDefault(user,defaultOfflineSeconds())*1000;return delay<0 || (departed>=0 && now-departed>=delay);}
     private void observe(Snapshot old,Snapshot current,long now,boolean ownEligible,boolean adminEligible,String actor,UUID actorUuid,boolean rootEligible,long root,boolean trustedFriend) throws Exception {
@@ -286,6 +480,13 @@ final class GuardService implements AutoCloseable {
             Set<Long> adminRecipients=new HashSet<>();
             for(long admin:adminIds()) if((superAdmin(admin) ? eligibleSuper(admin,presence.getOrDefault(old.owner(),started),now) : adminEligible) && adminAlertsNow(admin)) {recipients.add(admin);adminRecipients.add(admin);}
             if(trustedFriend) {recipients.clear();adminRecipients.clear();ownerRecipient=null;}
+            for(Friend subscriber:friends.getOrDefault(old.owner(),Map.of()).values()) {
+                if(!subscriber.notified() || Objects.equals(subscriber.uuid(),actorUuid)) continue;
+                try(var s=db.prepareStatement("SELECT tg FROM accounts WHERE uuid=? AND friend_alerts=TRUE")) {
+                    s.setString(1,subscriber.uuid().toString());
+                    try(var rs=s.executeQuery()) {if(rs.next()) recipients.add(rs.getLong(1));}
+                }
+            }
             for(long recipient:recipients) {
                 boolean adminChannel=adminRecipients.contains(recipient);
                 queueNotification(id,recipient,old.owner(),now,Objects.equals(ownerRecipient,recipient),adminChannel,
@@ -301,7 +502,7 @@ final class GuardService implements AutoCloseable {
             s.setLong(1,recipient);s.setString(2,owner.toString());s.setBoolean(3,own);s.setBoolean(4,admin);s.setLong(5,now-10000);
             try(var rs=s.executeQuery()) {if(rs.next()) {Event[] entries=gson.fromJson(rs.getString(2),Event[].class);if(entries.length>0 && entries.length<1000 && Objects.equals(entries[0].actorUuid(),event.actorUuid()) && Objects.equals(entries[0].actor(),event.actor())) {existing=rs.getLong(1);batch.addAll(Arrays.asList(entries));}}}
         }
-        batch.add(event);String body=batchText(batch,admin),payload=gson.toJson(batch);
+        batch.add(event);String body=batchText(batch,true),payload=gson.toJson(batch);
         if(existing>0) execute("UPDATE outbox SET body=?,batch=? WHERE id=?",body,payload,existing);
         else execute("INSERT INTO outbox(event_id,tg,owner_uuid,body,due,created,own_channel,admin_channel,batch) VALUES(?,?,?,?,?,?,?,?,?)",eventId,recipient,owner.toString(),body,now+10000,now,own,admin,payload);
     }
@@ -335,6 +536,21 @@ final class GuardService implements AutoCloseable {
         return "Выполните в Minecraft под своим персонажем:\n"+TelegramEmojiMarkup.plainCode("/vtrack link "+code)+"\n\nКод одноразовый, действует 10 минут. Не передавайте его другим игрокам. После выполнения нажмите «Обновить кабинет».";
     });}
     CompletableFuture<String> link(UUID uuid,String name,String token) {return linkOutcome(uuid,name,token).thenApply(LinkResult::message);}
+    CompletableFuture<String> unlink(UUID uuid) {return submit(()-> {
+        Long telegram=null;
+        try(var statement=db.prepareStatement("SELECT tg FROM accounts WHERE uuid=?")) {
+            statement.setString(1,uuid.toString());
+            try(var result=statement.executeQuery()) {if(result.next()) telegram=result.getLong(1);}
+        }
+        if(telegram==null) return "Ваш персонаж не привязан к Telegram.";
+        long telegramId=telegram;
+        execute("DELETE FROM accounts WHERE uuid=?",uuid.toString());
+        execute("DELETE FROM outbox WHERE tg=? AND admin_channel=FALSE",telegramId);
+        codes.entrySet().removeIf(entry->entry.getValue().user()==telegramId);
+        linkedNames.remove(uuid);
+        personalAbsence.remove(uuid);
+        return "Персонаж отвязан от Telegram. Для повторной привязки получите новый код в боте.";
+    });}
     CompletableFuture<LinkResult> linkOutcome(UUID uuid,String name,String token) {return submit(()-> {
         String normalized=token==null?"":token.strip().toUpperCase(Locale.ROOT);Code code=codes.get(normalized);
         if(code==null || code.expires()<=clock.getAsLong()) return new LinkResult("Код неверный или истёк. Получите новый в личном чате бота.",false);
@@ -343,6 +559,10 @@ final class GuardService implements AutoCloseable {
             s.setString(1,uuid.toString());try(var rs=s.executeQuery()) {if(rs.next()) return new LinkResult("Ваш персонаж уже привязан к Telegram. Повторная привязка запрещена.",false);}
         }
         execute("INSERT INTO accounts(tg,uuid,nickname,alerts,bastion_pending) VALUES(?,?,?,TRUE,TRUE)",code.user(),uuid.toString(),name);
+        linkedNames.put(uuid,name);
+        currentNames.put(uuid,name);
+        rememberKnownName(uuid,name);
+        execute("MERGE INTO known_player_names(nickname,uuid) KEY(nickname,uuid) VALUES(?,?)",name.toLowerCase(Locale.ROOT),uuid.toString());
         codes.remove(normalized);
         return new LinkResult("Персонаж "+name+" привязан к Telegram. В боте нажмите «Обновить кабинет» или /menu. Уведомления о ваших хранилищах включены.",true);
     });}
@@ -353,11 +573,207 @@ final class GuardService implements AutoCloseable {
     });}
     CompletableFuture<Void> bastionGranted(UUID uuid) {return submit(()->{execute("UPDATE accounts SET bastion_pending=FALSE WHERE uuid=?",uuid.toString());return null;});}
     CompletableFuture<Account> account(long user) {return submit(()->accountNow(user));}
+    CompletableFuture<Void> saveSupport(SupportTicket ticket) {return submit(()->{
+        execute("INSERT INTO support_requests(id,payload,status,created) VALUES(?,?,?,?)",ticket.id(),gson.toJson(ticket),ticket.status(),ticket.created());
+        return null;
+    });}
+    private int unbanCount(String sql,Object value) throws SQLException {
+        try(var s=db.prepareStatement(sql)) {s.setObject(1,value);try(var rs=s.executeQuery()) {rs.next();return rs.getInt(1);}}
+    }
+    private int unbanAttemptNow(long telegram,UUID uuid,boolean linked) throws SQLException {
+        int character=unbanCount("SELECT COUNT(*) FROM support_unban WHERE uuid=?",uuid.toString());
+        int account=unbanCount("SELECT COUNT(*) FROM support_unban WHERE tg=?",telegram);
+        if(character>=3 || (linked?character>=3:account>=2)) throw new IllegalArgumentException("Лимит заявок на разбан исчерпан.");
+        try(var s=db.prepareStatement("SELECT 1 FROM support_unban u JOIN support_requests r ON r.id=u.id WHERE (u.uuid=? OR u.tg=?) AND r.status NOT IN ('CLOSED','UNBANNED','REJECTED','EXPIRED') LIMIT 1")) {
+            s.setString(1,uuid.toString());s.setLong(2,telegram);
+            try(var rs=s.executeQuery()) {if(rs.next()) throw new IllegalArgumentException("У вас уже есть открытая заявка на разбан.");}
+        }
+        return linked?character+1:account+1;
+    }
+    CompletableFuture<Integer> unbanAttempt(long telegram,UUID uuid,boolean linked) {
+        return submit(()->unbanAttemptNow(telegram,uuid,linked));
+    }
+    CompletableFuture<Void> saveUnban(SupportTicket ticket) {return submit(()->{
+        if(ticket.type()!=SupportTicket.Type.UNBAN || ticket.authorUuid()==null) throw new IllegalArgumentException("Некорректная заявка.");
+        int attempt=unbanAttemptNow(ticket.authorTelegram(),ticket.authorUuid(),ticket.linked());
+        if(attempt!=ticket.attempt()) throw new IllegalArgumentException("Число заявок изменилось. Начните заново.");
+        db.setAutoCommit(false);
+        try {
+            execute("INSERT INTO support_requests(id,payload,status,created) VALUES(?,?,?,?)",ticket.id(),gson.toJson(ticket),ticket.status(),ticket.created());
+            execute("INSERT INTO support_unban(id,tg,uuid,linked,attempt) VALUES(?,?,?,?,?)",ticket.id(),ticket.authorTelegram(),ticket.authorUuid().toString(),ticket.linked(),attempt);
+            db.commit();
+        } catch(Exception failure) {db.rollback();throw failure;}
+        finally {db.setAutoCommit(true);}
+        return null;
+    });}
+    CompletableFuture<UnbanState> unbanState(String id) {return submit(()->{
+        try(var s=db.prepareStatement("SELECT * FROM support_unban WHERE id=?")) {
+            s.setString(1,id);try(var rs=s.executeQuery()) {return rs.next()?readUnban(rs):null;}
+        }
+    });}
+    private static UnbanState readUnban(ResultSet rs) throws SQLException {
+        return new UnbanState(rs.getString("id"),rs.getLong("tg"),UUID.fromString(rs.getString("uuid")),rs.getBoolean("linked"),rs.getInt("attempt"),
+                rs.getLong("invite_until"),rs.getInt("invite_message"),rs.getLong("access_until"),rs.getString("ban_reason"),
+                rs.getLong("ban_expiry"),rs.getString("ban_source"),rs.getLong("actor"));
+    }
+    CompletableFuture<Void> unbanInvite(String id,long until,int message,long actor) {return submit(()->{
+        execute("UPDATE support_unban SET invite_until=?,invite_message=?,actor=? WHERE id=?",until,message,actor,id);return null;
+    });}
+    CompletableFuture<Void> unbanAccess(String id,long until,String reason,long expiry,String source) {return submit(()->{
+        execute("UPDATE support_unban SET access_until=?,ban_reason=?,ban_expiry=?,ban_source=? WHERE id=?",until,reason,expiry,source,id);return null;
+    });}
+    CompletableFuture<Void> clearUnbanAccess(String id) {return submit(()->{
+        execute("UPDATE support_unban SET access_until=0 WHERE id=?",id);return null;
+    });}
+    CompletableFuture<List<UnbanState>> unbanPending() {return submit(()->{
+        List<UnbanState> result=new ArrayList<>();
+        try(var s=db.prepareStatement("SELECT u.* FROM support_unban u JOIN support_requests r ON r.id=u.id WHERE r.status='UNBAN_PENDING' OR r.status IN ('INVITED','ACCESS','BUSY','UNBANNED') AND (u.invite_until>0 OR u.access_until>0)")) {
+            try(var rs=s.executeQuery()) {while(rs.next()) result.add(readUnban(rs));}
+        }
+        return List.copyOf(result);
+    });}
+    CompletableFuture<Void> supportActor(String id,long actor) {return submit(()->{
+        SupportTicket ticket=supportNow(id);if(ticket==null) return null;
+        execute("UPDATE support_requests SET payload=? WHERE id=?",gson.toJson(ticket.withActor(actor)),id);
+        return null;
+    });}
+    CompletableFuture<SupportTicket> support(String id) {return submit(()->supportNow(id));}
+    private SupportTicket supportNow(String id) throws SQLException {
+        try(var s=db.prepareStatement("SELECT payload,status FROM support_requests WHERE id=?")) {
+            s.setString(1,id);try(var rs=s.executeQuery()) {if(!rs.next()) return null;
+                return gson.fromJson(rs.getString(1),SupportTicket.class).withStatus(rs.getString(2));}
+        }
+    }
+    CompletableFuture<Boolean> supportStatus(String id,String expected,String status) {return submit(()->{
+        try(var s=db.prepareStatement("UPDATE support_requests SET status=? WHERE id=? AND status=?")) {
+            s.setString(1,status);s.setString(2,id);s.setString(3,expected);return s.executeUpdate()==1;
+        }
+    });}
+    CompletableFuture<Boolean> supportChange(SupportTicket ticket,String expected) {return submit(()->{
+        try(var s=db.prepareStatement("UPDATE support_requests SET status=?,payload=? WHERE id=? AND status=?")) {
+            s.setString(1,ticket.status());s.setString(2,gson.toJson(ticket));s.setString(3,ticket.id());
+            s.setString(4,expected);return s.executeUpdate()==1;
+        }
+    });}
+    ItemSorting.Mode itemSortMode(long user) {return itemSortModes.getOrDefault(user,ItemSorting.Mode.MINECRAFT);}
+    Map<String,Long> itemSearchCounts() {return Map.copyOf(itemSearchCounts);}
+    CompletableFuture<Void> itemSortMode(long user,ItemSorting.Mode mode) {return submit(()->{
+        if(accountNow(user)==null) throw new SecurityException("Сначала привяжите персонажа");
+        execute("MERGE INTO item_sort_preferences(tg,mode) KEY(tg) VALUES(?,?)",user,mode.name());
+        itemSortModes.put(user,mode);
+        return null;
+    });}
+    CompletableFuture<Void> recordItemSearch(String item) {
+        if(item==null || !item.matches("[A-Z0-9_]{1,128}")) return CompletableFuture.completedFuture(null);
+        return submit(()->{
+            long count=itemSearchCounts.getOrDefault(item,0L)+1;
+            execute("MERGE INTO item_search_counts(item,searches) KEY(item) VALUES(?,?)",item,count);
+            itemSearchCounts.put(item,count);
+            return null;
+        });
+    }
+    List<String> linkedNames() {return List.copyOf(linkedNames.values());}
+    boolean linked(UUID uuid) {return linkedNames.containsKey(uuid);}
+    List<OnlineLinked> onlineLinked(UUID exclude) {
+        return linkedNames.entrySet().stream()
+                .filter(entry->!entry.getKey().equals(exclude) && presence.getOrDefault(entry.getKey(),0L)==-1L)
+                .map(entry->new OnlineLinked(entry.getKey(),entry.getValue()))
+                .sorted(Comparator.comparing(OnlineLinked::name,String.CASE_INSENSITIVE_ORDER)).toList();
+    }
+    CompletableFuture<Account> linkedPlayer(String name) {return submit(()->{
+        try(var s=db.prepareStatement("SELECT uuid,nickname,alerts FROM accounts WHERE LOWER(nickname)=LOWER(?) LIMIT 2")) {
+            s.setString(1,name);try(var rs=s.executeQuery()) {if(!rs.next()) return null;
+                Account found=new Account(UUID.fromString(rs.getString(1)),rs.getString(2),rs.getBoolean(3));
+                if(rs.next()) throw new IllegalArgumentException("Ник неоднозначен. Уточните имя игрока.");return found;}
+        }
+    });}
+    CompletableFuture<Account> linkedPlayer(UUID uuid) {return submit(()->{
+        try(var s=db.prepareStatement("SELECT uuid,nickname,alerts FROM accounts WHERE uuid=?")) {
+            s.setString(1,uuid.toString());try(var rs=s.executeQuery()) {return rs.next()?new Account(uuid,rs.getString(2),rs.getBoolean(3)):null;}
+        }
+    });}
+    CompletableFuture<DirectMessage> directMessage(UUID sender,String senderName,UUID recipient,String recipientName,String body) {
+        return directMessage(sender,senderName,recipient,recipientName,body,true);
+    }
+    CompletableFuture<DirectMessage> directMessage(UUID sender,String senderName,UUID recipient,String recipientName,String body,boolean fromGame) {return submit(()->{
+        if(sender.equals(recipient)) throw new IllegalArgumentException("Нельзя написать самому себе.");
+        if(body==null||body.isBlank()||body.length()>500||body.contains("\n")||body.contains("\r")) throw new IllegalArgumentException("Сообщение: одна строка, до 500 символов.");
+        if(linkedPlayerNow(recipient)==null) throw new IllegalArgumentException("У получателя нет связанного Telegram-аккаунта.");
+        long now=clock.getAsLong();
+        boolean suppressNotice=fromGame && !gameMessageNotificationsNow(recipient);
+        try(var s=db.prepareStatement("INSERT INTO player_messages(sender_uuid,recipient_uuid,sender_name,recipient_name,body,created,from_game,notified_at) VALUES(?,?,?,?,?,?,?,?)",Statement.RETURN_GENERATED_KEYS)) {
+            s.setString(1,sender.toString());s.setString(2,recipient.toString());s.setString(3,senderName);s.setString(4,recipientName);s.setString(5,body);s.setLong(6,now);s.setBoolean(7,fromGame);
+            if(suppressNotice) s.setLong(8,now);else s.setNull(8,Types.BIGINT);
+            s.executeUpdate();
+            try(var keys=s.getGeneratedKeys()) {keys.next();return new DirectMessage(keys.getLong(1),sender,recipient,senderName,body,now);}
+        }
+    });}
+    private boolean gameMessageNotificationsNow(UUID recipient) throws SQLException {
+        try(var s=db.prepareStatement("SELECT game_message_notifications FROM accounts WHERE uuid=?")) {
+            s.setString(1,recipient.toString());try(var rs=s.executeQuery()) {return rs.next()&&rs.getBoolean(1);}
+        }
+    }
+    CompletableFuture<Boolean> gameMessageNotifications(long user) {return submit(()->{
+        Account account=accountNow(user);if(account==null) throw new SecurityException("Сначала привяжите персонажа");
+        return gameMessageNotificationsNow(account.uuid());
+    });}
+    CompletableFuture<Void> toggleGameMessageNotifications(long user) {return submit(()->{
+        Account account=accountNow(user);if(account==null) throw new SecurityException("Сначала привяжите персонажа");
+        boolean enabled=!gameMessageNotificationsNow(account.uuid());
+        execute("UPDATE accounts SET game_message_notifications=? WHERE tg=?",enabled,user);
+        if(!enabled) execute("UPDATE player_messages SET notified_at=? WHERE recipient_uuid=? AND from_game=TRUE AND read_at IS NULL AND notified_at IS NULL",clock.getAsLong(),account.uuid().toString());
+        return null;
+    });}
+    private Account linkedPlayerNow(UUID uuid) throws SQLException {
+        try(var s=db.prepareStatement("SELECT nickname,alerts FROM accounts WHERE uuid=?")) {s.setString(1,uuid.toString());try(var rs=s.executeQuery()) {return rs.next()?new Account(uuid,rs.getString(1),rs.getBoolean(2)):null;}}
+    }
+    CompletableFuture<Void> directDelivered(long id,UUID recipient) {return submit(()->{execute("UPDATE player_messages SET read_at=? WHERE id=? AND recipient_uuid=? AND read_at IS NULL",clock.getAsLong(),id,recipient.toString());return null;});}
+    CompletableFuture<List<PendingDirect>> pendingDirectNotifications(int limit) {return submit(()->{
+        List<PendingDirect> result=new ArrayList<>();
+        try(var s=db.prepareStatement("SELECT m.id,a.tg,m.sender_uuid,m.sender_name,m.body FROM player_messages m JOIN accounts a ON a.uuid=m.recipient_uuid WHERE m.read_at IS NULL AND m.notified_at IS NULL ORDER BY m.id LIMIT ?")) {
+            s.setInt(1,Math.max(1,Math.min(limit,1000)));
+            try(var rs=s.executeQuery()) {while(rs.next()) result.add(new PendingDirect(rs.getLong(1),rs.getLong(2),UUID.fromString(rs.getString(3)),rs.getString(4),rs.getString(5)));}
+        }return List.copyOf(result);
+    });}
+    CompletableFuture<Void> directNotified(long id) {return submit(()->{execute("UPDATE player_messages SET notified_at=? WHERE id=? AND notified_at IS NULL",clock.getAsLong(),id);return null;});}
+    CompletableFuture<Integer> notificationTopic(long user) {return submit(()->{
+        try(var s=db.prepareStatement("SELECT thread_id FROM telegram_notification_topics WHERE tg=?")) {s.setLong(1,user);try(var rs=s.executeQuery()) {return rs.next()?rs.getInt(1):0;}}
+    });}
+    CompletableFuture<Void> notificationTopic(long user,int threadId) {return submit(()->{
+        if(threadId<=0) throw new IllegalArgumentException("Некорректный ID темы");
+        execute("MERGE INTO telegram_notification_topics(tg,thread_id) KEY(tg) VALUES(?,?)",user,threadId);return null;
+    });}
+    CompletableFuture<List<Dialog>> dialogs(long user,int page,int size) {return submit(()->{
+        Account owner=accountNow(user);if(owner==null) throw new SecurityException("Сначала привяжите персонажа");
+        String id=owner.uuid().toString();List<Dialog> result=new ArrayList<>();
+        String sql="SELECT peer,MAX(id) latest,SUM(unread) unread FROM (SELECT id,CASE WHEN sender_uuid=? THEN recipient_uuid ELSE sender_uuid END peer,CASE WHEN recipient_uuid=? AND read_at IS NULL THEN 1 ELSE 0 END unread FROM player_messages WHERE sender_uuid=? OR recipient_uuid=?) GROUP BY peer ORDER BY CASE WHEN SUM(unread)>0 THEN 0 ELSE 1 END,MAX(id) DESC LIMIT ? OFFSET ?";
+        try(var s=db.prepareStatement(sql)) {for(int i=1;i<=4;i++)s.setString(i,id);s.setInt(5,size+1);s.setLong(6,(long)Math.max(0,page)*size);
+            try(var rs=s.executeQuery()) {while(rs.next()) {UUID peer=UUID.fromString(rs.getString(1));result.add(new Dialog(peer,displayNameNow(peer),rs.getLong(3),rs.getLong(2)));}}
+        }return List.copyOf(result);
+    });}
+    private String displayNameNow(UUID uuid) throws SQLException {
+        Account linked=linkedPlayerNow(uuid);if(linked!=null) return linked.name();
+        try(var s=db.prepareStatement("SELECT CASE WHEN sender_uuid=? THEN sender_name ELSE recipient_name END FROM player_messages WHERE sender_uuid=? OR recipient_uuid=? ORDER BY id DESC LIMIT 1")) {
+            String id=uuid.toString();s.setString(1,id);s.setString(2,id);s.setString(3,id);try(var rs=s.executeQuery()) {return rs.next()?rs.getString(1):uuid.toString().substring(0,8);}
+        }
+    }
+    CompletableFuture<String> directDisplayName(UUID uuid) {return submit(()->displayNameNow(uuid));}
+    CompletableFuture<Conversation> conversation(long user,UUID peer,int page,int size) {return submit(()->{
+        Account owner=accountNow(user);if(owner==null) throw new SecurityException("Сначала привяжите персонажа");
+        String self=owner.uuid().toString(),other=peer.toString();
+        execute("UPDATE player_messages SET read_at=? WHERE recipient_uuid=? AND sender_uuid=? AND read_at IS NULL",clock.getAsLong(),self,other);
+        List<DirectMessage> rows=new ArrayList<>();
+        try(var s=db.prepareStatement("SELECT id,sender_uuid,recipient_uuid,sender_name,body,created FROM player_messages WHERE (sender_uuid=? AND recipient_uuid=?) OR (sender_uuid=? AND recipient_uuid=?) ORDER BY id DESC LIMIT ? OFFSET ?")) {
+            s.setString(1,self);s.setString(2,other);s.setString(3,other);s.setString(4,self);s.setInt(5,size+1);s.setLong(6,(long)Math.max(0,page)*size);
+            try(var rs=s.executeQuery()) {while(rs.next()) rows.add(new DirectMessage(rs.getLong(1),UUID.fromString(rs.getString(2)),UUID.fromString(rs.getString(3)),rs.getString(4),rs.getString(5),rs.getLong(6)));}
+        }
+        boolean older=rows.size()>size;if(older) rows.removeLast();Collections.reverse(rows);return new Conversation(List.copyOf(rows),older);
+    });}
     CompletableFuture<Boolean> donationsVisible() {return submit(()->{
         try(var s=db.createStatement();var rs=s.executeQuery("SELECT visible FROM donation_settings WHERE id=1")) {return rs.next()&&rs.getBoolean(1);}
     });}
     CompletableFuture<Void> donationsVisible(long user,boolean visible) {return submit(()->{
-        requireSuper(user);execute("MERGE INTO donation_settings KEY(id) VALUES(1,?)",visible);return null;
+        requireRoot(user);execute("MERGE INTO donation_settings KEY(id) VALUES(1,?)",visible);return null;
     });}
     private Account accountNow(long user) throws Exception {
         try(var s=db.prepareStatement("SELECT uuid,nickname,alerts FROM accounts WHERE tg=?")) {
@@ -365,6 +781,18 @@ final class GuardService implements AutoCloseable {
         }
     }
     CompletableFuture<Void> toggleOwn(long user) {return submit(()-> {execute("UPDATE accounts SET alerts=NOT alerts WHERE tg=?",user);return null;});}
+    CompletableFuture<Boolean> friendAlerts(long user) {return submit(()->friendAlertsNow(user));}
+    private boolean friendAlertsNow(long user) throws Exception {
+        try(var s=db.prepareStatement("SELECT friend_alerts FROM accounts WHERE tg=?")) {
+            s.setLong(1,user);try(var rs=s.executeQuery()) {if(!rs.next()) throw new SecurityException("Сначала привяжите персонажа");return rs.getBoolean(1);}
+        }
+    }
+    CompletableFuture<Void> toggleFriendAlerts(long user) {return submit(()->{
+        if(accountNow(user)==null) throw new SecurityException("Сначала привяжите персонажа");
+        execute("UPDATE accounts SET friend_alerts=NOT friend_alerts WHERE tg=?",user);
+        if(!friendAlertsNow(user)) execute("DELETE FROM outbox WHERE tg=? AND own_channel=FALSE AND admin_channel=FALSE",user);
+        return null;
+    });}
     CompletableFuture<Boolean> adminAlerts(long user) {return submit(()->adminAlertsNow(user));}
     private boolean adminAlertsNow(long user) throws Exception {
         try(var s=db.prepareStatement("SELECT alerts FROM preferences WHERE tg=?")) {
@@ -404,14 +832,14 @@ final class GuardService implements AutoCloseable {
         List<Event> result=new ArrayList<>();
         try(var s=db.prepareStatement("SELECT id,payload FROM events WHERE owner_uuid=? AND happened>=? ORDER BY id DESC LIMIT ? OFFSET ?")) {
             s.setString(1,a.uuid().toString());s.setLong(2,clock.getAsLong()-2L*86400_000);s.setInt(3,size);s.setLong(4,(long)Math.max(0,page)*size);
-            try(var rs=s.executeQuery()) {while(rs.next()) {Event e=gson.fromJson(rs.getString(2),Event.class);result.add(new Event(rs.getLong(1),e.time(),e.name(),readableLocation(e.location()),e.changes(),e.removed(),admin(user)?e.actor():null,admin(user)?e.actorUuid():null));}}
+            try(var rs=s.executeQuery()) {while(rs.next()) {Event e=gson.fromJson(rs.getString(2),Event.class);result.add(new Event(rs.getLong(1),e.time(),e.name(),readableLocation(e.location()),e.changes(),e.removed(),e.actor(),admin(user)?e.actorUuid():null));}}
         }return result;
     });}
     CompletableFuture<Event> ownEvent(long user,long id) {return submit(()-> {
         Account a=accountNow(user);if(a==null) throw new SecurityException("Нет привязки");
         try(var s=db.prepareStatement("SELECT payload FROM events WHERE id=? AND owner_uuid=? AND happened>=?")) {
             s.setLong(1,id);s.setString(2,a.uuid().toString());s.setLong(3,clock.getAsLong()-2L*86400_000);
-            try(var rs=s.executeQuery()) {if(!rs.next()) return null;Event e=gson.fromJson(rs.getString(1),Event.class);return new Event(id,e.time(),e.name(),readableLocation(e.location()),e.changes(),e.removed(),admin(user)?e.actor():null,admin(user)?e.actorUuid():null);}
+            try(var rs=s.executeQuery()) {if(!rs.next()) return null;Event e=gson.fromJson(rs.getString(1),Event.class);return new Event(id,e.time(),e.name(),readableLocation(e.location()),e.changes(),e.removed(),e.actor(),admin(user)?e.actorUuid():null);}
         }
     });}
     CompletableFuture<Event> event(long user,long id) {return submit(()-> {
@@ -427,15 +855,18 @@ final class GuardService implements AutoCloseable {
         try(var s=db.prepareStatement("SELECT id,tg,owner_uuid,body,own_channel,admin_channel,batch FROM outbox WHERE due<=? ORDER BY id LIMIT 20")) {
             s.setLong(1,clock.getAsLong());try(var rs=s.executeQuery()) {while(rs.next()) {
                 long id=rs.getLong(1),tg=rs.getLong(2);Account a=accountNow(tg);
-                if((rs.getBoolean(6) && admin(tg) && adminAlertsNow(tg)) || (rs.getBoolean(5) && a!=null && a.notifications() && a.uuid().toString().equals(rs.getString(3)))) {
-                    boolean showActor=admin(tg);
+                UUID storageOwner=UUID.fromString(rs.getString(3));
+                boolean friendChannel=!rs.getBoolean(5)&&!rs.getBoolean(6);
+                boolean friendAllowed=friendChannel&&a!=null&&friendAlertsNow(tg)
+                        &&Optional.ofNullable(friends.getOrDefault(storageOwner,Map.of()).get(a.uuid())).map(Friend::notified).orElse(false);
+                if((rs.getBoolean(6) && admin(tg) && adminAlertsNow(tg)) || (rs.getBoolean(5) && a!=null && a.notifications() && a.uuid().equals(storageOwner)) || friendAllowed) {
+                    boolean canModerate=admin(tg);
                     Event[] batch=rs.getString(7)==null?new Event[0]:gson.fromJson(rs.getString(7),Event[].class);
-                    String text=batch.length==0?rs.getString(4):batchText(Arrays.asList(batch),showActor);
-                    if(!showActor) text=text.replaceAll("\\nКто изменил:[^\\n]*","");
+                    String text=batch.length==0?rs.getString(4):batchText(Arrays.asList(batch),true);
                     Event first=batch.length==0?null:batch[0];
                     // Old batches may contain several actors: never attach one player's actions to those.
                     boolean single=first!=null && Arrays.stream(batch).allMatch(e->Objects.equals(e.actorUuid(),first.actorUuid()));
-                    result.add(new Delivery(id,tg,readableLocation(text),showActor&&single?first.actorUuid():null,showActor&&single?first.actor():null));
+                    result.add(new Delivery(id,tg,readableLocation(text),canModerate&&single?first.actorUuid():null,canModerate&&single?first.actor():null));
                 }
                 else discard.add(id);
             }}

@@ -1,9 +1,11 @@
 package ru.vaulttracker;
 
 import com.google.gson.*;
+import org.bukkit.Material;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.function.Predicate;
 
 final class RussianItems {
     private static final Map<String,String> TRANSLATIONS = load();
@@ -24,8 +26,22 @@ final class RussianItems {
         return TRANSLATIONS.getOrDefault("item.minecraft."+key,TRANSLATIONS.getOrDefault("block.minecraft."+key,material));
     }
     static String normalize(String raw) {
-        String name = raw.toUpperCase(Locale.ROOT).replaceFirst("^MINECRAFT:","");
+        String name = raw.toUpperCase(Locale.ROOT).replaceFirst("^MINECRAFT:","").replace("DIAMND","DIAMOND");
         return name.equals("DAIMOND") || name.equals("DIAMON") ? "DIAMOND" : name;
+    }
+    static List<String> searchTerms() {return SearchTerms.VALUES;}
+    private static final class SearchTerms {
+        private static final List<String> VALUES=searchTerms(Material::isItem);
+    }
+    static List<String> searchTerms(Predicate<Material> supported) {
+        Set<String> terms=new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+        for(Material material:Material.values()) if(!material.name().startsWith("LEGACY_") && supported.test(material)) {
+            String id=material.name().toLowerCase(Locale.ROOT);
+            terms.add(id);terms.add(name(material.name()));terms.add("minecraft:"+id);
+        }
+        // These spellings and the wildcard are accepted by /find itself.
+        terms.addAll(List.of("daimond","diamon","diamnd","*"));
+        return List.copyOf(terms);
     }
     static List<String> candidates(String raw) {
         LinkedHashSet<String> result=new LinkedHashSet<>();

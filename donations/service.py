@@ -22,11 +22,12 @@ class Service:
         self.lock = threading.Lock()
         self.attempts = {}
         self.cursor = None
+        self.check_warnings = {}
 
     def refresh(self, order_id):
         self.ledger.attempted(order_id)
         verified = self.provider.verify(order_id)
-        return self.ledger.sync(**verified, bonus_percent=self.config.get('review_bonus_percent', 10))
+        return self.ledger.sync(**verified)
 
     def redeem(self, owner, code):
         now = time.monotonic()
@@ -42,7 +43,7 @@ class Service:
             raise ValueError('Проверка занята. Повторите через несколько секунд.')
         try:
             self.refresh(row['id'])
-            result = self.ledger.claim(owner, code, self.config.get('review_bonus_percent', 10))
+            result = self.ledger.claim(owner, code)
             result.update(self.ledger.wallet(owner))
             return result
         finally:
@@ -88,7 +89,26 @@ class Service:
                     self.provider.send_code(current)
                     self.ledger.sent(current['id'])
         except Exception as error:
-            LOG.warning('Order check unavailable (%s); no credit issued', type(error).__name__)
+            # Only our fixed diagnostic codes are logged. Never log provider
+            # responses, order IDs, buyer names, cookies or one-time codes.
+            reasons = {
+                'Unknown FunPay order status markup': 'order-status-unrecognized',
+                'Unknown quantity; refusing to infer from fees or messages': 'quantity-unrecognized',
+                'Wrong seller or category': 'seller-or-category-mismatch',
+                'Wrong offer': 'offer-mismatch',
+                'Order amount or buyer changed; manual review required': 'order-identity-changed',
+                'Unverified order': 'order-data-unverified',
+            }
+            reason = reasons.get(str(error), 'verification-rejected' if isinstance(error, ValueError)
+                                 else type(error).__name__)
+            now = time.monotonic()
+            last, skipped = self.check_warnings.get(reason, (now - 300, 0))
+            if now - last >= 300:
+                LOG.warning('Order check unavailable (%s; %s similar checks suppressed); retry scheduled',
+                            reason, skipped)
+                self.check_warnings[reason] = (now, 0)
+            else:
+                self.check_warnings[reason] = (last, skipped + 1)
 
 
 def handler(service):
@@ -184,14 +204,12 @@ def main():
     config = json.loads(args.config.read_text(encoding='utf-8-sig'))
     if len(config.get('api_key', '')) < 40 or not config.get('golden_key') or not config.get('order_marker'):
         raise SystemExit('Fill local config: api_key, golden_key, order_marker')
-    if config.get('review_bonus_percent', 10) not in range(101):
-        raise SystemExit('Invalid review bonus percentage')
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
     try:
         provider = FunPayProvider(config)
         if args.check_order:
             checked = provider.verify(args.check_order.strip().upper().lstrip('#'))
-            print(json.dumps({k: checked[k] for k in ('order_id', 'amount', 'status', 'reviewed')}, ensure_ascii=False))
+            print(json.dumps({k: checked[k] for k in ('order_id', 'amount', 'status', 'stars')}, ensure_ascii=False))
             return
         if args.check:
             provider.recent()

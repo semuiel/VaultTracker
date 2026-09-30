@@ -9,6 +9,13 @@ import static org.mockito.Mockito.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class LinkedChatIdentityTest {
+    @Test void telegramTagHasGrayBracketsAndAquaLetters() {
+        Component tag=LinkedChatIdentity.tag(true);
+        assertEquals("[TG] ",TelegramChatBridge.plain(tag));
+        assertEquals(net.kyori.adventure.text.format.NamedTextColor.DARK_GRAY,tag.children().get(0).color());
+        assertEquals(net.kyori.adventure.text.format.NamedTextColor.AQUA,tag.children().get(1).color());
+        assertEquals(net.kyori.adventure.text.format.NamedTextColor.DARK_GRAY,tag.children().get(2).color());
+    }
     static class FakeFlexity extends JavaPlugin {Object bootstrap;}
     static class Bootstrap {Object chatFormatter;Object serviceRegistry;}
     public static class Services {

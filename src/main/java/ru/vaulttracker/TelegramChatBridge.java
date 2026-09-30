@@ -2,6 +2,9 @@ package ru.vaulttracker;
 
 import io.papermc.paper.event.player.AsyncChatEvent;
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.event.ClickEvent;
+import net.kyori.adventure.text.event.HoverEvent;
+import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.minimessage.MiniMessage;
 import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
@@ -19,6 +22,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /** No network I/O on Minecraft region threads. Shared tokens have exactly one polling owner. */
 final class TelegramChatBridge implements Listener,AutoCloseable {
+    private static final String MEDIA_URL="https://t.me/flexityfun";
+    private static final List<String> MEDIA_LABELS=List.of("[Фото]","[Видео]","[GIF]","[Документ]","[Аудио]","[Голосовое сообщение]","[Видеосообщение]","[Стикер]","[Опрос]");
     private sealed interface Job permits Outbound,ListSend,ListEdit {}
     private record Outbound(TelegramChatConfig.Target target,String html,boolean silent,boolean merge,long created) implements Job {}
     private record ListSend(String token,TelegramChatConfig.Target target,List<String> pages,boolean silent,long created) implements Job {}
@@ -179,10 +184,14 @@ final class TelegramChatBridge implements Listener,AutoCloseable {
         if(!config.chat.matches(update)) return false;
         if(!config.flag("chat.telegramToMinecraft",true) || (update.media()&&!config.flag("messages.mediaLabels",true))) return true;
         String senderName=update.displayName()==null||update.displayName().isBlank()?Long.toString(update.userId()):update.displayName();
-        Component message=incomingMessage(update.userId(),senderName,limit(text,1500));
+        String body=limit(text,1500);
+        Component main=incomingMessage(update.userId(),senderName,update.media()?mediaText(body):Component.text(body,NamedTextColor.WHITE));
+        Component message=update.reply()==null?main:Component.empty().append(replyPreview(update.reply())).append(main);
         plugin.getServer().getGlobalRegionScheduler().run(plugin,task->{
             if(stopping.get()) return;
-            for(Player player:plugin.getServer().getOnlinePlayers()) player.getScheduler().run(plugin,t->{if(!stopping.get()) player.sendMessage(message);},null);
+            for(Player player:plugin.getServer().getOnlinePlayers()) player.getScheduler().run(plugin,t->{
+                if(!stopping.get() && (guard==null || guard.telegramGameChatEnabled(player.getUniqueId()))) player.sendMessage(message);
+            },null);
             plugin.getServer().getConsoleSender().sendMessage(message);
         });
         return true;
@@ -203,6 +212,32 @@ final class TelegramChatBridge implements Listener,AutoCloseable {
         }
     }
     Component incomingMessage(long user,String sender,String text) {
+        return incomingMessage(user,sender,Component.text(text,net.kyori.adventure.text.format.NamedTextColor.WHITE));
+    }
+    private Component replyPreview(TelegramApi.Reply reply) {
+        String author=snippet(reply.name(),24);
+        long ownBotId=Long.parseLong(config.token.substring(0,config.token.indexOf(':')));
+        if(reply.bot()&&(reply.userId()==ownBotId || author.equalsIgnoreCase("FlexityChat"))) author="";
+        String quote=snippet(reply.text(),72);
+        String line="↪ "+(author.isEmpty()?"":author+": ")+(quote.isEmpty()?"[без текста]":quote)+"\n";
+        return Component.text(line,NamedTextColor.GRAY);
+    }
+    private static String snippet(String value,int maxCodePoints) {
+        if(value==null) return "";
+        String clean=value.replaceAll("\\s+"," ").strip();
+        int length=clean.codePointCount(0,clean.length());
+        if(length<=maxCodePoints) return clean;
+        int end=clean.offsetByCodePoints(0,maxCodePoints-1);
+        return clean.substring(0,end).stripTrailing()+"…";
+    }
+    private static Component mediaText(String text) {
+        for(String label:MEDIA_LABELS) if(text.startsWith(label)) return Component.empty()
+                .append(Component.text(label,net.kyori.adventure.text.format.NamedTextColor.WHITE)
+                        .clickEvent(ClickEvent.openUrl(MEDIA_URL)).hoverEvent(HoverEvent.showText(Component.text("Открыть Telegram"))))
+                .append(Component.text(text.substring(label.length()),net.kyori.adventure.text.format.NamedTextColor.WHITE));
+        return Component.text(text,net.kyori.adventure.text.format.NamedTextColor.WHITE);
+    }
+    private Component incomingMessage(long user,String sender,Component text) {
         boolean showTag=config.flag("messages.showTelegramTagUnlinked",config.flag("messages.showTelegramTag",true));
         if(guard!=null) try {
             var account=guard.account(user).get(5,TimeUnit.SECONDS);
@@ -218,7 +253,7 @@ final class TelegramChatBridge implements Listener,AutoCloseable {
         if(template.equals("<aqua>[TG] {sender}</aqua> {text}")) template="{tg}<white>{sender}<gray>:</gray> {text}</white>";
         // Existing configs used a literal marker. Keep the toggle effective without rewriting them.
         if(!template.contains("{tg}")) template=template.replace("[TG] ","{tg}").replace("[TG]","{tg}");
-        return MiniMessage.miniMessage().deserialize(template.replace("{tg}","<bridge_tag>").replace("{sender}","<bridge_sender>").replace("{text}","<bridge_text>"),Placeholder.component("bridge_tag",LinkedChatIdentity.tag(showTag)),Placeholder.component("bridge_sender",Component.text(limit(sender,120),net.kyori.adventure.text.format.NamedTextColor.WHITE)),Placeholder.component("bridge_text",Component.text(text,net.kyori.adventure.text.format.NamedTextColor.WHITE)));
+        return MiniMessage.miniMessage().deserialize(template.replace("{tg}","<bridge_tag>").replace("{sender}","<bridge_sender>").replace("{text}","<bridge_text>"),Placeholder.component("bridge_tag",LinkedChatIdentity.tag(showTag)),Placeholder.component("bridge_sender",Component.text(limit(sender,120),net.kyori.adventure.text.format.NamedTextColor.WHITE)),Placeholder.component("bridge_text",text));
     }
     private void identityWarning(Exception failure) {
         long now=System.currentTimeMillis();if(now-lastIdentityWarning>60000) {lastIdentityWarning=now;plugin.getLogger().warning("Не удалось получить оформление привязанного персонажа ("+rootCause(failure).getClass().getSimpleName()+"); используется запасное оформление [TG].");}

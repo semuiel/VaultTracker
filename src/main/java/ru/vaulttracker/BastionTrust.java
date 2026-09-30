@@ -1,6 +1,5 @@
 package ru.vaulttracker;
 
-import java.lang.reflect.Method;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -9,15 +8,24 @@ import org.bukkit.entity.Player;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.plugin.java.JavaPlugin;
 
-/** Uses Bastion's console command and verifies its own trusted-player state. */
+/** Uses only Bastion's public console command. */
 final class BastionTrust {
     record Outcome(boolean success,String message) {}
     private final JavaPlugin plugin;
     BastionTrust(JavaPlugin plugin) {this.plugin=plugin;}
 
     boolean available() {
-        Plugin bastion=plugin.getServer().getPluginManager().getPlugin("bastion");
+        Plugin bastion=findBastion();
         return bastion!=null && bastion.isEnabled();
+    }
+
+    private Plugin findBastion() {
+        var manager=plugin.getServer().getPluginManager();
+        Plugin bastion=manager.getPlugin("bastion");
+        if(bastion!=null) return bastion;
+        for(Plugin candidate:manager.getPlugins())
+            if(candidate!=null && "bastion".equalsIgnoreCase(candidate.getName())) return candidate;
+        return null;
     }
 
     CompletableFuture<Outcome> change(UUID uuid,boolean trusted) {
@@ -38,22 +46,15 @@ final class BastionTrust {
 
     private Outcome apply(UUID uuid,boolean trusted) throws Exception {
         Server server=plugin.getServer();
-        Plugin bastion=server.getPluginManager().getPlugin("bastion");
+        Plugin bastion=findBastion();
         if(bastion==null || !bastion.isEnabled()) return new Outcome(false,"Bastion не установлен или выключен.");
         Player player=server.getPlayer(uuid);
         if(player==null || !player.isOnline()) return new Outcome(false,"Игрок должен быть в сети для команды Bastion.");
         String name=player.getName();
         if(name==null || !name.matches("[A-Za-z0-9_]{1,16}")) return new Outcome(false,"Некорректный игровой ник для команды Bastion.");
-        Object manager=bastion.getClass().getMethod("getTrustManager").invoke(bastion);
-        if(manager==null) return new Outcome(false,"Список доверенных Bastion недоступен.");
-        Method check=manager.getClass().getMethod("isTrusted",UUID.class);
-        boolean current=Boolean.TRUE.equals(check.invoke(manager,uuid));
-        if(current==trusted) return new Outcome(true,trusted?"Игрок уже доверен Bastion.":"Игрок уже удалён из доверенных Bastion.");
         String command="bastion trust "+(trusted?"add ":"remove ")+name;
         if(!server.dispatchCommand(server.getConsoleSender(),command))
             return new Outcome(false,"Bastion отклонил команду. Проверьте журнал сервера.");
-        if(!Boolean.valueOf(trusted).equals(check.invoke(manager,uuid)))
-            return new Outcome(false,"Bastion не подтвердил изменение доверия. Проверьте журнал сервера.");
         return new Outcome(true,trusted?"Игрок добавлен в доверенные Bastion.":"Игрок удалён из доверенных Bastion.");
     }
 }

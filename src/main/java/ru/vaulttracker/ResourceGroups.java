@@ -8,6 +8,7 @@ final class ResourceGroups {
             List.of("DIAMOND_ORE","DEEPSLATE_DIAMOND_ORE"),"DIAMOND_ORE");
     static final Group EMERALD_ORES=new Group("IR","Изумрудная руда (обычная + глубинная)",
             List.of("EMERALD_ORE","DEEPSLATE_EMERALD_ORE"),"EMERALD_ORE");
+    static List<Group> all() {return List.of(DIAMOND_ORES,EMERALD_ORES);}
 
     static Group resolve(String raw) {
         String value=raw==null ? "" : raw.trim();

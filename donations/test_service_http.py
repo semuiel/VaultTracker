@@ -41,12 +41,12 @@ class HttpTests(unittest.TestCase):
             ledger = Ledger(Path(directory) / 'ledger.sqlite')
             class Provider:
                 state = 'PAID'
-                reviewed = False
+                stars = None
                 def verify(self, order_id):
                     return dict(order_id=order_id, buyer='buyer', amount=10000,
-                                status=self.state, reviewed=self.reviewed)
+                                status=self.state, stars=self.stars)
             provider = Provider()
-            config = dict(api_key='test-only-' + 'a'*48, review_bonus_percent=10)
+            config = dict(api_key='test-only-' + 'a'*48)
             service = Service(config, ledger, provider)
             code = service.refresh('ORDER123')['code']
             owner = str(uuid.uuid4())
@@ -72,16 +72,18 @@ class HttpTests(unittest.TestCase):
                 self.assertEqual(10000, result['balanceMinor'])
                 self.assertFalse(result['alreadyClaimed'])
                 self.assertTrue(request('/redeem', dict(owner=owner, code=code))[1]['alreadyClaimed'])
-                provider.state, provider.reviewed = 'CLOSED', True
+                provider.state, provider.stars = 'CLOSED', 5
                 service.refresh('ORDER123')
-                self.assertEqual(11000, request('/wallet', dict(owner=owner))[1]['balanceMinor'])
+                self.assertEqual(10500, request('/wallet', dict(owner=owner))[1]['balanceMinor'])
                 provider.state = 'REFUNDED'
                 service.refresh('ORDER123')
                 self.assertEqual(0, request('/wallet', dict(owner=owner))[1]['balanceMinor'])
                 self.assertEqual(400, request('/redeem', dict(owner=owner, code=code))[0])
                 alerts = request('/alerts', {})[1]['alerts']
-                self.assertEqual(1, len(alerts))
-                self.assertEqual(200, request('/ack', dict(id=alerts[0]['id']))[0])
+                self.assertEqual(['ORDER123:payment', 'ORDER123:confirmed', 'ORDER123:review', 'ORDER123:refund'],
+                                 [alert['id'] for alert in alerts])
+                for alert in alerts:
+                    self.assertEqual(200, request('/ack', dict(id=alert['id']))[0])
                 self.assertEqual([], request('/alerts', {})[1]['alerts'])
             finally:
                 server.shutdown()
@@ -100,6 +102,21 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(['NEW'], service.discover())
         self.assertEqual(['NEW', 'OLD'], service.discover())
         self.assertEqual([None, None, 'page2'], provider.calls)
+
+    def test_repeated_unrecognized_order_logs_one_safe_reason(self):
+        class Provider:
+            def verify(self, order_id):
+                raise ValueError('Unknown FunPay order status markup')
+        class LedgerStub:
+            def attempted(self, order_id):
+                pass
+        service = Service({}, LedgerStub(), Provider())
+        with self.assertLogs('donations', level='WARNING') as logs:
+            service.refresh_and_send('ORDER123')
+            service.refresh_and_send('ORDER123')
+        self.assertEqual(1, len(logs.output))
+        self.assertIn('order-status-unrecognized', logs.output[0])
+        self.assertNotIn('ORDER123', logs.output[0])
 
 
 if __name__ == '__main__':

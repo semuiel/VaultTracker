@@ -2,6 +2,7 @@ package ru.vaulttracker;
 
 import java.util.*;
 import java.util.concurrent.*;
+import java.nio.file.Path;
 import org.bukkit.*;
 import org.bukkit.ban.ProfileBanList;
 import org.bukkit.entity.Player;
@@ -14,8 +15,9 @@ import org.bukkit.plugin.Plugin;
 import org.bukkit.plugin.java.JavaPlugin;
 import net.kyori.adventure.text.Component;
 
-/** Executes only fixed, authorized actions. Telegram text is never a console command. */
+/** Executes authorized server actions on the appropriate Folia scheduler. */
 class TelegramModeration {
+    enum MessageSender { FLEXITY, PLAYER }
     private static final List<String> PLAYER_CAPABILITIES=GuardService.ADMIN_CAPABILITIES.stream().filter(c->!Set.of("chat","manageAdmins").contains(c)).toList();
     record Person(UUID uuid,String name,boolean online,String details,boolean vanished,boolean op,boolean banned,long firstPlayed,long lastLogin,long lastSeen) {
         Person(UUID uuid,String name,boolean online,String details) {this(uuid,name,online,details,false,false,false,0,0,0);}
@@ -26,27 +28,65 @@ class TelegramModeration {
         boolean shulker() { return container; }
     }
     record CabinetProfile(boolean online,Double health,double maxHealth,Integer food,String world,int x,int y,int z,long firstPlayed,Long playtimeSeconds) {}
+    record BanSnapshot(String reason,long expiry,String source) {}
+    record UnbanFacts(String name,UUID uuid,BanSnapshot ban,long firstPlayed,long lastLogin,long lastSeen,Long playtimeSeconds,long banCreated) {
+        UnbanFacts(String name,UUID uuid,BanSnapshot ban,long firstPlayed,long lastLogin,long lastSeen,Long playtimeSeconds) {
+            this(name,uuid,ban,firstPlayed,lastLogin,lastSeen,playtimeSeconds,0);
+        }
+        private static String moscow(long millis) {
+            return java.time.Instant.ofEpochMilli(millis).atZone(java.time.ZoneId.of("Europe/Moscow"))
+                    .format(java.time.format.DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm 'МСК'"));
+        }
+        String description() {
+            StringBuilder result=new StringBuilder("Текущий бан: ").append(ban.reason()==null?"причина не указана":ban.reason())
+                    .append("\nСрок: ").append(ban.expiry()<0?"бессрочно":moscow(ban.expiry()));
+            if(banCreated>0) result.append("\nДата бана: ").append(moscow(banCreated));
+            if(ban.source()!=null && !ban.source().isBlank()) result.append("\nВыдал: ").append(ban.source());
+            if(playtimeSeconds!=null) result.append("\nНаиграно: ").append(playtimeSeconds/3600).append(" ч ").append(playtimeSeconds%3600/60).append(" мин");
+            if(firstPlayed>0) result.append("\nПервый вход: ").append(moscow(firstPlayed));
+            if(lastLogin>0) result.append("\nПоследний вход: ").append(moscow(lastLogin));
+            if(lastSeen>0) result.append("\nПоследний выход: ").append(moscow(lastSeen));
+            return result.toString();
+        }
+    }
     private record CabinetSeed(Player online,Location location,List<java.nio.file.Path> folders,double offlineMax,long firstPlayed) {}
     private final JavaPlugin plugin;
     private final GuardService guard;
+    private final PlayerDirectMessages directMessages;
     private final SearchCompass searchCompass;
     private final BastionTrust bastionTrust;
     private final ChildPlayers children;
     private final DonationPremium premium;
     private final Map<UUID,Boolean> lpAdminState=new ConcurrentHashMap<>();
+    private final Map<UUID,Long> statisticsRefreshedAt=new ConcurrentHashMap<>();
     private volatile Plugin flexityPlugin;
     private volatile FlexityVanish flexityVanish;
     private volatile FlexityPlaytime flexityPlaytime;
     private volatile long lastVanishWarning;
     TelegramModeration(JavaPlugin plugin,GuardService guard) {this(plugin,guard,null);}
     TelegramModeration(JavaPlugin plugin,GuardService guard,SearchCompass searchCompass) {this(plugin,guard,searchCompass,null);}
-    TelegramModeration(JavaPlugin plugin,GuardService guard,SearchCompass searchCompass,ChildPlayers children) {this.plugin=plugin;this.guard=guard;this.searchCompass=searchCompass;this.children=children;this.premium=new DonationPremium(guard.donations);this.bastionTrust=new BastionTrust(plugin);}
+    TelegramModeration(JavaPlugin plugin,GuardService guard,SearchCompass searchCompass,ChildPlayers children) {this.plugin=plugin;this.guard=guard;this.directMessages=new PlayerDirectMessages(plugin,guard);this.searchCompass=searchCompass;this.children=children;this.premium=new DonationPremium(guard.donations);this.bastionTrust=new BastionTrust(plugin);}
+    PlayerDirectMessages directMessages() {return directMessages;}
+    Path latestLogPath() {return plugin.getDataFolder().toPath().toAbsolutePath().normalize().getParent().getParent().resolve("logs").resolve("latest.log");}
+    CompletableFuture<Boolean> consoleCommand(long user,String command) {
+        guard.requireRoot(user);
+        if(command==null || command.isBlank() || command.length()>2048 || command.indexOf('\n')>=0 || command.indexOf('\r')>=0)
+            return CompletableFuture.failedFuture(new IllegalArgumentException("Некорректная команда"));
+        CompletableFuture<Boolean> result=new CompletableFuture<>();
+        try {plugin.getServer().getGlobalRegionScheduler().run(plugin,task->{
+            try {
+                guard.requireRoot(user);
+                result.complete(plugin.getServer().dispatchCommand(plugin.getServer().getConsoleSender(),command));
+            } catch(Throwable failure) {result.completeExceptionally(failure);}
+        });} catch(Throwable failure) {result.completeExceptionally(failure);}
+        return result;
+    }
     boolean bastionAvailable() {return bastionTrust.available();}
     void reloadPlugin(long user) {
-        guard.requireSuper(user);
+        guard.requireRoot(user);
         plugin.getServer().getGlobalRegionScheduler().runDelayed(plugin,task->{
             try {
-                guard.requireSuper(user);
+                guard.requireRoot(user);
                 if(!plugin.getServer().dispatchCommand(plugin.getServer().getConsoleSender(),"vtrack reload"))
                     plugin.getLogger().warning("Команда vtrack reload не была выполнена");
             } catch(Exception failure) {
@@ -58,11 +98,13 @@ class TelegramModeration {
     void syncDonations() throws Exception {premium.sync();}
     com.google.gson.JsonObject donationChange(long actor,UUID owner,String name,String id,String action,int days,long amount) throws Exception {
         if(action.equals("buy")) {var account=guard.account(actor).get();if(account==null||!account.uuid().equals(owner)) throw new SecurityException("Нет доступа");}
-        else guard.requireSuper(actor);
-        return premium.change(owner,name,actor,id,action,days,amount);
+        else guard.requireRoot(actor);
+        var result=premium.change(owner,name,actor,id,action,days,amount);
+        if(!action.equals("buy")) audit(actor,"donation:"+action,owner.toString());
+        return result;
     }
     CompletableFuture<String> changeChild(long user,String nickname,boolean enabled) {
-        guard.requireSuper(user);
+        guard.requireRoot(user);
         if(nickname.matches("[0-9]{1,20}")) {
             long id;try {id=Long.parseLong(nickname);} catch(NumberFormatException invalid) {return CompletableFuture.failedFuture(new IllegalArgumentException("Некорректный Telegram ID"));}
             return guard.account(id).thenCompose(account->{
@@ -160,6 +202,26 @@ class TelegramModeration {
         try {plugin.getServer().getGlobalRegionScheduler().run(plugin,task-> {if(result.isDone()) return;try {result.complete(job.call());} catch(Exception e) {result.completeExceptionally(e);}});}
         catch(Exception e) {result.completeExceptionally(e);}return result.orTimeout(15,TimeUnit.SECONDS);
     }
+    CompletableFuture<Map<String,Long>> statistics(long user,UUID uuid) {
+        return guard.account(user).thenCompose(account->{
+            if(account==null || !account.uuid().equals(uuid)) return CompletableFuture.failedFuture(new SecurityException("Нет доступа к статистике"));
+            return guard.statistics(uuid).thenCompose(saved->{
+                long now=System.currentTimeMillis();
+                if(now-statisticsRefreshedAt.getOrDefault(uuid,0L)<300_000) return CompletableFuture.completedFuture(saved);
+                return global(()->plugin.getServer().getPlayer(uuid)).thenCompose(player->{
+                    if(player==null && !saved.isEmpty()) return CompletableFuture.completedFuture(saved);
+                    CompletableFuture<Map<String,Integer>> raw=new CompletableFuture<>();
+                    if(player!=null) player.getScheduler().run(plugin,task->{
+                        try {raw.complete(PlayerStatistics.capture(player));}catch(Exception failure) {raw.completeExceptionally(failure);}
+                    },()->raw.complete(Map.of()));
+                    else return global(()->PlayerStatistics.capture(plugin.getServer().getOfflinePlayer(uuid)))
+                            .thenCompose(values->guard.mergeStatistics(uuid,values).thenCompose(ignored->guard.statistics(uuid)));
+                    return raw.orTimeout(15,TimeUnit.SECONDS).thenCompose(values->guard.mergeStatistics(uuid,values).thenCompose(ignored->guard.statistics(uuid)));
+                }).thenApply(values->{statisticsRefreshedAt.put(uuid,now);return values;})
+                  .exceptionally(failure->saved);
+            });
+        });
+    }
     CompletableFuture<List<Person>> players(long user,String mode) {return global(()-> {
         if(mode.equals("banned")) guard.requireCapability(user,"unban");else guard.requireAdmin(user);
         Map<UUID,Person> people=new HashMap<>();
@@ -179,6 +241,70 @@ class TelegramModeration {
         }
         return people.values().stream().sorted(Comparator.comparing(Person::name,String.CASE_INSENSITIVE_ORDER)).toList();
     });}
+    /** Safe identity-only lookup for a linked player filing a complaint. */
+    CompletableFuture<List<GuardService.OnlineLinked>> supportPlayers(String query,boolean onlineOnly) {return global(()->{
+        String needle=query==null?"":query.strip().toLowerCase(Locale.ROOT);
+        if(needle.length()>64) throw new IllegalArgumentException("Поиск: не более 64 символов.");
+        Set<UUID> vanished=vanishedPlayers();Map<UUID,GuardService.OnlineLinked> found=new HashMap<>();
+        Collection<? extends OfflinePlayer> source=onlineOnly?plugin.getServer().getOnlinePlayers():Arrays.asList(plugin.getServer().getOfflinePlayers());
+        for(OfflinePlayer player:source) if(player.getName()!=null && !vanished.contains(player.getUniqueId()) &&
+                player.getName().toLowerCase(Locale.ROOT).contains(needle))
+            found.put(player.getUniqueId(),new GuardService.OnlineLinked(player.getUniqueId(),player.getName()));
+        return found.values().stream().sorted(Comparator.comparing(GuardService.OnlineLinked::name,String.CASE_INSENSITIVE_ORDER)).limit(200).toList();
+    });}
+    CompletableFuture<GuardService.OnlineLinked> supportPlayer(UUID uuid) {return global(()->{
+        OfflinePlayer player=plugin.getServer().getOfflinePlayer(uuid);
+        if(player.getName()==null || vanishedPlayers().contains(uuid)) throw new IllegalArgumentException("Игрок больше недоступен для выбора.");
+        return new GuardService.OnlineLinked(uuid,player.getName());
+    });}
+    CompletableFuture<UnbanFacts> unbanFacts(UUID uuid) {
+        return global(()->{
+            OfflinePlayer player=plugin.getServer().getOfflinePlayer(uuid);
+            if(player.getName()==null) throw new IllegalArgumentException("Игрок не найден на сервере.");
+            ProfileBanList bans=plugin.getServer().getBanList(BanList.Type.PROFILE);
+            var entry=bans.getBanEntry(player.getPlayerProfile());
+            if(entry==null || entry.getExpiration()!=null && entry.getExpiration().getTime()<=System.currentTimeMillis())
+                throw new IllegalArgumentException("У этого персонажа сейчас нет действующего бана.");
+            return new UnbanFacts(player.getName(),uuid,new BanSnapshot(entry.getReason(),entry.getExpiration()==null?-1:entry.getExpiration().getTime(),entry.getSource()),
+                    player.getFirstPlayed(),player.getLastLogin(),player.getLastSeen(),null,
+                    entry.getCreated()==null?0:entry.getCreated().getTime());
+        }).thenCompose(facts->flexityPlaytime(uuid).handle((seconds,error)->new UnbanFacts(facts.name(),facts.uuid(),facts.ban(),
+                facts.firstPlayed(),facts.lastLogin(),facts.lastSeen(),error==null?seconds:null,facts.banCreated())));
+    }
+    CompletableFuture<Boolean> currentlyBanned(UUID uuid) {return global(()->{
+        OfflinePlayer player=plugin.getServer().getOfflinePlayer(uuid);
+        ProfileBanList bans=plugin.getServer().getBanList(BanList.Type.PROFILE);
+        return bans.isBanned(player.getPlayerProfile());
+    });}
+    CompletableFuture<Void> liftForConversation(long user,UUID uuid,BanSnapshot original) {
+        guard.requireCapability(user,"unban");guard.requireCapability(user,"freeze");
+        return guard.account(user).thenCompose(account->global(()->{
+            guard.requireCapability(user,"unban");guard.requireCapability(user,"freeze");
+            UUID actor=account!=null?account.uuid():UUID.nameUUIDFromBytes(("VaultTracker:Telegram:"+user).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return freezeBridge().change(uuid,actor,true);
+        }).thenCompose(f->f)).thenCompose(changed->{
+            if(!changed) return CompletableFuture.<Void>failedFuture(new IllegalStateException("Не удалось установить временную заморозку. Бан сохранён."));
+            return global(()->{
+                guard.requireCapability(user,"unban");
+                var player=plugin.getServer().getOfflinePlayer(uuid);
+                ProfileBanList bans=plugin.getServer().getBanList(BanList.Type.PROFILE);
+                var current=bans.getBanEntry(player.getPlayerProfile());
+                if(current==null || !Objects.equals(current.getReason(),original.reason()) ||
+                        (current.getExpiration()==null?-1:current.getExpiration().getTime())!=original.expiry())
+                    throw new IllegalStateException("Исходный бан изменился; временный вход отменён.");
+                bans.pardon(player.getPlayerProfile());audit(user,"temporaryUnban",uuid.toString());return (Void)null;
+            }).exceptionallyCompose(failure->restoreAfterConversation(uuid,original,user,true).thenCompose(ignored->CompletableFuture.failedFuture(failure)));
+        });
+    }
+    CompletableFuture<Void> restoreAfterConversation(UUID uuid,BanSnapshot original,long actor,boolean reinstate) {
+        return global(()->{
+            var player=plugin.getServer().getOfflinePlayer(uuid);
+            ProfileBanList bans=plugin.getServer().getBanList(BanList.Type.PROFILE);
+            if(reinstate && (original.expiry()<0 || original.expiry()>System.currentTimeMillis()) && !bans.isBanned(player.getPlayerProfile()))
+                bans.addBan(player.getPlayerProfile(),original.reason(),original.expiry()<0?null:new Date(original.expiry()),original.source());
+            return freezeBridge().change(uuid,UUID.nameUUIDFromBytes(("VaultTracker:Telegram:"+actor).getBytes(java.nio.charset.StandardCharsets.UTF_8)),false);
+        }).thenCompose(f->f).thenApply(ignored->null);
+    }
     CompletableFuture<Person> playerByName(String nickname) {return global(()-> {
         String wanted=Objects.requireNonNull(nickname).strip();
         if(wanted.isEmpty()||wanted.length()>64) throw new IllegalArgumentException("Введите игровой ник длиной от 1 до 64 символов");
@@ -273,7 +399,7 @@ class TelegramModeration {
             CompletableFuture<String> result=new CompletableFuture<>();
             player.getScheduler().run(plugin,task-> {
                 if(result.isDone()) return;
-                try {guard.requireCapability(user,"kick");player.kick(Component.text("Пока идёт расследование"));audit(user,operation,uuid.toString());result.complete("Игрок отключён от сервера.");}
+                try {guard.requireCapability(user,"kick");player.kick(GameMessages.format("Пока идёт расследование",GameMessages.Tone.WARNING));audit(user,operation,uuid.toString());result.complete("Игрок отключён от сервера.");}
                 catch(Exception e) {result.completeExceptionally(e);}
             },()->result.complete("Игрок уже не в сети."));return result.orTimeout(15,TimeUnit.SECONDS);
         });
@@ -286,14 +412,14 @@ class TelegramModeration {
                 if(bans.isBanned(target.getPlayerProfile())) return "Игрок уже забанен. Существующий бан сохранён.";
                 bans.addBan(target.getPlayerProfile(),"Пока идёт расследование",java.time.Duration.ofMinutes(5),"Telegram "+user);
                 Player online=target.getPlayer();
-                if(online!=null) online.getScheduler().run(plugin,t->online.kick(Component.text("Бан на 5 минут: пока идёт расследование")),null);
+                if(online!=null) online.getScheduler().run(plugin,t->online.kick(GameMessages.format("Бан на 5 минут: пока идёт расследование",GameMessages.Tone.ERROR)),null);
                 audit(user,operation,uuid.toString());return "Бан на 5 минут: пока идёт расследование.";
             }
             if(operation.equals("permanentBan")) {
                 if(bans.isBanned(target.getPlayerProfile())) return "Игрок уже забанен. Существующий бан сохранён.";
                 bans.addBan(target.getPlayerProfile(),"Бессрочный бан",(java.util.Date)null,"Telegram "+user);
                 Player online=target.getPlayer();
-                if(online!=null) online.getScheduler().run(plugin,t->online.kick(Component.text("Вы забанены на сервере")),null);
+                if(online!=null) online.getScheduler().run(plugin,t->online.kick(GameMessages.format("Вы забанены на сервере",GameMessages.Tone.ERROR)),null);
                 audit(user,operation,uuid.toString());return "Игрок забанен бессрочно.";
             }
             if(operation.equals("unban")) {bans.pardon(target.getPlayerProfile());audit(user,operation,uuid.toString());return "Бан снят.";}
@@ -382,7 +508,10 @@ class TelegramModeration {
                     if(result.isDone()) return;guard.requireCapability(user,destination==null?"teleportCoords":"teleport");
                     player.teleportAsync(loc).whenComplete((ok,error)-> {if(error!=null) result.completeExceptionally(error);else result.complete(Boolean.TRUE.equals(ok)?"Игрок телепортирован: "+loc.getWorld().getName()+" · "+loc.getX()+" "+loc.getY()+" "+loc.getZ():"Телепортация отменена сервером.");});
                 } catch(Exception e) {result.completeExceptionally(e);}},()->result.complete("Игрок вышел с сервера."));
-                return result.orTimeout(30,TimeUnit.SECONDS);
+                return result.orTimeout(30,TimeUnit.SECONDS).thenApply(message->{
+                    if(message.startsWith("Игрок телепортирован")) audit(user,destination==null?"teleportCoords":"teleportPlayer",source+" → "+(destination==null?coordinates:destination));
+                    return message;
+                });
             }));
         });
     }
@@ -415,9 +544,9 @@ class TelegramModeration {
     }
     CompletableFuture<String> broadcast(long user,String text) {return global(()-> {
         guard.requireCapability(user,"chat");if(text.isBlank() || text.length()>500 || text.contains("\n") || text.contains("\r")) throw new IllegalArgumentException("Сообщение: одна строка, до 500 символов");
-        Component message=Component.text("[Консоль] "+text);
+        Component message=GameMessages.format(text,GameMessages.Tone.INFO);
         for(Player p:plugin.getServer().getOnlinePlayers()) p.getScheduler().run(plugin,t->p.sendMessage(message),null);
-        plugin.getServer().getConsoleSender().sendMessage(message);audit(user,"chat",text);return "Сообщение отправлено в игровой чат.";
+        plugin.getServer().getConsoleSender().sendMessage(Component.text("[Консоль] "+text));audit(user,"chat",text);return "Сообщение отправлено в игровой чат.";
     });}
     boolean freezeAvailable() {
         try {freezeBridge();return true;} catch(Exception unavailable) {return false;}
@@ -438,26 +567,37 @@ class TelegramModeration {
             return future;
         }).thenCompose(f->f)).thenCompose(changed->global(()->{
             Player player=plugin.getServer().getPlayer(target);
-            if(changed && player!=null) player.getScheduler().run(plugin,t->player.sendMessage(Component.text(enabled?"[FLEXITY] Вы заморожены на время проверки.":"[FLEXITY] Заморозка снята.")),null);
+            if(changed && player!=null) player.getScheduler().run(plugin,t->player.sendMessage(GameMessages.format(enabled?"Вы заморожены на время проверки.":"Заморозка снята.",enabled?GameMessages.Tone.WARNING:GameMessages.Tone.SUCCESS)),null);
             return changed?(enabled?"Игрок заморожен через Flexity.":"Игрок разморожен через Flexity."):"Игрок уже не заморожен.";
         }));
     }
-    CompletableFuture<String> privateMessage(long user,UUID target,String text) {
+    CompletableFuture<String> privateMessage(long user,UUID target,String text,MessageSender sender) {
         guard.requireAdmin(user);
+        if(sender==MessageSender.FLEXITY) guard.requireSuper(user);
         if(text==null || text.isBlank() || text.length()>500 || text.contains("\n") || text.contains("\r"))
             return CompletableFuture.failedFuture(new IllegalArgumentException("Сообщение: одна строка, до 500 символов."));
-        return global(()->{guard.requireAdmin(user);return plugin.getServer().getPlayer(target);}).thenCompose(player->{
+        return (sender==MessageSender.FLEXITY?CompletableFuture.<GuardService.Account>completedFuture(null):guard.account(user)).thenCompose(account->{
+            if(sender==MessageSender.PLAYER && account==null) return CompletableFuture.failedFuture(new IllegalStateException("Сначала привяжите игровой аккаунт, чтобы писать от своего ника."));
+            String name=sender==MessageSender.FLEXITY?"FLEXITY":account.name();
+            return global(()->{guard.requireAdmin(user);if(sender==MessageSender.FLEXITY) guard.requireSuper(user);return plugin.getServer().getPlayer(target);}).thenCompose(player->{
             if(player==null) return CompletableFuture.completedFuture("Игрок не в сети. Сообщение не отправлено.");
             CompletableFuture<String> result=new CompletableFuture<>();
             player.getScheduler().run(plugin,t->{
                 if(result.isDone()) return;
-                try {guard.requireAdmin(user);player.sendMessage(Component.text("[FLEXITY] "+text));audit(user,"privateMessage",target+": "+text);result.complete("Личное сообщение отправлено игроку от имени FLEXITY.");}
+                try {guard.requireAdmin(user);if(sender==MessageSender.FLEXITY) guard.requireSuper(user);
+                    player.sendMessage(sender==MessageSender.FLEXITY?GameMessages.format(text,GameMessages.Tone.INFO):Component.text("["+name+"] "+text));
+                    audit(user,"privateMessage",target+": "+text);result.complete("Личное сообщение отправлено игроку от имени "+name+".");}
                 catch(Exception error) {result.completeExceptionally(error);}
             },()->result.complete("Игрок вышел. Сообщение не отправлено."));
             return result.orTimeout(15,TimeUnit.SECONDS);
+            });
         });
     }
-    private void audit(long user,String action,String target) {if(guard.superAdmin(user)) return;plugin.getLogger().info("Telegram "+user+": "+action+" → "+target);}
+    private void audit(long user,String action,String target) {
+        String safeTarget=target==null?"":target.replace('\n',' ').replace('\r',' ');
+        if(action.equals("privateMessage") || action.equals("chat")) safeTarget="[текст скрыт]";
+        plugin.getLogger().info("Telegram "+user+": "+action+" → "+safeTarget);
+    }
     private void requireOperation(long user,String operation) {
         String capability=switch(operation) {
             case "bastionAdd","bastionRemove" -> "bastionTrust";

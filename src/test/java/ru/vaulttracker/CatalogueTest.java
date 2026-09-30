@@ -62,6 +62,9 @@ class CatalogueTest {
         assertEquals(List.of("NewName — 42"),c.find("DIAMOND",10));
         assertEquals(OWNER,c.get(p(0)).owner());
         assertTrue(c.get(p(0)).revision()>90);
+        assertEquals(42L,c.ownerItems(OWNER).items().get("DIAMOND"));
+        assertEquals(OWNER,c.ownerItems("NewName").getFirst().owner());
+        assertEquals(1,OwnResourceSearch.find(c,OWNER,"алмаз",p(1)).size());
     }
     @Test void unloadedNegativeChunkIndexRetainsRegistration() {
         Catalogue c=new Catalogue(v->{});
@@ -94,5 +97,32 @@ class CatalogueTest {
         c.register(p(14),bob,"Bob",List.of(p(15)),Map.of("DIAMOND",40L),1,100);
         c.register(p(16),empty,"Empty",List.of(p(17)),Map.of(),1,100);
         assertEquals(List.of("Bob","Alex","Empty"),c.ownerNamesByTotalItems());
+    }
+    @Test void personalTopUsesMarketRanksAndCombinedOreGroupsWithoutStaleTotals() {
+        Catalogue c=new Catalogue(v->{});UUID rival=UUID.randomUUID();
+        Snapshot mine=c.register(p(30),OWNER,"Steve",List.of(p(31)),
+                Map.of("DIAMOND",4L,"DIAMOND_ORE",3L,"DEEPSLATE_DIAMOND_ORE",5L),1,100);
+        c.register(p(32),rival,"Alex",List.of(p(33)),
+                Map.of("DIAMOND",20L,"DIAMOND_ORE",10L),1,100);
+        var ranks=c.personalTop(OWNER,10);
+        assertEquals(2,ranks.stream().filter(rank->rank.material().equals("AR")).findFirst().orElseThrow().place());
+        assertEquals(8L,ranks.stream().filter(rank->rank.material().equals("AR")).findFirst().orElseThrow().amount());
+        assertEquals(2,ranks.stream().filter(rank->rank.material().equals("DIAMOND")).findFirst().orElseThrow().place());
+        assertEquals(1,ranks.getFirst().place());
+        assertEquals(c.findTotals(ResourceGroups.DIAMOND_ORES.materials(),10).get(1).amount(),
+                ranks.stream().filter(rank->rank.material().equals("AR")).findFirst().orElseThrow().amount());
+        c.observe(mine.sign(),mine.generation(),mine.chests(),Map.of("DIAMOND",40L),2);
+        assertEquals(1,c.personalTop(OWNER,10).stream().filter(rank->rank.material().equals("DIAMOND")).findFirst().orElseThrow().place());
+        assertFalse(c.personalTop(OWNER,10).stream().anyMatch(rank->rank.material().equals("AR")));
+        c.rename(OWNER,"Renamed");
+        assertEquals(40L,c.findTotals("DIAMOND",10).getFirst().amount());
+        c.remove(mine.sign(),mine.generation(),3);
+        assertTrue(c.personalTop(OWNER,10).isEmpty());
+    }
+    @Test void personalTopShowsOnlyFirstTenPlaces() {
+        Catalogue c=new Catalogue(v->{});
+        c.register(p(40),OWNER,"Steve",List.of(p(41)),Map.of("STONE",1L),1,100);
+        for(int i=0;i<10;i++) c.register(p(42+i*2),UUID.randomUUID(),"Rival"+i,List.of(p(43+i*2)),Map.of("STONE",100L-i),1,100);
+        assertTrue(c.personalTop(OWNER,10).isEmpty());
     }
 }

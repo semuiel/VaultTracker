@@ -25,6 +25,81 @@ class GuardServiceTest {
     List<GuardService.Event> events() throws Exception {return guard.history(99,0,20).get();}
 
     List<GuardService.Delivery> ready() throws Exception {guard.account(0).get();clock.addAndGet(10000);return guard.deliveries().get();}
+
+    @Test void gameMessageNotificationSwitchKeepsUnreadHistoryAndTelegramNotices() throws Exception {
+        UUID alice=UUID.randomUUID(),bob=UUID.randomUUID();
+        guard.link(alice,"Alice",code(41)).get();guard.link(bob,"Bob",code(42)).get();
+        assertTrue(guard.gameMessageNotifications(42).get());
+        guard.directMessage(alice,"Alice",bob,"Bob","before").get();
+        assertEquals(1,guard.pendingDirectNotifications(10).get().size());
+        guard.toggleGameMessageNotifications(42).get();
+        assertFalse(guard.gameMessageNotifications(42).get());
+        guard.directMessage(alice,"Alice",bob,"Bob","game",true).get();
+        assertTrue(guard.pendingDirectNotifications(10).get().isEmpty());
+        guard.directMessage(alice,"Alice",bob,"Bob","telegram",false).get();
+        assertEquals(1,guard.pendingDirectNotifications(10).get().size());
+        assertEquals(3,guard.dialogs(42,0,10).get().getFirst().unread());
+        guard.close();guard=open();
+        assertFalse(guard.gameMessageNotifications(42).get());
+        assertEquals(3,guard.conversation(42,alice,0,10).get().messages().size());
+    }
+    @Test void telegramToGameChatPreferenceIsPerUuidAndSurvivesRestartAndRename() throws Exception {
+        UUID alice=UUID.randomUUID(),bob=UUID.randomUUID();
+        guard.link(alice,"Alice",code(41)).get();guard.link(bob,"Bob",code(42)).get();
+        assertTrue(guard.telegramGameChatEnabled(alice));assertTrue(guard.telegramGameChatEnabled(bob));
+        assertFalse(guard.toggleTelegramGameChat(41).get());
+        assertFalse(guard.telegramGameChatEnabled(alice));assertTrue(guard.telegramGameChatEnabled(bob));
+        guard.presence(alice,"AliceNew",true);guard.account(41).get();
+        guard.close();guard=open();
+        assertFalse(guard.telegramGameChatEnabled(alice));assertTrue(guard.telegramGameChatEnabled(bob));
+        assertTrue(guard.toggleTelegramGameChat(41).get());
+        assertTrue(guard.telegramGameChatEnabled(alice));
+    }
+    @Test void statisticsRemainUuidKeyedAndMonotonicAcrossVanillaResetAndRestart() throws Exception {
+        guard.mergeStatistics(owner,Map.of("custom:JUMP",100,"mine:STONE",12)).get();
+        guard.mergeStatistics(owner,Map.of("custom:JUMP",120,"mine:STONE",15)).get();
+        guard.mergeStatistics(owner,Map.of("custom:JUMP",5)).get();
+        assertEquals(125,guard.statistics(owner).get().get("custom:JUMP"));
+        assertEquals(15,guard.statistics(owner).get().get("mine:STONE"));
+        guard.close();guard=open();
+        assertEquals(125,guard.statistics(owner).get().get("custom:JUMP"));
+        guard.mergeStatistics(owner,Map.of("custom:JUMP",8)).get();
+        assertEquals(128,guard.statistics(owner).get().get("custom:JUMP"));
+    }
+    @Test void knownPlayerNamesRetainOldAliasWithoutGuessingAfterNameCollision() throws Exception {
+        UUID first=UUID.randomUUID(),second=UUID.randomUUID();
+        guard.presence(first,"OldNick",true);guard.account(0).get();
+        guard.presence(first,"NewNick",true);guard.account(0).get();
+        assertEquals(first,guard.knownPlayerUuid("OldNick"));
+        guard.close();guard=open();
+        assertEquals(first,guard.knownPlayerUuid("oldnick"));
+        guard.presence(second,"OldNick",true);guard.account(0).get();
+        assertNull(guard.knownPlayerUuid("OldNick"));
+    }
+    @Test void directMessagesPersistUnreadAndUseUuidAcrossNameChange() throws Exception {
+        UUID alice=UUID.randomUUID(),bob=UUID.randomUUID(),carol=UUID.randomUUID();
+        guard.link(alice,"Alice",code(41)).get();guard.link(bob,"Bob",code(42)).get();guard.link(carol,"Carol",code(43)).get();
+        assertNull(guard.linkedPlayer("Unknown").get());
+        assertEquals(bob,guard.linkedPlayer("bOb").get().uuid());
+        assertThrows(ExecutionException.class,()->guard.directMessage(alice,"Alice",UUID.randomUUID(),"NoOne","hello").get());
+        guard.directMessage(alice,"Alice",bob,"Bob","first").get();clock.incrementAndGet();
+        guard.directMessage(carol,"Carol",bob,"Bob","newer").get();clock.incrementAndGet();
+        guard.directMessage(bob,"Bob",alice,"Alice","answer").get();
+        guard.notificationTopic(42,314).get();
+        var dialogs=guard.dialogs(42,0,10).get();assertEquals(2,dialogs.size());
+        assertEquals(alice,dialogs.getFirst().peer());assertEquals(1,dialogs.getFirst().unread());
+        assertEquals(carol,dialogs.get(1).peer());assertEquals(1,dialogs.get(1).unread());
+        guard.close();guard=open();guard.configure(new GuardConfig(true,120_000),Set.of(99L));
+        assertEquals(314,guard.notificationTopic(42).get());
+        var page=guard.conversation(42,alice,0,10).get();assertEquals(2,page.messages().size());
+        assertEquals("first",page.messages().getFirst().text());assertEquals("answer",page.messages().getLast().text());
+        assertEquals(0,guard.dialogs(42,0,10).get().stream().filter(d->d.peer().equals(alice)).findFirst().orElseThrow().unread());
+        guard.presence(alice,"AliceNew",true);guard.account(41).get();
+        assertEquals("AliceNew",guard.dialogs(42,0,10).get().stream().filter(d->d.peer().equals(alice)).findFirst().orElseThrow().name());
+        assertEquals("answer",guard.conversation(42,alice,0,1).get().messages().getFirst().text());
+        assertTrue(guard.conversation(42,alice,0,1).get().older());
+        assertEquals("first",guard.conversation(42,alice,1,1).get().messages().getFirst().text());
+    }
     @Test void batchesTenSecondsPersistsAndKeepsChannelsPrivate() throws Exception {
         guard.link(owner,"Alex",code(42)).get();guard.restore(List.of(snapshot(10,1)));offline();
         guard.attribute(sign,"Griefer");guard.accept(snapshot(9,2));events();
@@ -34,7 +109,7 @@ class GuardServiceTest {
         clock.addAndGet(1000);var result=guard.deliveries().get();assertEquals(2,result.size());
         String player=result.stream().filter(d->d.recipient()==42).findFirst().orElseThrow().text();
         String admin=result.stream().filter(d->d.recipient()==99).findFirst().orElseThrow().text();
-        assertTrue(player.contains("событий: 2"));assertTrue(player.contains("-3 шт."));assertFalse(player.contains("Griefer"));assertTrue(admin.contains("Griefer"));
+        assertTrue(player.contains("событий: 2"));assertTrue(player.contains("-3 шт."));assertTrue(player.contains("Кто изменил: Griefer"));assertTrue(admin.contains("Griefer"));
         assertEquals(2,events().size());assertEquals(2,guard.searchHistory(99,"алмаз",0,6).get().size());
         assertEquals(2,guard.searchHistory(99,"grief",0,6).get().size());assertTrue(guard.searchHistory(99,"missing",0,6).get().isEmpty());
         assertThrows(ExecutionException.class,()->guard.searchHistory(42,"Alex",0,6).get());
@@ -48,14 +123,16 @@ class GuardServiceTest {
         String text=GuardService.batchText(List.of(first,second),true);
         assertTrue(text.contains("-5 шт."));assertTrue(text.contains("+5 шт."));
     }
-    @Test void actorAppearsOnlyInAdminDeliveryAndHistory() throws Exception {
+    @Test void actorAppearsInPlayerAndAdminDeliveryAndOwnHistory() throws Exception {
         guard.link(owner,"Alex",code(42)).get();guard.restore(List.of(snapshot(10,1)));offline();
         guard.attribute(sign,"Griefer");guard.accept(snapshot(9,2));
         var deliveries=ready();
         String ownerText=deliveries.stream().filter(d->d.recipient()==42).findFirst().orElseThrow().text();
         String adminText=deliveries.stream().filter(d->d.recipient()==99).findFirst().orElseThrow().text();
-        assertFalse(ownerText.contains("Кто изменил"));assertTrue(adminText.contains("Кто изменил: Griefer"));
+        assertTrue(ownerText.contains("Кто изменил: Griefer"));assertTrue(adminText.contains("Кто изменил: Griefer"));
         assertEquals("Griefer",events().getFirst().actor());assertTrue(GuardService.eventText(events().getFirst(),0,8).contains("Кто изменил: Griefer"));
+        assertEquals("Griefer",guard.ownHistory(42,0,10).get().getFirst().actor());
+        assertEquals("Griefer",guard.ownEvent(42,events().getFirst().id()).get().actor());
     }
     @Test void bastionGrantIsPendingOnlyAfterSuccessfulLinkAndSurvivesRestart() throws Exception {
         String valid=code(42);
@@ -70,15 +147,15 @@ class GuardServiceTest {
         guard.close();guard=open();guard.configure(new GuardConfig(true,120_000),Set.of(99L));
         assertFalse(guard.bastionPending(owner).get());
     }
-    @Test void personalAdminAlertsKeepActorEvenWhenAdminChannelIsDisabledAndHideAfterDemotion() throws Exception {
+    @Test void personalAdminAlertsKeepActorEvenWhenAdminChannelIsDisabledAndKeepNameAfterDemotion() throws Exception {
         UUID actor=UUID.randomUUID();guard.link(owner,"Alex",code(99)).get();
         guard.toggleAdmin(99).get();guard.offlineSeconds(99,-1L).get();guard.presence(owner,"Alex",true);
         guard.restore(List.of(snapshot(10,1)));guard.attribute(sign,actor,"Griefer");guard.accept(snapshot(9,2));
         var delivery=ready().getFirst();assertEquals(99,delivery.recipient());assertEquals(actor,delivery.actorUuid());assertTrue(delivery.text().contains("Кто изменил: Griefer"));
         assertEquals("Griefer",guard.ownHistory(99,0,10).get().getFirst().actor());
         guard.configure(new GuardConfig(true,120_000),Set.of());
-        var demoted=guard.deliveries().get().getFirst();assertFalse(demoted.text().contains("Griefer"));assertNull(demoted.actorUuid());assertNull(demoted.actor());
-        assertNull(guard.ownHistory(99,0,10).get().getFirst().actor());
+        var demoted=guard.deliveries().get().getFirst();assertTrue(demoted.text().contains("Кто изменил: Griefer"));assertNull(demoted.actorUuid());assertNull(demoted.actor());
+        assertEquals("Griefer",guard.ownHistory(99,0,10).get().getFirst().actor());
     }
     @Test void differentActorsGetSeparateNotificationsAndUuidSurvivesRestart() throws Exception {
         UUID first=UUID.randomUUID(),second=UUID.randomUUID();guard.restore(List.of(snapshot(10,1)));offline();
@@ -113,13 +190,41 @@ class GuardServiceTest {
     }
     @Test void friendsCreateHistoryButNeverNotifyOwnerOrAdminsAndPersist() throws Exception {
         UUID friend=UUID.randomUUID();guard.link(owner,"Alex",code(42)).get();guard.addFriend(42,friend,"Trusted").get();
-        assertEquals(List.of(new GuardService.Friend(friend,"Trusted")),guard.friends(42).get());
+        assertEquals(List.of(new GuardService.Friend(friend,"Trusted",true,false,false)),guard.friends(42).get());
         guard.restore(List.of(snapshot(10,1)));offline();guard.attribute(sign,friend,"Trusted");guard.accept(snapshot(9,2));
         assertEquals(1,events().size());assertTrue(ready().isEmpty());
         guard.close();guard=open();guard.configure(new GuardConfig(true,120_000),Set.of(99L));
         assertEquals("Trusted",guard.friends(42).get().getFirst().name());guard.removeFriend(42,friend).get();assertTrue(guard.friends(42).get().isEmpty());
         guard.restore(List.of(snapshot(9,2)));guard.attribute(sign,friend,"Trusted");guard.accept(snapshot(8,3));
         assertEquals(2,events().size());assertEquals(Set.of(42L,99L),new HashSet<>(ready().stream().map(GuardService.Delivery::recipient).toList()));
+    }
+    @Test void subscribedFriendReceivesOwnerVaultChangesWithActorAndCanBeTurnedOff() throws Exception {
+        UUID friend=UUID.randomUUID(),stranger=UUID.randomUUID();
+        guard.link(owner,"Alex",code(42)).get();guard.link(friend,"Friend",code(43)).get();
+        guard.addFriend(42,friend,"Friend").get();guard.toggleFriendNotifications(42,friend).get();
+        guard.restore(List.of(snapshot(10,1)));guard.presence(owner,"Alex",true);
+        guard.attribute(sign,stranger,"Thief");guard.accept(snapshot(9,2));
+        var deliveries=ready();assertEquals(List.of(43L),deliveries.stream().map(GuardService.Delivery::recipient).toList());
+        assertTrue(deliveries.getFirst().text().contains("Alex"));assertTrue(deliveries.getFirst().text().contains("Кто изменил: Thief"));
+        guard.delivered(deliveries.getFirst().id(),true).get();
+        guard.attribute(sign,stranger,"Thief");guard.accept(snapshot(8,3));events();
+        guard.toggleFriendNotifications(42,friend).get();assertTrue(ready().isEmpty());
+        guard.toggleFriendNotifications(42,friend).get();
+        guard.attribute(sign,friend,"Friend");guard.accept(snapshot(7,4));events();
+        assertTrue(ready().isEmpty());
+    }
+    @Test void recipientCanDisableFriendStorageAlertsWithoutDisablingOwnAlerts() throws Exception {
+        UUID friend=UUID.randomUUID(),stranger=UUID.randomUUID();
+        guard.link(owner,"Alex",code(42)).get();guard.link(friend,"Friend",code(43)).get();
+        guard.addFriend(42,friend,"Friend").get();guard.toggleFriendNotifications(42,friend).get();
+        guard.restore(List.of(snapshot(10,1)));guard.presence(owner,"Alex",true);
+        guard.attribute(sign,stranger,"Thief");guard.accept(snapshot(9,2));events();
+        guard.toggleFriendAlerts(43).get();
+        assertFalse(guard.friendAlerts(43).get());assertTrue(guard.account(43).get().notifications());
+        assertTrue(ready().isEmpty());
+        guard.toggleFriendAlerts(43).get();
+        guard.attribute(sign,stranger,"Thief");guard.accept(snapshot(8,3));
+        assertEquals(List.of(43L),ready().stream().map(GuardService.Delivery::recipient).toList());
     }
 
     @Test void personalDayDoesNotDelayAdminAlertsAndAppliesToFutureChanges() throws Exception {
@@ -174,6 +279,18 @@ class GuardServiceTest {
         assertTrue(guard.link(UUID.randomUUID(),"Other",token).get().contains("неверный"));
         String second=code(43);assertTrue(guard.link(owner,"Alex",second).get().contains("уже привязан"));
         assertNull(guard.account(43).get());
+    }
+    @Test void unlinkRemovesOnlyOwnTelegramBindingAndAllowsRelinking() throws Exception {
+        String first=code(42);
+        assertTrue(guard.link(owner,"Alex",first).get().contains("привязан"));
+        assertTrue(guard.linked(owner));
+        assertTrue(guard.unlink(owner).get().contains("отвязан"));
+        assertNull(guard.account(42).get());
+        assertFalse(guard.linked(owner));
+        assertFalse(guard.linkOutcome(owner,"Alex",first).get().linked());
+        assertTrue(guard.unlink(owner).get().contains("не привязан"));
+        assertTrue(guard.link(owner,"Alex",code(43)).get().contains("привязан"));
+        assertEquals(owner,guard.account(43).get().uuid());
     }
     @Test void completeLinkCommandIsOneCopyableTelegramCodeBlock() throws Exception {
         String generated=guard.generate(42).get(),plain=TelegramEmojiMarkup.plain(generated);String token=plain.split("/vtrack link ")[1].substring(0,GuardService.LINK_CODE_LENGTH);
@@ -234,6 +351,12 @@ class GuardServiceTest {
         guard.accept(new Snapshot(sign,generation,owner,"Alex",List.of(sign),Map.of(),false,clock.get(),2));
         var e=events().getFirst();assertTrue(e.removed());assertTrue(e.changes().isEmpty());assertTrue(GuardService.eventText(e,0,8).contains("не подтверждение кражи"));
         guard.accept(new Snapshot(sign,UUID.randomUUID(),owner,"Alex",List.of(sign),Map.of("DIAMOND",9L),true,clock.get(),3));assertEquals(1,events().size());
+    }
+    @Test void ownerRemovingMarkerDoesNotCreateAnAlert() throws Exception {
+        guard.link(owner,"Alex",code(42)).get();guard.restore(List.of(snapshot(10,1)));offline();
+        guard.attribute(sign,owner,"Alex");
+        guard.accept(new Snapshot(sign,generation,owner,"Alex",List.of(sign),Map.of(),false,clock.get(),2));
+        assertTrue(events().isEmpty());assertTrue(ready().isEmpty());
     }
     @Test void disabledGuardKeepsBaselineWithoutRecordingChanges() throws Exception {
         guard.restore(List.of(snapshot(10,1)));offline();guard.configure(new GuardConfig(false,120_000),Set.of(99L));

@@ -45,7 +45,7 @@ class ProviderParsingTests(unittest.TestCase):
             with self.subTest(stars=stars):
                 order = self.order(review_html=f'<div class="order-review"><div class="rating"><div class="rating{stars}"></div></div></div>')
                 verified = parse_verified_order(order, {})
-                self.assertTrue(verified['reviewed'])
+                self.assertEqual(stars, verified['stars'])
                 self.assertEqual(10000, verified['amount'])
 
     def test_open_order_requires_both_paid_listing_and_refund_action(self):
@@ -63,7 +63,17 @@ class ProviderParsingTests(unittest.TestCase):
     def test_other_ratings_and_missing_reviews_do_not_count(self):
         for html in ('', '<div class="rating"><div class="rating5"></div></div>',
                      '<div class="order-review"><div class="rating"><div class="rating0"></div></div></div>'):
-            self.assertFalse(parse_verified_order(self.order(review_html=html), {})['reviewed'])
+            self.assertIsNone(parse_verified_order(self.order(review_html=html), {})['stars'])
+
+    def test_library_rating_is_used_and_invalid_library_rating_has_no_fallback(self):
+        for stars in range(1, 6):
+            order = self.order()
+            order.review = SimpleNamespace(stars=stars)
+            self.assertEqual(stars, parse_verified_order(order, {})['stars'])
+        for stars in (0, 6, '5', True):
+            order = self.order()
+            order.review = SimpleNamespace(stars=stars)
+            self.assertIsNone(parse_verified_order(order, {})['stars'])
 
     def test_unknown_status_and_ambiguous_quantity_fail_closed(self):
         for order in (self.order(status='Ожидает оплаты'), self.order(quantity='100.5'),
@@ -71,6 +81,31 @@ class ProviderParsingTests(unittest.TestCase):
                       self.order(review_html='<span class="text-warning">Возврат</span>')):
             with self.assertRaises(ValueError):
                 parse_verified_order(order, {})
+
+    def test_refund_uses_exact_seller_refunded_listing_when_detail_badge_disappears(self):
+        order = self.order(status='Статус изменён', quantity='')
+        order.seller_id = 123
+        order.subcategory = SimpleNamespace(id=1753)
+        order.short_description = 'FLEXITY'
+        account = SimpleNamespace(get_order=lambda _: order)
+        listed = SimpleNamespace(id=order.id, status=SimpleNamespace(name='REFUNDED'))
+        account.get_sells = lambda **kwargs: (None, [listed])
+        provider = FunPayProvider.__new__(FunPayProvider)
+        provider.account, provider.seller_id = account, 123
+        provider.config = dict(category_id=1753, order_marker='FLEXITY')
+        verified = provider.verify(order.id)
+        self.assertEqual('REFUNDED', verified['status'])
+        self.assertIsNone(verified['amount'])
+        account.get_sells = lambda **kwargs: (None, [SimpleNamespace(id=order.id, status=SimpleNamespace(name='PAID'))])
+        with self.assertRaises(ValueError):
+            provider.verify(order.id)
+
+    def test_refund_can_omit_quantity_but_paid_order_cannot(self):
+        refunded = parse_verified_order(self.order(status='Возврат', quantity=''), {})
+        self.assertEqual('REFUNDED', refunded['status'])
+        self.assertIsNone(refunded['amount'])
+        with self.assertRaises(ValueError):
+            parse_verified_order(self.order(status='Оплачен', quantity=''), {})
 
 
 if __name__ == '__main__':

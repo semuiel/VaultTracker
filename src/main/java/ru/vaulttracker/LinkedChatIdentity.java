@@ -43,11 +43,14 @@ final class LinkedChatIdentity {
         return render(account,text,true);
     }
     Component render(GuardService.Account account,String text,boolean showTag) throws Exception {
+        return render(account,Component.text(text,NamedTextColor.WHITE),showTag);
+    }
+    Component render(GuardService.Account account,Component text,boolean showTag) throws Exception {
         if(premiumStyle!=null) return tag(showTag).append(premiumStyle.render(account,text));
         Style style=style(account.uuid());
         // Minecraft account names are inserted into Flexity's trusted template, never Telegram names.
         if(!account.name().matches("[A-Za-z0-9_.-]{1,32}")) return fallback(account.name(),text,showTag);
-        Component body=(Component)format.invoke(formatter,true,account.name(),Component.text(text,NamedTextColor.WHITE),style.color());
+        Component body=(Component)format.invoke(formatter,true,account.name(),text,style.color());
         Component result=tag(showTag);
         if(style.prefix()!=null&&!style.prefix().isBlank()) result=result.append(MiniMessage.miniMessage().deserialize(style.prefix())).append(Component.space());
         return result.append(body);
@@ -55,9 +58,15 @@ final class LinkedChatIdentity {
     static Component fallback(String name,String text) {
         return fallback(name,text,true);
     }
-    static Component tag(boolean show) {return show?Component.text("[TG] ",NamedTextColor.AQUA):Component.empty();}
+    static Component tag(boolean show) {return show?Component.empty()
+            .append(Component.text("[",NamedTextColor.DARK_GRAY))
+            .append(Component.text("TG",NamedTextColor.AQUA))
+            .append(Component.text("] ",NamedTextColor.DARK_GRAY)):Component.empty();}
     static Component fallback(String name,String text,boolean showTag) {
+        return fallback(name,Component.text(text,NamedTextColor.WHITE),showTag);
+    }
+    static Component fallback(String name,Component text,boolean showTag) {
         return tag(showTag).append(Component.text(name,NamedTextColor.WHITE))
-                .append(Component.text(": ",NamedTextColor.GRAY)).append(Component.text(text,NamedTextColor.WHITE));
+                .append(Component.text(": ",NamedTextColor.GRAY)).append(text);
     }
 }

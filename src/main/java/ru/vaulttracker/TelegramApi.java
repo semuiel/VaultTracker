@@ -68,7 +68,17 @@ final class TelegramApi implements AutoCloseable {
         }
         return builder.retryOnConnectionFailure(false).build();
     }
-    String verify() throws IOException { return call("getMe",new JsonObject()).getAsJsonObject("result").get("username").getAsString(); }
+    private volatile boolean privateTopicsEnabled;
+    String verify() throws IOException {
+        JsonObject bot=call("getMe",new JsonObject()).getAsJsonObject("result");
+        privateTopicsEnabled=bot.has("has_topics_enabled")&&bot.get("has_topics_enabled").getAsBoolean();
+        return bot.get("username").getAsString();
+    }
+    boolean privateTopicsEnabled() {return privateTopicsEnabled;}
+    int createPrivateTopic(long user,String name) throws IOException {
+        JsonObject body=new JsonObject();body.addProperty("chat_id",user);body.addProperty("name",name);
+        return call("createForumTopic",body).getAsJsonObject("result").get("message_thread_id").getAsInt();
+    }
     void registerCommands() throws IOException {
         JsonArray commands=new JsonArray();
         commands.add(command("item","Поиск ресурсов и игроков"));
@@ -124,9 +134,22 @@ final class TelegramApi implements AutoCloseable {
     private static Reply reply(JsonObject message) {
         if(!message.has("reply_to_message")) return null;
         var value=message.getAsJsonObject("reply_to_message");
-        if(value.has("sender_chat")||!value.has("from")) return null;
+        if(value==null) return null;
+        // Telegram can attach a forum topic's service message as reply_to_message.
+        // It is not a user-visible quote and must not become "[без текста]" in Minecraft.
+        String quoted=messageText(value);
+        if(quoted==null||quoted.isBlank()) return null;
+        if(value.has("sender_chat")||!value.has("from")) {
+            String name="";
+            if(value.has("sender_chat")&&value.get("sender_chat").isJsonObject()) {
+                var senderChat=value.getAsJsonObject("sender_chat");
+                if(senderChat.has("title")) name=senderChat.get("title").getAsString();
+            }
+            return new Reply(value.has("message_id")?value.get("message_id").getAsInt():0,0,name,
+                    quoted,true);
+        }
         var from=value.getAsJsonObject("from");
-        return new Reply(value.get("message_id").getAsInt(),userId(value),displayName(value),Objects.toString(messageText(value),"[без текста]"),from.has("is_bot")&&from.get("is_bot").getAsBoolean());
+        return new Reply(value.get("message_id").getAsInt(),userId(value),displayName(value),quoted,from.has("is_bot")&&from.get("is_bot").getAsBoolean());
     }
     private static String messageText(JsonObject message) {
         if(message.has("text")) return message.get("text").getAsString();
@@ -153,9 +176,13 @@ final class TelegramApi implements AutoCloseable {
                 ? object.getAsJsonObject("from").get("id").getAsLong() : 0;
     }
     int send(long chatId,int topicId,TelegramCommands.View view) throws IOException {
+        return send(chatId,topicId,view,false);
+    }
+    int send(long chatId,int topicId,TelegramCommands.View view,boolean silent) throws IOException {
         view=viewCustomizer.apply(view);
         JsonObject body=messageBody(chatId,view);
         if(topicId>0) body.addProperty("message_thread_id",topicId);
+        if(silent) body.addProperty("disable_notification",true);
         try {return call("sendMessage",body).getAsJsonObject("result").get("message_id").getAsInt();}
         catch(ApiError failure) {
             if(!body.has("parse_mode")||failure.code!=400) throw failure;
@@ -165,6 +192,14 @@ final class TelegramApi implements AutoCloseable {
     }
     int sendHtml(long chatId,int topicId,String html,boolean silent) throws IOException {
         return sendHtml(chatId,topicId,html,silent,List.of());
+    }
+    int sendDocument(long chatId,int topicId,String filename,String content) throws IOException {
+        var upload=new MultipartBody.Builder().setType(MultipartBody.FORM)
+                .addFormDataPart("chat_id",Long.toString(chatId));
+        if(topicId>0) upload.addFormDataPart("message_thread_id",Integer.toString(topicId));
+        upload.addFormDataPart("document",filename,RequestBody.create(content.getBytes(StandardCharsets.UTF_8),
+                MediaType.get("text/markdown; charset=utf-8")));
+        return call("sendDocument",upload.build()).getAsJsonObject("result").get("message_id").getAsInt();
     }
     int sendHtml(long chatId,int topicId,String html,boolean silent,List<TelegramCommands.Button> buttons) throws IOException {
         JsonObject body=new JsonObject();body.addProperty("chat_id",chatId);if(topicId>0) body.addProperty("message_thread_id",topicId);
@@ -210,6 +245,19 @@ final class TelegramApi implements AutoCloseable {
     void delete(long chatId,int messageId) throws IOException {
         JsonObject body=new JsonObject(); body.addProperty("chat_id",chatId); body.addProperty("message_id",messageId);
         call("deleteMessage",body);
+    }
+    void sendDocument(long chatId,Path file,String filename) throws IOException {
+        MediaType type=MediaType.get(filename.endsWith(".md")?"text/markdown; charset=utf-8":"text/plain");
+        MultipartBody body=new MultipartBody.Builder().setType(MultipartBody.FORM)
+                .addFormDataPart("chat_id",Long.toString(chatId))
+                .addFormDataPart("document",filename,RequestBody.create(file.toFile(),type))
+                .build();
+        call("sendDocument",body);
+    }
+    int copyMessage(long fromChat,int sourceMessage,long toChat,int topicId) throws IOException {
+        JsonObject body=new JsonObject();body.addProperty("chat_id",toChat);body.addProperty("from_chat_id",fromChat);
+        body.addProperty("message_id",sourceMessage);if(topicId>0) body.addProperty("message_thread_id",topicId);
+        return call("copyMessage",body).getAsJsonObject("result").get("message_id").getAsInt();
     }
     String memberStatus(long chatId,long userId) throws IOException {
         JsonObject body=new JsonObject();body.addProperty("chat_id",chatId);body.addProperty("user_id",userId);
@@ -260,13 +308,19 @@ final class TelegramApi implements AutoCloseable {
                 if(row==null || button.row()!=rowNumber) {
                     row=new JsonArray(); keyboard.add(row); rowNumber=button.row();
                 }
-                JsonObject value=new JsonObject(); value.addProperty("text",TelegramEmojiMarkup.plain(button.text())); value.addProperty(button.url()==null?"callback_data":"url",button.url()==null?button.data():button.url()); row.add(value);
+                JsonObject value=new JsonObject(); value.addProperty("text",TelegramEmojiMarkup.plain(button.text()));
+                if(button.copyText()!=null) {JsonObject copy=new JsonObject();copy.addProperty("text",button.copyText());value.add("copy_text",copy);}
+                else value.addProperty(button.url()==null?"callback_data":"url",button.url()==null?button.data():button.url());
+                row.add(value);
             }
         }
         JsonObject markup=new JsonObject(); markup.add("inline_keyboard",keyboard); body.add("reply_markup",markup);
     }
     private JsonObject call(String method,JsonObject body) throws IOException {
-        Request request=new Request.Builder().url(baseUrl+method).post(RequestBody.create(gson.toJson(body),JSON)).build();
+        return call(method,RequestBody.create(gson.toJson(body),JSON));
+    }
+    private JsonObject call(String method,RequestBody body) throws IOException {
+        Request request=new Request.Builder().url(baseUrl+method).post(body).build();
         int current=route.get();OkHttpClient client=clients.get(current);
         try(Response response=client.newCall(request).execute()) {
             String raw=response.body()==null ? "" : response.body().string(); JsonObject json;

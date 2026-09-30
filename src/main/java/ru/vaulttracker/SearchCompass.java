@@ -21,16 +21,24 @@ final class SearchCompass implements Listener {
     }
     private final JavaPlugin plugin;
     private final Catalogue catalogue;
+    private final GuardService guard;
     private final Map<UUID,Session> sessions=new ConcurrentHashMap<>();
     SearchCompass(JavaPlugin plugin) {this(plugin,null);}
-    SearchCompass(JavaPlugin plugin,Catalogue catalogue) {this.plugin=plugin;this.catalogue=catalogue;}
+    SearchCompass(JavaPlugin plugin,Catalogue catalogue) {this(plugin,catalogue,null);}
+    SearchCompass(JavaPlugin plugin,Catalogue catalogue,GuardService guard) {this.plugin=plugin;this.catalogue=catalogue;this.guard=guard;}
+    private boolean accessible(Player player,BlockKey chest) {
+        if(catalogue==null) return false;
+        BlockKey sign=catalogue.claimedBy(chest);Snapshot vault=sign==null?null:catalogue.get(sign);
+        return vault!=null&&vault.active()&&vault.chests().contains(chest)
+                &&(vault.owner().equals(player.getUniqueId())||guard!=null&&guard.canSearch(player.getUniqueId(),vault.owner()));
+    }
 
     /** Recheck ownership against the current catalogue, never trust old search results. */
     String select(Player player,BlockKey chest) {
         if(!player.isOnline()) return "Игрок не в сети.";
         if(!player.hasPermission("vaulttracker.search")) return "Нет права vaulttracker.search.";
-        if(catalogue==null || !catalogue.all().stream().anyMatch(v->v.active() && v.owner().equals(player.getUniqueId()) && v.chests().contains(chest)))
-            return "Сундук больше не зарегистрирован за вами. Повторите поиск.";
+        if(!accessible(player,chest))
+            return "Сундук недоступен или владелец закрыл доступ. Повторите поиск.";
         if(!player.getWorld().getUID().equals(chest.world())) return "Сундук в другом мире. Сначала перейдите в его мир.";
         point(player,chest);
         return "Компас направлен на сундук: "+chest.x()+" "+chest.y()+" "+chest.z()+" на 2 минуты.";
@@ -41,7 +49,7 @@ final class SearchCompass implements Listener {
         if(!player.isOnline()) return;
         Location origin=player.getLocation();
         BlockKey nearest=nearest(rows,origin);
-        if(nearest==null) {clear(player);return;}
+        if(nearest==null || catalogue!=null&&!accessible(player,nearest)) {clear(player);return;}
         point(player,nearest);
     }
     private void point(Player player,BlockKey nearest) {
@@ -61,17 +69,27 @@ final class SearchCompass implements Listener {
         session.marker=player.getScheduler().runAtFixedRate(plugin,t->{
             if(sessions.get(uuid)!=session) {t.cancel();return;}
             Location here=player.getLocation();
+            if(catalogue!=null&&!accessible(player,nearest)) {clear(player);return;}
             if(!here.getWorld().equals(target.getWorld()) || !sameBlock(player.getCompassTarget(),target)) {clear(player);return;}
             double distance=here.distance(target);
             if(distance<=24) {
-                // Per-player particles outline the actual block, without reading/loading its chunk.
-                for(double x:new double[]{-0.48,0.48}) for(double y:new double[]{-0.48,0.48}) for(double z:new double[]{-0.48,0.48})
-                    player.spawnParticle(Particle.END_ROD,target.clone().add(x,y,z),1,0,0,0,0);
-                player.sendActionBar(Component.text("Сундук: "+nearest.x()+" "+nearest.y()+" "+nearest.z()+" · "+Math.round(distance)+" м"));
+                // Outline every physical half of a double chest without reading/loading its chunk.
+                for(BlockKey part:outlineBlocks(catalogue,nearest)) {
+                    Location center=new Location(target.getWorld(),part.x()+0.5,part.y()+0.5,part.z()+0.5);
+                    for(double x:new double[]{-0.48,0.48}) for(double y:new double[]{-0.48,0.48}) for(double z:new double[]{-0.48,0.48})
+                        player.spawnParticle(Particle.END_ROD,center.clone().add(x,y,z),1,0,0,0,0);
+                }
+                player.sendActionBar(GameMessages.format("Сундук: "+nearest.x()+" "+nearest.y()+" "+nearest.z()+" · "+Math.round(distance)+" м",GameMessages.Tone.INFO));
             }
         },()->{if(sessions.remove(uuid,session)) cancel(session);},1,20);
     }
     private static void cancel(Session session) {if(session.timer!=null) session.timer.cancel();if(session.marker!=null) session.marker.cancel();}
+    static List<BlockKey> outlineBlocks(Catalogue catalogue,BlockKey chest) {
+        if(catalogue==null) return List.of(chest);
+        BlockKey marker=catalogue.claimedBy(chest);
+        Snapshot vault=marker==null?null:catalogue.get(marker);
+        return vault!=null && vault.active() && vault.chests().contains(chest)?vault.chests():List.of(chest);
+    }
     static BlockKey nearest(List<OwnResourceSearch.Row> rows,Location origin) {
         UUID world=origin.getWorld().getUID();
         return rows.stream().map(OwnResourceSearch.Row::chest).filter(c->c.world().equals(world))

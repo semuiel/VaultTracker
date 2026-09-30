@@ -6,13 +6,13 @@ import java.util.*;
 final class OwnResourceSearch {
     record Row(BlockKey chest,String material,long amount,double distance) {}
     static List<Row> find(Catalogue catalogue,UUID owner,String query,BlockKey origin) {
-        String normalized=RussianItems.normalize(query.strip().replace(' ','_').replace('-','_')).replace("DIAMND","DIAMOND");
+        String normalized=RussianItems.normalize(query.strip().replace(' ','_').replace('-','_'));
         String russian=query.strip().toLowerCase(Locale.ROOT).replace('ё','е');
         if(russian.isEmpty()) return List.of();
         List<Row> rows=new ArrayList<>();
         for(Snapshot vault:catalogue.all()) if(vault.owner().equals(owner)&&!vault.chests().isEmpty()) {
             BlockKey chest=vault.chests().stream().min(Comparator.comparingDouble(c->distance(c,origin))).orElseThrow();
-            for(var item:vault.items().entrySet()) if(item.getValue()>0 && (item.getKey().contains(normalized)||RussianItems.name(item.getKey()).toLowerCase(Locale.ROOT).replace('ё','е').contains(russian)))
+            for(var item:vault.items().entrySet()) if(item.getValue()>0 && (query.equals("*")||item.getKey().contains(normalized)||RussianItems.name(item.getKey()).toLowerCase(Locale.ROOT).replace('ё','е').contains(russian)))
                 rows.add(new Row(chest,item.getKey(),item.getValue(),distance(chest,origin)));
         }
         rows.sort(Comparator.comparingDouble(Row::distance).thenComparing(r->r.chest().world().toString()).thenComparingInt(r->r.chest().x()).thenComparingInt(r->r.chest().y()).thenComparingInt(r->r.chest().z()).thenComparing(Row::material));

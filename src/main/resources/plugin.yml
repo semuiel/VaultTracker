@@ -1,14 +1,20 @@
 name: VaultTracker
 version: 0.12.1-folia26
-softdepend: [flexity, bastion, LuckPerms]
+softdepend: [flexity, Bastion, bastion, LuckPerms]
 main: ru.vaulttracker.VaultTrackerPlugin
 api-version: '26.1.2'
 folia-supported: true
 description: Chest resource catalogue with durable MariaDB synchronization
 commands:
+  unlink:
+    description: Unlink your Minecraft character from Telegram
+    usage: /unlink
+  tg:
+    description: Send a private message to a player linked with Telegram
+    usage: /tg <nickname> <message>
   find:
     description: Find resources in your registered chests
-    usage: /find <resource> [page]
+    usage: /find <resource> [page] или /find <nickname> [resource] [page]
   topitem:
     description: Find players with a resource
     usage: /topitem <all|предмет|игрок> [страница]
@@ -17,12 +23,15 @@ commands:
     description: Chest catalogue commands
     aliases: [vtrack]
 permissions:
+  vaulttracker.message:
+    default: true
+    description: Send private player-to-player messages
   vaulttracker.link:
     default: true
     description: Link own Minecraft character to Telegram using a one-time code
   vaulttracker.register:
     default: true
-    description: Register a chest by placing a vault sign
+    description: Register a chest using a vault sign or a paper in an item frame
   vaulttracker.search:
     default: true
     description: Search published resource totals

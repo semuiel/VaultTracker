@@ -4,6 +4,7 @@ import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.logging.Logger;
 
 /** Local durability and network synchronization use different workers: DB outages cannot stall disk writes. */
@@ -12,6 +13,7 @@ public final class StorageEngine implements AutoCloseable {
     private final ScheduledExecutorService network = Executors.newSingleThreadScheduledExecutor(r -> new Thread(r,"VaultTracker-mariadb"));
     private final ConcurrentMap<BlockKey, Snapshot> pending = new ConcurrentHashMap<>();
     private final Path path;
+    private final Function<String,UUID> knownOwner;
     private final RemoteStore.Settings settings;
     private final Logger log;
     private LocalStore local, mirror;
@@ -20,14 +22,18 @@ public final class StorageEngine implements AutoCloseable {
     private volatile long dirtyCount;
     private long lastDiskWarning, lastNetworkWarning;
 
-    public StorageEngine(Path path, RemoteStore.Settings settings, Logger log) { this.path=path; this.settings=settings; this.log=log; }
+    public StorageEngine(Path path, RemoteStore.Settings settings, Logger log) {this(path,settings,log,name->null);}
+    public StorageEngine(Path path, RemoteStore.Settings settings, Logger log,Function<String,UUID> knownOwner) {
+        this.path=path;this.settings=settings;this.log=log;this.knownOwner=knownOwner;
+    }
     public void start(Consumer<List<Snapshot>> loaded) {
         disk.execute(() -> {
             try {
                 // Register the drivers in this plugin classloader explicitly.
                 Class.forName("org.h2.Driver"); Class.forName("org.mariadb.jdbc.Driver");
-                local = new LocalStore(path);
+                local = new LocalStore(path,knownOwner);
                 loaded.accept(local.load());
+                if(local.hasUnresolved()) log.warning("Legacy-хранилища без однозначного UUID оставлены в локальной базе: "+local.unresolvedCount()+". Учёт возобновится после разрешения владельца.");
                 local.republishAll();
                 ready = true;
                 dirtyCount = local.dirtyCount();
@@ -36,6 +42,14 @@ public final class StorageEngine implements AutoCloseable {
             } catch (Exception e) { diskHealthy=false; log.severe("Не удалось открыть локальный каталог: " + e.getClass().getSimpleName() + ". Сохраните файлы cache и проверьте доступ к папке."); }
         });
         disk.scheduleWithFixedDelay(this::flush, 250, 250, TimeUnit.MILLISECONDS);
+    }
+    public void retryLegacy(Consumer<List<Snapshot>> loaded) {
+        if(closing || !ready) return;
+        disk.execute(()->{
+            if(local==null || !local.hasUnresolved()) return;
+            try {loaded.accept(local.load());}
+            catch(Exception failure) {log.warning("Не удалось повторно разрешить legacy-владельцев хранилищ: "+failure.getClass().getSimpleName());}
+        });
     }
     public void accept(Snapshot v) {
         if (closing) return;
@@ -59,7 +73,7 @@ public final class StorageEngine implements AutoCloseable {
     private void sync() {
         if (!ready || closing) return;
         try {
-            if (mirror == null) mirror = new LocalStore(path);
+            if (mirror == null) mirror = new LocalStore(path,knownOwner);
             if (remote == null) remote = new RemoteStore(settings);
             remote.connect();
             List<Snapshot> batch = mirror.dirty(256);

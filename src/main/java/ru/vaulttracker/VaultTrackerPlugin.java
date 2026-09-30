@@ -9,19 +9,25 @@ import org.bukkit.block.sign.Side;
 import org.bukkit.block.sign.SignSide;
 import org.bukkit.command.*;
 import org.bukkit.entity.Player;
+import org.bukkit.entity.ItemFrame;
 import org.bukkit.event.*;
 import org.bukkit.event.block.*;
 import org.bukkit.event.entity.EntityExplodeEvent;
+import org.bukkit.event.hanging.HangingBreakEvent;
+import org.bukkit.event.hanging.HangingBreakByEntityEvent;
+import org.bukkit.event.hanging.HangingPlaceEvent;
 import org.bukkit.event.inventory.*;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.event.player.PlayerInteractEntityEvent;
 import io.papermc.paper.block.TileStateInventoryHolder;
 import org.bukkit.event.world.*;
 import org.bukkit.inventory.*;
 import org.bukkit.plugin.java.JavaPlugin;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Pattern;
 
 public final class VaultTrackerPlugin extends JavaPlugin implements Listener, TabExecutor {
     private Catalogue catalogue;
@@ -29,6 +35,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
     private TelegramBotService telegram;
     private TelegramChatBridge telegramChat;
     private GuardService guard;
+    private PlayerDirectMessages directMessages;
     private SearchCompass searchCompass;
     private BastionTrust bastionTrust;
     private ChildPlayers childPlayers;
@@ -55,23 +62,37 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
         applyRuntimeConfig();
         try {guard=new GuardService(getDataFolder().toPath().resolve("guard-data"),GuardConfig.load(getDataFolder().toPath()),getLogger());}
         catch(Exception e) {throw new IllegalStateException("Не удалось открыть guard.yml / guard-data. Сохраните файлы и проверьте доступ к диску.",e);}
+        directMessages=new PlayerDirectMessages(this,guard);
         for(World world:getServer().getWorlds()) guard.world(world.getUID(),world.getName());
         bastionTrust=new BastionTrust(this);
         for(Player player:getServer().getOnlinePlayers()) {guard.presence(player.getUniqueId(),player.getName(),true);retryBastion(player.getUniqueId());}
-        storage = new StorageEngine(getDataFolder().toPath().resolve("cache-"+id), database, getLogger());
+        storage = new StorageEngine(getDataFolder().toPath().resolve("cache-"+id), database, getLogger(),guard::knownPlayerUuid);
         catalogue = new Catalogue(snapshot-> {storage.accept(snapshot);guard.accept(snapshot);});
-        searchCompass=new SearchCompass(this,catalogue);
+        searchCompass=new SearchCompass(this,catalogue,guard);
         childPlayers=new ChildPlayers(this,guard);
         getServer().getPluginManager().registerEvents(childPlayers,this);childPlayers.start();
         getServer().getPluginManager().registerEvents(searchCompass,this);
         getServer().getPluginManager().registerEvents(this,this);
+        // Vanilla remains the source; a sparse UUID-keyed snapshot protects history across world moves.
+        getServer().getGlobalRegionScheduler().runAtFixedRate(this,task->{
+            if(stopping) return;
+            for(Player player:getServer().getOnlinePlayers()) player.getScheduler().run(this,t->snapshotStatistics(player),()->{});
+        },72_000L,72_000L);
         Objects.requireNonNull(getCommand("vaulttracker")).setExecutor(this);
         Objects.requireNonNull(getCommand("vaulttracker")).setTabCompleter(this);
         Objects.requireNonNull(getCommand("topitem")).setExecutor(this);
         Objects.requireNonNull(getCommand("topitem")).setTabCompleter(this);
         Objects.requireNonNull(getCommand("find")).setExecutor(this);
         Objects.requireNonNull(getCommand("find")).setTabCompleter(this);
-        storage.start(snapshots-> {catalogue.restore(snapshots);guard.restore(snapshots);});
+        Objects.requireNonNull(getCommand("tg")).setExecutor(this);
+        Objects.requireNonNull(getCommand("tg")).setTabCompleter(this);
+        storage.start(snapshots-> {
+            catalogue.restore(snapshots);guard.restore(snapshots);
+            for(UUID owner:snapshots.stream().map(Snapshot::owner).distinct().toList()) {
+                String current=guard.knownPlayerName(owner);
+                if(current!=null) catalogue.rename(owner,current);
+            }
+        });
         synchronized(telegramLock) { replaceTelegram(); }
         if(telegramChat!=null) telegramChat.serverEvent(true);
         getLogger().info("VaultTracker " + getPluginMeta().getVersion() + ": каталог ресурсов. /vtrack help");
@@ -137,16 +158,26 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
     private static BlockKey key(Block b) { return new BlockKey(b.getWorld().getUID(), b.getX(), b.getY(), b.getZ()); }
     private static Location location(BlockKey p, World w) { return new Location(w,p.x(),p.y(),p.z()); }
     private static String plain(Component c) { return c == null ? "" : PlainTextComponentSerializer.plainText().serialize(c); }
-    static boolean marker(String text) { return "[vault]".equalsIgnoreCase(text.trim())||"[v]".equalsIgnoreCase(text.trim()); }
+    private static final Pattern SIGN_MARKER=Pattern.compile("(?i)\\[\\s*[^\\]\\s]?(?:vault|v)[^\\]\\s]?\\s*\\]");
+    static boolean marker(String text) { return text!=null && SIGN_MARKER.matcher(text).find(); }
+    static boolean marker(SignChangeEvent event) {
+        for(int line=0;line<4;line++) if(marker(plain(event.line(line)))) return true;
+        return false;
+    }
     static void decorateOwner(Sign sign, String playerName) {
-        SignSide front = sign.getSide(Side.FRONT);
-        // Only replace the registration marker; players may keep their own labels.
-        if (!marker(plain(front.line(0)))) return;
-        front.line(0, Component.text("Собственность"));
-        front.line(1, Component.text("игрока"));
-        front.line(2, Component.text(playerName));
-        front.line(3, Component.empty());
-        sign.update(true, false);
+        for(Side side:Side.values()) {
+            SignSide text=sign.getSide(side);
+            if(text==null) continue;
+            boolean found=false;
+            for(int line=0;line<4;line++) if(marker(plain(text.line(line)))) {found=true;break;}
+            if(!found) continue;
+            text.line(0, Component.text("Собственность"));
+            text.line(1, Component.text("игрока"));
+            text.line(2, Component.text(playerName));
+            text.line(3, Component.empty());
+            sign.update(true, false);
+            return;
+        }
     }
     private static boolean readable(BlockKey p, World w) {
         return w.isChunkLoaded(p.x() >> 4,p.z() >> 4) && Bukkit.isOwnedByCurrentRegion(location(p,w));
@@ -156,6 +187,14 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
         if (data instanceof WallSign wall) return sign.getRelative(wall.getFacing().getOppositeFace());
         if (data instanceof org.bukkit.block.data.type.Sign) return sign.getRelative(BlockFace.DOWN);
         if (data instanceof org.bukkit.block.data.type.HangingSign) return sign.getRelative(BlockFace.UP);
+        return null;
+    }
+    static Block frameAnchor(ItemFrame frame) {
+        return frame.getLocation().getBlock().getRelative(frame.getFacing().getOppositeFace());
+    }
+    private ItemFrame frameAt(BlockKey p,World w) {
+        for(var entity:w.getChunkAt(p.x()>>4,p.z()>>4).getEntities())
+            if(entity instanceof ItemFrame frame && key(frame.getLocation().getBlock()).equals(p)) return frame;
         return null;
     }
     record ChestView(List<BlockKey> chests, Map<String, Long> items) {}
@@ -215,43 +254,82 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
         Block block = location(p,w).getBlock();
         // Registration belongs to the persisted catalogue, not the displayed marker.
         // Editing its text does not change registration or ownership.
-        if (!(block.getState() instanceof Sign sign)) {
-            catalogue.remove(p,v.generation(),System.currentTimeMillis()); return;
-        }
-        ChestView view = readChest(attached(block));
+        Sign sign=block.getState() instanceof Sign s?s:null;
+        ItemFrame frame=sign==null?frameAt(p,w):null;
+        if(sign==null && frame==null) {catalogue.remove(p,v.generation(),System.currentTimeMillis());return;}
+        ChestView view = readChest(sign!=null?attached(block):frameAnchor(frame));
         if (view == null) return;
         if (view.chests().isEmpty()) { catalogue.remove(p,v.generation(),System.currentTimeMillis()); return; }
         if (!catalogue.observe(p,v.generation(),view.chests(),view.items(),System.currentTimeMillis()))
             getLogger().warning("Объединены два зарегистрированных хранилища. Их учёт снят во избежание двойного подсчёта; заново напишите [vault] на одной табличке.");
-        else decorateOwner(sign, v.playerName());
+        else if(sign!=null) decorateOwner(sign, v.playerName());
+    }
+    private void registerFrame(ItemFrame frame,Player player) {
+        if(stopping || !frame.isValid() || frame.getItem().getType()!=Material.PAPER) return;
+        BlockKey p=key(frame.getLocation().getBlock());
+        if(catalogue.get(p)!=null) return; // The marker survives any later item change.
+        if(!storage.ready()) {warn(player,"Каталог пока недоступен. Сообщите администратору: /vtrack status");return;}
+        if(!player.hasPermission("vaulttracker.register")) {error(player,"Нет права vaulttracker.register.");return;}
+        ChestView view=readChest(frameAnchor(frame));
+        if(view==null || view.chests().isEmpty()) {warn(player,"Поместите рамку прямо на хранилище. Эндер-сундук не поддерживается.");return;}
+        try {
+            catalogue.register(p,player.getUniqueId(),player.getName(),view.chests(),view.items(),System.currentTimeMillis(),playerLimit);
+            GameMessages.send(player,"Хранилище поставлено на учёт через рамку. Теперь предмет в рамке можно менять.",GameMessages.Tone.SUCCESS);
+        } catch(IllegalArgumentException ex) {warn(player,ex.getMessage());}
+    }
+    private void scheduleFrameRegistration(ItemFrame frame,Player player) {
+        frame.getScheduler().runDelayed(this,task->registerFrame(frame,player),()->{},1L);
+    }
+    @EventHandler(priority=EventPriority.MONITOR,ignoreCancelled=true)
+    public void interactFrame(PlayerInteractEntityEvent e) {
+        if(!(e.getRightClicked() instanceof ItemFrame frame)) return;
+        // Only insertion into an empty, unclaimed frame can create a marker.
+        // Rotating/replacing an existing item must never retry registration.
+        if(!frame.getItem().getType().isAir()) return;
+        if(catalogue.get(key(frame.getLocation().getBlock()))!=null) return;
+        if(catalogue.claimedBy(key(frameAnchor(frame)))!=null) return;
+        scheduleFrameRegistration(frame,e.getPlayer());
+    }
+    @EventHandler(priority=EventPriority.MONITOR,ignoreCancelled=true)
+    public void placedFrame(HangingPlaceEvent e) {
+        if(e.getEntity() instanceof ItemFrame frame && e.getPlayer()!=null) scheduleFrameRegistration(frame,e.getPlayer());
+    }
+    @EventHandler(priority=EventPriority.MONITOR,ignoreCancelled=true)
+    public void brokenFrame(HangingBreakEvent e) {
+        if(!(e.getEntity() instanceof ItemFrame frame)) return;
+        BlockKey p=key(frame.getLocation().getBlock());Snapshot marker=catalogue.get(p);
+        if(marker==null) return;
+        Player breaker=e instanceof HangingBreakByEntityEvent byEntity && byEntity.getRemover() instanceof Player player?player:null;
+        if(breaker!=null) guard.attribute(p,breaker.getUniqueId(),breaker.getName());
+        catalogue.remove(p,marker.generation(),System.currentTimeMillis());
+        if(breaker!=null && marker.owner().equals(breaker.getUniqueId()))
+            GameMessages.send(breaker,"Хранилище снято с учёта.",GameMessages.Tone.SUCCESS);
     }
     @EventHandler(priority=EventPriority.HIGHEST, ignoreCancelled=true)
     public void validateSign(SignChangeEvent e) {
-        if (e.getSide() != Side.FRONT) return;
         Snapshot existing = catalogue.get(key(e.getBlock()));
         if (existing != null && !existing.owner().equals(e.getPlayer().getUniqueId()) && !e.getPlayer().hasPermission("vaulttracker.admin")) {
-            e.setCancelled(true); tell(e.getPlayer(),"Эта табличка зарегистрирована другим игроком."); return;
+            e.setCancelled(true); error(e.getPlayer(),"Эта табличка зарегистрирована другим игроком."); return;
         }
         if (existing != null) return;
-        if (!marker(plain(e.line(0)))) return;
-        if (!storage.ready()) { e.setCancelled(true); tell(e.getPlayer(),"Каталог пока недоступен. Сообщите администратору: /vtrack status"); return; }
-        if (!e.getPlayer().hasPermission("vaulttracker.register")) { e.setCancelled(true); tell(e.getPlayer(),"Нет права vaulttracker.register."); return; }
+        if (!marker(e)) return;
+        if (!storage.ready()) { e.setCancelled(true); warn(e.getPlayer(),"Каталог пока недоступен. Сообщите администратору: /vtrack status"); return; }
+        if (!e.getPlayer().hasPermission("vaulttracker.register")) { e.setCancelled(true); error(e.getPlayer(),"Нет права vaulttracker.register."); return; }
         ChestView view = readChest(attached(e.getBlock()));
-        if (view == null || view.chests().isEmpty()) { e.setCancelled(true); tell(e.getPlayer(),"Поставьте табличку на хранилище или прикрепите сбоку. Эндер-сундук не поддерживается: его инвентарь принадлежит игроку, а не блоку."); return; }
+        if (view == null || view.chests().isEmpty()) { e.setCancelled(true); warn(e.getPlayer(),"Поставьте табличку на хранилище или прикрепите сбоку. Эндер-сундук не поддерживается: его инвентарь принадлежит игроку, а не блоку."); return; }
         for (BlockKey chest : view.chests()) {
             BlockKey claimed = catalogue.claimedBy(chest);
             if (claimed != null && !claimed.equals(key(e.getBlock()))) {
-                e.setCancelled(true); tell(e.getPlayer(),"Это хранилище уже зарегистрировано. Для двойного сундука нужна одна табличка."); return;
+                e.setCancelled(true); warn(e.getPlayer(),"Это хранилище уже зарегистрировано. Для двойного сундука нужна одна табличка."); return;
             }
         }
     }
     @EventHandler(priority=EventPriority.MONITOR, ignoreCancelled=true)
     public void changedSign(SignChangeEvent e) {
-        if (e.getSide() != Side.FRONT) return;
         BlockKey p = key(e.getBlock());
         Snapshot existing = catalogue.get(p);
         // Text edits need neither a catalogue mutation nor an inventory check.
-        if (existing != null || !marker(plain(e.line(0)))) return;
+        if (existing != null || !marker(e)) return;
         if (!storage.ready() || !e.getPlayer().hasPermission("vaulttracker.register")) return;
         ChestView view = readChest(attached(e.getBlock()));
         if (view == null || view.chests().isEmpty()) return;
@@ -259,8 +337,8 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
             catalogue.register(p,e.getPlayer().getUniqueId(),e.getPlayer().getName(),view.chests(),view.items(),System.currentTimeMillis(),playerLimit);
             // Decorate on the region scheduler after Minecraft applies the event's text.
             schedule(p);
-            tell(e.getPlayer(),"Хранилище поставлено на учёт (" + (view.chests().size()==2 ? "двойной сундук" : "один блок") + "). Сохранение выполняется в фоне.");
-        } catch (IllegalArgumentException ex) { tell(e.getPlayer(),ex.getMessage()); }
+            GameMessages.send(e.getPlayer(),"Хранилище поставлено на учёт (" + (view.chests().size()==2 ? "двойной сундук" : "один блок") + "). Сохранение выполняется в фоне.",GameMessages.Tone.SUCCESS);
+        } catch (IllegalArgumentException ex) { warn(e.getPlayer(),ex.getMessage()); }
     }
     private void nearby(Block b) { nearby(b,null,false); }
     private void nearbyAutomated(Block b) { nearby(b,null,true); }
@@ -320,8 +398,10 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
         if(ownerSign!=null) guard.attribute(ownerSign,e.getPlayer().getUniqueId(),e.getPlayer().getName());
         destroyed(e.getBlock());
     }
-    @EventHandler(priority=EventPriority.MONITOR, ignoreCancelled=true) public void explode(EntityExplodeEvent e) { e.blockList().forEach(this::destroyed); }
-    @EventHandler(priority=EventPriority.MONITOR, ignoreCancelled=true) public void explode(BlockExplodeEvent e) { e.blockList().forEach(this::destroyed); }
+    // Explosion block lists are candidates; other protection plugins may keep those blocks intact.
+    // Recheck the actual sign/container after the event instead of unregistering immediately.
+    @EventHandler(priority=EventPriority.MONITOR, ignoreCancelled=true) public void explode(EntityExplodeEvent e) { e.blockList().forEach(this::nearby); }
+    @EventHandler(priority=EventPriority.MONITOR, ignoreCancelled=true) public void explode(BlockExplodeEvent e) { e.blockList().forEach(this::nearby); }
     @EventHandler(priority=EventPriority.MONITOR, ignoreCancelled=true) public void placed(BlockPlaceEvent e) { nearby(e.getBlock()); }
     @EventHandler(priority=EventPriority.MONITOR, ignoreCancelled=true) public void physics(BlockPhysicsEvent e) { if (catalogue.get(key(e.getBlock())) != null) schedule(key(e.getBlock())); }
     @EventHandler(priority=EventPriority.MONITOR) public void chunkLoad(ChunkLoadEvent e) {
@@ -330,12 +410,24 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
     }
     @EventHandler(priority=EventPriority.MONITOR) public void worldLoad(WorldLoadEvent e) {guard.world(e.getWorld().getUID(),e.getWorld().getName());}
     @EventHandler(priority=EventPriority.MONITOR, ignoreCancelled=true) public void chunkUnload(ChunkUnloadEvent e) {
-        for (Snapshot v : catalogue.inChunk(new BlockKey.ChunkKey(e.getWorld().getUID(),e.getChunk().getX(),e.getChunk().getZ()))) refresh(v.sign(),e.getWorld());
+        for (Snapshot v : catalogue.inChunk(new BlockKey.ChunkKey(e.getWorld().getUID(),e.getChunk().getX(),e.getChunk().getZ()))) {
+            // Entity removal during unload is not a broken frame. The next load rechecks it.
+            if(!e.getWorld().isChunkLoaded(v.sign().x()>>4,v.sign().z()>>4)) continue;
+            if(location(v.sign(),e.getWorld()).getBlock().getState() instanceof Sign) refresh(v.sign(),e.getWorld());
+        }
     }
     @EventHandler(priority=EventPriority.MONITOR) public void join(PlayerJoinEvent e) {
         guard.presence(e.getPlayer().getUniqueId(),e.getPlayer().getName(),true);
         retryBastion(e.getPlayer().getUniqueId());
         if (storage.ready()) catalogue.rename(e.getPlayer().getUniqueId(),e.getPlayer().getName());
+        storage.retryLegacy(snapshots->{
+            var added=catalogue.restoreMissing(snapshots);guard.restore(added);
+            for(Snapshot value:added) {
+                String current=guard.knownPlayerName(value.owner());
+                if(current!=null) catalogue.rename(value.owner(),current);
+            }
+        });
+        e.getPlayer().getScheduler().runDelayed(this,task->snapshotStatistics(e.getPlayer()),()->{},20L);
     }
     private void retryBastion(UUID uuid) {
         guard.bastionPending(uuid).thenAccept(pending->{
@@ -346,51 +438,99 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
             }).exceptionally(error->{getLogger().warning("Не удалось выдать доверие Bastion после привязки: "+uuid);return null;});
         }).exceptionally(error->{getLogger().warning("Не удалось проверить ожидающее доверие Bastion: "+uuid);return null;});
     }
-    @EventHandler(priority=EventPriority.MONITOR) public void quit(PlayerQuitEvent e) {guard.presence(e.getPlayer().getUniqueId(),e.getPlayer().getName(),false);}
-    private static void tell(CommandSender sender,String message) { sender.sendMessage(Component.text("[VaultTracker] " + message)); }
+    @EventHandler(priority=EventPriority.MONITOR) public void quit(PlayerQuitEvent e) {
+        snapshotStatistics(e.getPlayer());guard.presence(e.getPlayer().getUniqueId(),e.getPlayer().getName(),false);
+    }
+    private void snapshotStatistics(Player player) {
+        if(stopping) return;
+        try {guard.mergeStatistics(player.getUniqueId(),PlayerStatistics.capture(player));}
+        catch(RuntimeException failure) {getLogger().warning("Не удалось прочитать статистику игрока: "+failure.getClass().getSimpleName());}
+    }
+    private static void tell(CommandSender sender,String message) { GameMessages.send(sender,message,GameMessages.Tone.INFO); }
+    private static void warn(CommandSender sender,String message) { GameMessages.send(sender,message,GameMessages.Tone.WARNING); }
+    private static void error(CommandSender sender,String message) { GameMessages.send(sender,message,GameMessages.Tone.ERROR); }
     private boolean findOwn(CommandSender sender,String[] args) {
-        if(!(sender instanceof Player player)) {tell(sender,"Поиск сундуков доступен в игре.");return true;}
-        if(!player.hasPermission("vaulttracker.search")) {tell(sender,"Нет права vaulttracker.search.");return true;}
-        if(!storage.ready()) {tell(sender,"Каталог загружается.");return true;}
-        if(args.length==0) {tell(sender,"/find diamond_ore [страница] — поиск в своих зарегистрированных сундуках.");return true;}
+        if(!(sender instanceof Player player)) {warn(sender,"Поиск сундуков доступен в игре.");return true;}
+        if(!player.hasPermission("vaulttracker.search")) {error(sender,"Нет права vaulttracker.search.");return true;}
+        if(!storage.ready()) {warn(sender,"Каталог загружается.");return true;}
+        if(args.length==0) {tell(sender,"/find предмет [страница] — свои сундуки; /find ник [предмет] [страница] — доступные сундуки друга.");return true;}
         int requested=1,end=args.length;
-        if(args.length>1&&args[args.length-1].matches("[0-9]+")) {try {requested=Integer.parseInt(args[--end]);} catch(NumberFormatException e) {tell(sender,"Слишком большой номер страницы.");return true;}}
-        String query=String.join(" ",Arrays.copyOf(args,end));if(query.isBlank()||query.length()>64) {tell(sender,"Введите название предмета до 64 символов.");return true;}
-        var loc=player.getLocation();var rows=OwnResourceSearch.find(catalogue,player.getUniqueId(),query,new BlockKey(loc.getWorld().getUID(),loc.getBlockX(),loc.getBlockY(),loc.getBlockZ()));
+        if(args.length>1&&args[args.length-1].matches("[0-9]+")) {try {requested=Integer.parseInt(args[--end]);} catch(NumberFormatException e) {warn(sender,"Слишком большой номер страницы.");return true;}}
+        String query=String.join(" ",Arrays.copyOf(args,end));if(query.isBlank()||query.length()>64) {warn(sender,"Введите название предмета до 64 символов.");return true;}
+        String navigationQuery=query;UUID searchOwner=player.getUniqueId();String title="Ваши сундуки";
+        var owners=catalogue.ownerItems(args[0]);
+        if(owners.size()>1) {warn(sender,"Найдено несколько игроков с этим ником. Обратитесь к администратору.");return true;}
+        if(owners.size()==1) {
+            var owner=owners.getFirst();
+            if(!guard.canSearch(player.getUniqueId(),owner.owner())) {error(sender,"Игрок не открыл вам доступ к поиску в хранилищах.");return true;}
+            searchOwner=owner.owner();title="Сундуки "+owner.name();query=end==1?"*":String.join(" ",Arrays.copyOfRange(args,1,end));
+        }
+        var loc=player.getLocation();var rows=OwnResourceSearch.find(catalogue,searchOwner,query,new BlockKey(loc.getWorld().getUID(),loc.getBlockX(),loc.getBlockY(),loc.getBlockZ()));
+        if(guard!=null && end==args.length && !query.equals("*")) guard.recordItemSearch(ItemSorting.queryItem(query));
         if(end==args.length) searchCompass.point(player,rows);
         int pages=Math.max(1,(rows.size()+19)/20),page=Math.max(1,Math.min(requested,pages));
-        tell(sender,"Ваши сундуки · "+query+" · "+page+"/"+pages+". Ближайшие в вашем мире сначала.");
-        if(rows.isEmpty()) tell(sender,"Не найдено в зарегистрированных хранилищах.");
+        tell(sender,title+" · "+(query.equals("*")?"Все ресурсы":query)+" · "+page+"/"+pages+". Ближайшие в вашем мире сначала.");
+        if(rows.isEmpty()) warn(sender,"Не найдено в зарегистрированных хранилищах.");
         for(var row:rows.subList((page-1)*20,Math.min(page*20,rows.size()))) {
             BlockKey chest=row.chest();World world=getServer().getWorld(chest.world());
             Component coordinates=Component.text(chest.x()+" "+chest.y()+" "+chest.z(),net.kyori.adventure.text.format.NamedTextColor.AQUA)
                 .clickEvent(net.kyori.adventure.text.event.ClickEvent.runCommand("/vtrack compass "+chest.world()+" "+chest.x()+" "+chest.y()+" "+chest.z()))
                 .hoverEvent(Component.text("Направить компас на этот сундук"));
-            player.sendMessage(Component.text(RussianItems.name(row.material())+" ×"+row.amount()+" — "+(world==null?chest.world():world.getName())+" · ")
-                .append(coordinates).append(Component.text(Double.isFinite(row.distance())?" · "+Math.round(row.distance())+" м":"")));
+            GameMessages.send(player,Component.text(RussianItems.name(row.material())+" ×"+row.amount()+" — "+(world==null?chest.world():world.getName())+" · ")
+                .append(coordinates).append(Component.text(Double.isFinite(row.distance())?" · "+Math.round(row.distance())+" м":"")),GameMessages.Tone.INFO);
         }
         Component navigation=Component.text("◀ Назад");
-        if(page>1) navigation=navigation.clickEvent(net.kyori.adventure.text.event.ClickEvent.runCommand("/find "+query+" "+(page-1)));
-        Component next=Component.text("Вперёд ▶");if(page<pages) next=next.clickEvent(net.kyori.adventure.text.event.ClickEvent.runCommand("/find "+query+" "+(page+1)));
-        player.sendMessage(navigation.append(Component.text("   "+page+"/"+pages+"   ")).append(next));return true;
+        if(page>1) navigation=navigation.clickEvent(net.kyori.adventure.text.event.ClickEvent.runCommand("/find "+navigationQuery+" "+(page-1)));
+        Component next=Component.text("Вперёд ▶");if(page<pages) next=next.clickEvent(net.kyori.adventure.text.event.ClickEvent.runCommand("/find "+navigationQuery+" "+(page+1)));
+        GameMessages.send(player,navigation.append(Component.text("   "+page+"/"+pages+"   ")).append(next),GameMessages.Tone.INFO);return true;
     }
     @Override public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+        if(command.getName().equalsIgnoreCase("unlink")) {
+            if(!(sender instanceof Player player)) {warn(sender,"Отвязка выполняется только игроком в Minecraft.");return true;}
+            if(!player.hasPermission("vaulttracker.link")) {error(sender,"Нет права vaulttracker.link.");return true;}
+            if(args.length!=0) {warn(sender,"Используйте /unlink без аргументов.");return true;}
+            guard.unlink(player.getUniqueId()).whenComplete((message,failure)->{
+                if(stopping) return;
+                player.getScheduler().run(this,task->{
+                    if(failure==null) GameMessages.send(player,message,GameMessages.Tone.INFO);
+                    else error(player,"Не удалось отвязать Telegram. Сообщите администратору.");
+                },null);
+            });
+            return true;
+        }
+        if(command.getName().equalsIgnoreCase("tg")) {
+            if(!(sender instanceof Player player)) {warn(sender,"Команда доступна только игроку.");return true;}
+            if(!player.hasPermission("vaulttracker.message")) {error(sender,"Нет права vaulttracker.message.");return true;}
+            if(args.length<2) {warn(sender,"Используйте /tg <ник> <текст>.");return true;}
+            String text=String.join(" ",Arrays.copyOfRange(args,1,args.length));
+            directMessages.fromGame(player.getUniqueId(),player.getName(),args[0],text).whenComplete((result,failure)->{
+                if(stopping) return;
+                player.getScheduler().run(this,task->{
+                    if(failure==null) {
+                        player.sendMessage(PlayerDirectMessages.message(args[0],text,true));
+                    }
+                    else warn(player,Objects.toString(failure.getCause()==null?failure.getMessage():failure.getCause().getMessage(),"Не удалось отправить сообщение."));
+                },null);
+            });return true;
+        }
         if(command.getName().equalsIgnoreCase("find")) return findOwn(sender,args);
         if (command.getName().equalsIgnoreCase("topitem") || command.getName().equalsIgnoreCase("itemtop")) {
-            return new TopItemCommand(catalogue,storage::ready).execute(sender,args);
+            return new TopItemCommand(catalogue,storage::ready,id-> {
+                Material material=Material.getMaterial(id);return material!=null && material.isItem();
+            },item->{if(guard!=null) guard.recordItemSearch(item);}).execute(sender,args);
         }
         String action=args.length==0 ? "help" : args[0].toLowerCase(Locale.ROOT);
         if(action.equals("compass")) {
-            if(!(sender instanceof Player player)) {tell(sender,"Выберите сундук в игре.");return true;}
-            if(!storage.ready()) {tell(sender,"Каталог загружается.");return true;}
+            if(!(sender instanceof Player player)) {warn(sender,"Выберите сундук в игре.");return true;}
+            if(!storage.ready()) {warn(sender,"Каталог загружается.");return true;}
             try {
                 if(args.length!=5) throw new IllegalArgumentException();
                 tell(sender,searchCompass.select(player,new BlockKey(UUID.fromString(args[1]),Integer.parseInt(args[2]),Integer.parseInt(args[3]),Integer.parseInt(args[4]))));
-            } catch(IllegalArgumentException invalid) {tell(sender,"Повторите поиск и нажмите на координаты сундука.");}
+            } catch(IllegalArgumentException invalid) {warn(sender,"Повторите поиск и нажмите на координаты сундука.");}
         } else if(action.equals("link")) {
-            if(!(sender instanceof Player player)) {tell(sender,"Привязка выполняется только игроком в Minecraft.");return true;}
-            if(!player.hasPermission("vaulttracker.link")) {tell(sender,"Нет права vaulttracker.link.");return true;}
-            if(args.length!=2 || !args[1].matches("[0-9a-f]{32}")) {tell(sender,"Получите готовую команду в личном кабинете Telegram-бота.");return true;}
+            if(!(sender instanceof Player player)) {warn(sender,"Привязка выполняется только игроком в Minecraft.");return true;}
+            if(!player.hasPermission("vaulttracker.link")) {error(sender,"Нет права vaulttracker.link.");return true;}
+            if(args.length!=2) {warn(sender,"Получите готовую команду в личном кабинете Telegram-бота.");return true;}
             guard.linkOutcome(player.getUniqueId(),player.getName(),args[1]).thenCompose(linked->{
                 if(!linked.linked()) return java.util.concurrent.CompletableFuture.completedFuture(linked.message());
                 return bastionTrust.change(player.getUniqueId(),true)
@@ -398,69 +538,54 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
                     .thenCompose(outcome->
                     outcome.success()?guard.bastionGranted(player.getUniqueId()).thenApply(ignored->linked.message()+" "+outcome.message())
                         :java.util.concurrent.CompletableFuture.completedFuture(linked.message()+" Доверие Bastion пока не выдано: "+outcome.message()+" Повторим при следующем входе."));
-            }).whenComplete((message,error)-> {
+            }).whenComplete((message,failure)-> {
                 if(stopping) return;
-                player.getScheduler().run(this,task->tell(player,error==null ? message : "Не удалось сохранить привязку. Сообщите администратору."),null);
+                player.getScheduler().run(this,task->{if(failure==null) GameMessages.send(player,message,GameMessages.Tone.INFO);
+                    else error(player,"Не удалось сохранить привязку. Сообщите администратору.");},null);
             });
         } else if (action.equals("status")) {
-            if (!sender.hasPermission("vaulttracker.admin")) { tell(sender,"Нет права vaulttracker.admin."); return true; }
+            if (!sender.hasPermission("vaulttracker.admin")) { error(sender,"Нет права vaulttracker.admin."); return true; }
             tell(sender,storage.status()); tell(sender,"Хранилищ: " + catalogue.size());
         } else if (action.equals("rescan")) {
-            if (!sender.hasPermission("vaulttracker.admin")) { tell(sender,"Нет права vaulttracker.admin."); return true; }
+            if (!sender.hasPermission("vaulttracker.admin")) { error(sender,"Нет права vaulttracker.admin."); return true; }
             catalogue.all().forEach(v -> schedule(v.sign())); tell(sender,"Запущена сверка загруженных хранилищ.");
         } else if (action.equals("reload")) {
-            if (!sender.hasPermission("vaulttracker.admin")) { tell(sender,"Нет права vaulttracker.admin."); return true; }
+            if (!sender.hasPermission("vaulttracker.admin")) { error(sender,"Нет права vaulttracker.admin."); return true; }
             reloadPlugin(sender);
         } else if (action.equals("find") && args.length==2) {
-            if (!sender.hasPermission("vaulttracker.search")) { tell(sender,"Нет права vaulttracker.search."); return true; }
-            if (!storage.ready()) { tell(sender,"Каталог загружается. Повторите поиск чуть позже."); return true; }
+            if (!sender.hasPermission("vaulttracker.search")) { error(sender,"Нет права vaulttracker.search."); return true; }
+            if (!storage.ready()) { warn(sender,"Каталог загружается. Повторите поиск чуть позже."); return true; }
             String material=args[1].toUpperCase(Locale.ROOT).replace("MINECRAFT:","");
             if (material.equals("DAIMOND")) material = "DIAMOND";
             Material type=Material.getMaterial(material);
-            if (type==null || !type.isItem()) { tell(sender,"Неизвестный предмет. Пример: /vtrack find DIAMOND"); return true; }
+            if (type==null || !type.isItem()) { warn(sender,"Неизвестный предмет. Пример: /vtrack find DIAMOND"); return true; }
             List<String> found=catalogue.find(material,20);
             tell(sender,material+" — последние известные остатки:");
-            if (found.isEmpty()) tell(sender,"Не найдено."); else found.forEach(line -> tell(sender,line));
+            if (found.isEmpty()) warn(sender,"Не найдено."); else found.forEach(line -> tell(sender,line));
         } else if (action.equals("mine") && sender instanceof Player player) {
             List<Snapshot> mine=catalogue.all().stream().filter(v->v.owner().equals(player.getUniqueId())).toList();
             tell(sender,"Ваших хранилищ: " + mine.size() + ". Первые 10:");
             mine.stream().limit(10).forEach(v->tell(sender,v.sign().x()+" "+v.sign().y()+" "+v.sign().z()+" — "+v.chests().size()+" блоков"));
         } else {
-            tell(sender,"Напишите [vault] или [v] на первой строке таблички на хранилище: появится ваш ник.");
+            tell(sender,"Напишите [vault] или [v] на табличке либо вставьте бумагу в рамку на хранилище.");
             tell(sender,"/vtrack mine — ваши хранилища; /topitem diamond или /vtrack find DIAMOND — у кого есть алмазы. Поиск доступен постоянно.");
             tell(sender,"/vtrack link <код> — привязать персонажа к Telegram. Получите код кнопкой в личном чате бота.");
+            tell(sender,"/unlink — отвязать своего персонажа от Telegram.");
+            tell(sender,"/tg <ник> <текст> — личное сообщение игроку, привязанному к Telegram.");
             if (sender.hasPermission("vaulttracker.admin")) tell(sender,"/vtrack status | /vtrack rescan | /vtrack reload — управление каталогом.");
         }
         return true;
     }
     @Override public List<String> onTabComplete(CommandSender sender,Command command,String alias,String[] args) {
-        if(command.getName().equalsIgnoreCase("find")) return args.length==1 ? Arrays.stream(Material.values()).filter(m->!m.name().startsWith("LEGACY_")).filter(Material::isItem).map(m->m.name().toLowerCase(Locale.ROOT)).filter(s->s.startsWith(args[0].toLowerCase(Locale.ROOT))).limit(40).toList():List.of();
+        if(command.getName().equalsIgnoreCase("tg")) {
+            if(args.length!=1 || !sender.hasPermission("vaulttracker.message")) return List.of();
+            String prefix=args[0].toLowerCase(Locale.ROOT);
+            return guard.linkedNames().stream().filter(name->name.toLowerCase(Locale.ROOT).startsWith(prefix))
+                    .sorted(String.CASE_INSENSITIVE_ORDER).limit(40).toList();
+        }
+        if(command.getName().equalsIgnoreCase("find")) return sender.hasPermission("vaulttracker.search")?FindTabCompletion.complete(catalogue,args):List.of();
         if (command.getName().equalsIgnoreCase("topitem")) {
-            if (!sender.hasPermission("vaulttracker.search") || args.length==0) return List.of();
-            boolean explicit=args.length>1 && args[0].equalsIgnoreCase("player");
-            int position=args.length-(explicit ? 1 : 0);
-            String prefix=args[args.length-1].toLowerCase(Locale.ROOT);
-            if(!explicit&&position==2&&args[0].equalsIgnoreCase("all")) {
-                int pages=Math.max(1,(catalogue.allItemTotals().size()+19)/20);
-                return java.util.stream.IntStream.rangeClosed(1,pages).mapToObj(Integer::toString).filter(v->v.startsWith(prefix)).toList();
-            }
-            Set<String> options=new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
-            if (position==1) {
-                options.addAll(catalogue.ownerNames());
-                if (!explicit) {options.add("player");options.add("all");}
-            }
-            if ((!explicit && position==1) || position==2)
-                Arrays.stream(Material.values()).filter(m -> !m.name().startsWith("LEGACY_")).filter(Material::isItem)
-                        .map(m -> m.name().toLowerCase(Locale.ROOT)).forEach(options::add);
-            if (position==2) {
-                String nick=args[explicit ? 1 : 0];
-                var owners=catalogue.ownerItems(nick);
-                if (owners.size()==1) {
-                    int pages=Math.max(1,(owners.getFirst().items().size()+TopItemCommand.PAGE_SIZE-1)/TopItemCommand.PAGE_SIZE);
-                    for (int page=1;page<=pages;page++) options.add(Integer.toString(page));
-                }
-            }
-            return options.stream().filter(s -> s.toLowerCase(Locale.ROOT).startsWith(prefix)).limit(40).toList();
+            return sender.hasPermission("vaulttracker.search")?TopItemTabCompletion.complete(catalogue,args):List.of();
         }
         if (args.length==1) return List.of("help","mine","find","link","status","rescan","reload").stream()
                 .filter(s -> (!s.equals("status") && !s.equals("rescan") && !s.equals("reload")) || sender.hasPermission("vaulttracker.admin"))

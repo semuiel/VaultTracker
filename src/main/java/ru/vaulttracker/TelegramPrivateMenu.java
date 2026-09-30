@@ -3,12 +3,13 @@ package ru.vaulttracker;
 import java.util.*;
 import java.util.function.LongSupplier;
 import java.util.function.Predicate;
+import java.util.function.LongFunction;
 import org.bukkit.Material;
 
 /** Personal search state. Group messages never enter this handler. */
 final class TelegramPrivateMenu {
-    private enum Mode { HOME, SEARCH, PLAYERS, ITEMS, RESULT }
-    private enum ActionKind { HOME, SEARCH, PLAYERS, ITEMS, PAGE, SELECT, RESULT_PAGE, BACK, CLEAR, TOTAL_TOP }
+    private enum Mode { HOME, SEARCH, PLAYERS, ITEMS, RESULT, CONTACTS, CONTACT }
+    private enum ActionKind { HOME, SEARCH, PLAYERS, ITEMS, PAGE, SELECT, RESULT_PAGE, BACK, CLEAR, TOTAL_TOP, CHAT, CONTACT_SELECT, CONTACT_BACK }
     private record Key(long userId,long chatId,int topicId) {}
     private record Action(ActionKind kind,String value) {}
     private static final int MAX_STATES=4096;
@@ -21,6 +22,10 @@ final class TelegramPrivateMenu {
         long user;
         String token;
         TelegramCommands.View result;
+        List<TelegramCommands.Contact> contacts=List.of();
+        TelegramCommands.Contact contact;
+        int contactPage=1;
+        boolean contactFromList;
         final List<Action> actions=new ArrayList<>();
     }
     private final Catalogue catalogue;
@@ -31,7 +36,9 @@ final class TelegramPrivateMenu {
     private final LongSupplier clock;
     private final Map<Key,State> states=new HashMap<>();
     private GuardService guard;
-    void guard(GuardService guard) {this.guard=guard;}
+    private LongFunction<TelegramCommands.View> homeRenderer;
+    void guard(GuardService guard) {this.guard=guard;commands.guard(guard);}
+    void homeRenderer(LongFunction<TelegramCommands.View> homeRenderer) {this.homeRenderer=homeRenderer;}
     void leave(long user,long chat,int topic) {states.remove(new Key(user,chat,topic));}
 
     TelegramPrivateMenu(Catalogue catalogue,StorageEngine storage,TelegramCommands commands,int pageSize) {
@@ -68,7 +75,7 @@ final class TelegramPrivateMenu {
         if(state==null || text.isBlank() || (state.mode!=Mode.PLAYERS && state.mode!=Mode.ITEMS)) return null;
         if(!storage.ready()) return render(state,"Каталог загружается. Повторите чуть позже.");
         state.filter=text.length()>128 ? text.substring(0,128) : text;
-        state.choices=choices(state.mode).stream().filter(value->matches(state.mode,value,state.filter)).toList();
+        state.choices=choices(state.mode,userId).stream().filter(value->matches(state.mode,value,state.filter)).toList();
         state.page=1;
         return render(state,"");
     }
@@ -91,9 +98,9 @@ final class TelegramPrivateMenu {
             case PLAYERS, ITEMS -> {
                 if(!storage.ready()) return new TelegramCommands.Callback(null,"Каталог загружается. Повторите чуть позже.",true);
                 state.mode=action.kind()==ActionKind.PLAYERS ? Mode.PLAYERS : Mode.ITEMS;
-                state.choices=choices(state.mode); state.page=1; state.filter="";
+                state.choices=choices(state.mode,userId); state.page=1; state.filter="";
             }
-            case PAGE -> state.page=Integer.parseInt(action.value());
+            case PAGE -> {if(state.mode==Mode.CONTACTS) state.contactPage=Integer.parseInt(action.value());else state.page=Integer.parseInt(action.value());}
             case SELECT -> { return new TelegramCommands.Callback(choose(key,state,action.value()),"",false); }
             case TOTAL_TOP -> {
                 if(!storage.ready()) return new TelegramCommands.Callback(null,"Каталог загружается. Повторите чуть позже.",true);
@@ -106,7 +113,22 @@ final class TelegramPrivateMenu {
                 state.result=result.view();
             }
             case BACK -> state.mode=state.origin;
-            case CLEAR -> { state.filter=""; state.choices=choices(state.mode); state.page=1; }
+            case CLEAR -> { state.filter=""; state.choices=choices(state.mode,userId); state.page=1; }
+            case CHAT -> {
+                state.contacts=availableContacts(state);state.contactPage=1;
+                if(state.contacts.isEmpty()) return new TelegramCommands.Callback(render(state,"Продавец больше не доступен для переписки."),"",false);
+                state.contactFromList=state.contacts.size()>1;
+                if(state.contactFromList) state.mode=Mode.CONTACTS;
+                else {state.contact=state.contacts.getFirst();state.mode=Mode.CONTACT;}
+            }
+            case CONTACT_SELECT -> {
+                UUID selected=UUID.fromString(action.value());
+                state.contact=state.contacts.stream().filter(contact->contact.uuid().equals(selected)).findFirst().orElse(null);
+                if(state.contact==null || guard==null || !guard.linked(selected))
+                    return new TelegramCommands.Callback(render(state,"Этот игрок больше не доступен для переписки."),"",false);
+                state.mode=Mode.CONTACT;
+            }
+            case CONTACT_BACK -> state.mode=state.mode==Mode.CONTACT && state.contactFromList?Mode.CONTACTS:Mode.RESULT;
         }
         return new TelegramCommands.Callback(render(state,""),"",false);
     }
@@ -128,14 +150,19 @@ final class TelegramPrivateMenu {
         return render(state,"");
     }
 
-    private List<String> choices(Mode mode) {
+    private List<String> choices(Mode mode,long user) {
         if(mode==Mode.PLAYERS) return catalogue.ownerNamesByTotalItems();
-        Set<String> items=new HashSet<>();
-        for(var snapshot:catalogue.all()) snapshot.items().forEach((item,amount)-> { if(amount>0) items.add(item); });
-        List<String> sorted=new ArrayList<>(items);
-        sorted.sort(Comparator.comparing(RussianItems::name,String.CASE_INSENSITIVE_ORDER).thenComparing(Comparator.naturalOrder()));
-        sorted.add(0,"IR"); sorted.add(0,"AR");
-        return List.copyOf(sorted);
+        Map<String,Long> totals=new HashMap<>();
+        for(var snapshot:catalogue.all()) snapshot.items().forEach((item,amount)-> {if(amount>0) totals.merge(item,amount,Long::sum);});
+        Set<String> items=new HashSet<>(totals.keySet());items.add("AR");items.add("IR");
+        ItemSorting.Mode selected=guard==null?ItemSorting.Mode.MINECRAFT:guard.itemSortMode(user);
+        return ItemSorting.sort(items,selected,totals,guard==null?Map.of():guard.itemSearchCounts());
+    }
+    private List<TelegramCommands.Contact> availableContacts(State state) {
+        if(guard==null || state.result==null) return List.of();
+        try {if(guard.account(state.user).join()==null) return List.of();}
+        catch(java.util.concurrent.CompletionException unavailable) {return List.of();}
+        return state.result.contacts().stream().filter(contact->guard.linked(contact.uuid())).toList();
     }
 
     private static boolean matches(Mode mode,String value,String query) {
@@ -156,6 +183,10 @@ final class TelegramPrivateMenu {
         state.touched=clock.getAsLong();
         state.token=UUID.randomUUID().toString().replace("-","").substring(0,16);
         state.actions.clear();
+        if(state.mode==Mode.HOME && homeRenderer!=null) {
+            var home=homeRenderer.apply(state.user);
+            return notice.isEmpty()?home:new TelegramCommands.View(notice+"\n\n"+home.text(),home.buttons());
+        }
         List<TelegramCommands.Button> buttons=new ArrayList<>();
         String text;
         switch(state.mode) {
@@ -170,7 +201,7 @@ final class TelegramPrivateMenu {
                 }
             }
             case SEARCH -> {
-                text="🔎 Поиск ресурсов в торговом боте FLEXITY\n\n«Игрок» — найти игрока и узнать, что у него есть в наличии.\n«Предмет» — найти ресурс и узнать, у кого он есть.\n\nЧтобы ваши вещи появились в списке, повесьте на сундук табличку с надписью [v] или [vault].";
+                text="🔎 Поиск ресурсов в торговом боте FLEXITY\n\n«Игрок» — найти игрока и узнать, что у него есть в наличии.\n«Предмет» — найти ресурс и узнать, у кого он есть.\n\nЧтобы ваши вещи появились в списке, повесьте на хранилище табличку [v] или [vault] либо вставьте бумагу в рамку на нём.";
                 add(state,buttons,"👤 Игрок",0,ActionKind.PLAYERS,"");
                 add(state,buttons,"📦 Предмет",0,ActionKind.ITEMS,"");
                 add(state,buttons,"⌂ Меню",1,ActionKind.HOME,"");
@@ -205,10 +236,29 @@ final class TelegramPrivateMenu {
             case RESULT -> {
                 text=state.result.text();
                 for(var button:state.result.buttons()) add(state,buttons,button.text(),0,ActionKind.RESULT_PAGE,button.data());
+                if(!availableContacts(state).isEmpty()) add(state,buttons,"💬",1,ActionKind.CHAT,"");
                 if(state.origin==Mode.PLAYERS || state.origin==Mode.ITEMS)
                     add(state,buttons,"◀ К списку",1,ActionKind.BACK,"");
                 add(state,buttons,"🔎 Поиск",1,ActionKind.SEARCH,"");
                 add(state,buttons,"⌂ Меню",1,ActionKind.HOME,"");
+            }
+            case CONTACTS -> {
+                int size=6,pages=Math.max(1,(state.contacts.size()+size-1)/size);
+                state.contactPage=Math.max(1,Math.min(state.contactPage,pages));
+                text="💬 Кому написать? · "+state.contactPage+"/"+pages+"\nВыберите игрока из результатов поиска.";
+                int first=(state.contactPage-1)*size;
+                for(int i=first;i<Math.min(first+size,state.contacts.size());i++) {
+                    var contact=state.contacts.get(i);
+                    add(state,buttons,contact.name(),i-first,ActionKind.CONTACT_SELECT,contact.uuid().toString());
+                }
+                if(state.contactPage>1) add(state,buttons,"◀ Назад",size,ActionKind.PAGE,Integer.toString(state.contactPage-1));
+                if(state.contactPage<pages) add(state,buttons,"Вперёд ▶",size,ActionKind.PAGE,Integer.toString(state.contactPage+1));
+                add(state,buttons,"◀ К результатам",size+1,ActionKind.CONTACT_BACK,"");
+            }
+            case CONTACT -> {
+                text="💬 "+state.contact.name()+"\nХотите написать игроку и договориться о торговле?";
+                buttons.add(new TelegramCommands.Button("✉️ Написать","vg:dialog:"+state.contact.uuid(),0));
+                add(state,buttons,"◀ Назад",1,ActionKind.CONTACT_BACK,"");
             }
             default -> throw new IllegalStateException();
         }

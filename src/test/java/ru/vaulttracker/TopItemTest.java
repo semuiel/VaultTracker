@@ -35,4 +35,22 @@ class TopItemTest {
         assertTrue(plugin.onTabComplete(sender,top,"topitem",new String[]{"dia"}).isEmpty());
         }
     }
+
+    @Test void itemtopResolvesRussianNamesAliasesAndGroups() {
+        Catalogue catalogue=new Catalogue(v->{});UUID world=UUID.randomUUID();
+        catalogue.register(new BlockKey(world,0,0,0),UUID.randomUUID(),"Alex",List.of(new BlockKey(world,0,0,1)),
+                Map.of("DIAMOND",4L,"DIAMOND_ORE",2L),1,100);
+        CommandSender sender=mock(CommandSender.class);when(sender.hasPermission("vaulttracker.search")).thenReturn(true);
+        new TopItemCommand(catalogue,()->true,item->Set.of("DIAMOND","DIAMOND_ORE").contains(item)).execute(sender,new String[]{"алмаз"});
+        verify(sender).sendMessage(Component.text("[VaultTracker] Алмаз — топ владельцев, последние известные остатки:"));
+        clearInvocations(sender);
+        new TopItemCommand(catalogue,()->true,item->Set.of("DIAMOND","DIAMOND_ORE").contains(item)).execute(sender,new String[]{"Алмазная","руда"});
+        verify(sender).sendMessage(Component.text("[VaultTracker] Алмазная руда — топ владельцев, последние известные остатки:"));
+        clearInvocations(sender);
+        new TopItemCommand(catalogue,()->true,item->Set.of("DIAMOND","DIAMOND_ORE").contains(item)).execute(sender,new String[]{"DaImOnD"});
+        verify(sender).sendMessage(Component.text("[VaultTracker] Алмаз — топ владельцев, последние известные остатки:"));
+        clearInvocations(sender);
+        new TopItemCommand(catalogue,()->true,item->Set.of("DIAMOND","DIAMOND_ORE").contains(item)).execute(sender,new String[]{"АР"});
+        verify(sender).sendMessage(Component.text("[VaultTracker] Алмазная руда (обычная + глубинная) — топ владельцев, последние известные остатки:"));
+    }
 }

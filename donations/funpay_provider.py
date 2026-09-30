@@ -62,7 +62,18 @@ class FunPayProvider:
             if len(matches) == 1:
                 row = BeautifulSoup(matches[0].html, 'html.parser').select_one('.tc-item.info')
                 paid = row is not None and 'warning' not in row.get('class', [])
-        return parse_verified_order(order, self.config, paid)
+        try:
+            return parse_verified_order(order, self.config, paid)
+        except ValueError as error:
+            if str(error) != 'Unknown FunPay order status markup':
+                raise
+            # Refunded orders may lose the detail-page badge. Verify the exact
+            # order in the seller's refunded list; never infer a refund from chat.
+            _, rows = self.account.get_sells(id=order_id, state='refunded')
+            matches = [row for row in rows if row.id == order_id]
+            if len(matches) != 1 or getattr(getattr(matches[0], 'status', None), 'name', None) != 'REFUNDED':
+                raise
+            return parse_verified_order(order, self.config, refunded_in_seller_list=True)
 
     def send_code(self, row):
         # Retry sends the SAME code; it cannot create another balance credit.
@@ -106,19 +117,24 @@ def order_chat_id(order):
     return ids.pop()
 
 
-def parse_verified_order(order, config, paid_in_seller_list=False):
+def parse_verified_order(order, config, paid_in_seller_list=False, refunded_in_seller_list=False):
     from bs4 import BeautifulSoup
     soup = BeautifulSoup(order.html, 'html.parser')
     # Library 1.1.0 defaults unknown statuses to PAID; do not trust that fallback.
     labels = {e.get_text(' ', strip=True) for e in soup.select('.text-warning,.text-success,.text-primary,.text-info')}
     states = {'Оплачен': 'PAID', 'Закрыт': 'CLOSED', 'Возврат': 'REFUNDED'}
     found = {states[s] for s in labels if s in states}
+    if refunded_in_seller_list:
+        # This status is backed by the seller's refunded-order filter and the
+        # exact order ID, not by a missing or ambiguous detail-page badge.
+        found = {'REFUNDED'}
     if not labels and paid_in_seller_list:
         refund = soup.select_one('button.btn-refund[data-target=".modal-refund"]')
         if refund and refund.get_text(' ', strip=True) == 'Вернуть деньги покупателю':
             found.add('PAID')
     if len(found) != 1:
         raise ValueError('Unknown FunPay order status markup')
+    status = found.pop()
     params = {}
     for item in soup.select('.param-item'):
         heading = item.find('h5')
@@ -128,19 +144,26 @@ def parse_verified_order(order, config, paid_in_seller_list=False):
     quantity = params.get('Количество', '').replace('\xa0', ' ')
     match = re.fullmatch(r'([0-9][0-9 ]*)\s*(?:шт\.?)?', quantity)
     if not match:
-        raise ValueError('Unknown quantity; refusing to infer from fees or messages')
-    units = int(match[1].replace(' ', ''))
+        if status != 'REFUNDED':
+            raise ValueError('Unknown quantity; refusing to infer from fees or messages')
+        # A historical refund may no longer expose the quantity. Only the
+        # ledger's already verified amount may be reversed in that case.
+        units = None
+    else:
+        units = int(match[1].replace(' ', ''))
     # The offer sells exactly one coin per unit; payment commissions are not coins.
-    if not 1 <= units <= config.get('max_units', 100000):
+    if units is not None and not 1 <= units <= config.get('max_units', 100000):
         raise ValueError('Quantity out of bounds')
-    status = found.pop()
     review = order.review
-    reviewed = bool(review and review.stars in (1, 2, 3, 4, 5))
+    stars = getattr(review, 'stars', None)
+    if type(stars) is not int or stars not in range(1, 6):
+        stars = None
     # FunPayAPI discards reviews with an empty text. A rating still counts,
     # including one star, but only inside this order's review block.
-    if not reviewed:
+    if stars is None:
         rating = soup.select_one('.order-review .rating > div')
-        reviewed = bool(rating and any(re.fullmatch(r'rating[1-5]', c)
-                                      for c in rating.get('class', [])))
-    return {'order_id': order.id, 'buyer': order.buyer_username, 'amount': units * 100,
-            'status': status, 'reviewed': reviewed}
+        found = {int(c[-1]) for c in rating.get('class', []) if re.fullmatch(r'rating[1-5]', c)} if rating else set()
+        if len(found) == 1:
+            stars = found.pop()
+    return {'order_id': order.id, 'buyer': order.buyer_username, 'amount': units * 100 if units is not None else None,
+            'status': status, 'stars': stars}

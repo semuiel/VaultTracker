@@ -7,6 +7,7 @@ import java.sql.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.logging.Logger;
+import com.google.gson.JsonParser;
 import static org.junit.jupiter.api.Assertions.*;
 import static ru.vaulttracker.CatalogueTest.*;
 
@@ -18,6 +19,23 @@ class StorageTest {
         try (LocalStore db=new LocalStore(temp.resolve("cache"))) {
             assertEquals(List.of(v),db.load()); assertEquals(1,db.dirtyCount());
         }
+    }
+    @Test void legacyNameOnlyVaultWaitsForUnambiguousUuidAndMigratesInPlace() throws Exception {
+        Path path=temp.resolve("legacy-cache");Snapshot original=fixture(1,42);
+        try(LocalStore store=new LocalStore(path)) {store.save(List.of(original));}
+        var json=JsonParser.parseString(new com.google.gson.Gson().toJson(original)).getAsJsonObject();json.remove("owner");
+        try(Connection db=DriverManager.getConnection("jdbc:h2:file:"+path.toAbsolutePath().toString().replace('\\','/')+";DB_CLOSE_ON_EXIT=FALSE","sa","");
+            PreparedStatement update=db.prepareStatement("UPDATE outbox SET payload=?,dirty=FALSE")) {
+            update.setString(1,json.toString());update.executeUpdate();
+        }
+        try(LocalStore unresolved=new LocalStore(path)) {
+            assertTrue(unresolved.load().isEmpty());assertTrue(unresolved.hasUnresolved());
+        }
+        try(LocalStore resolved=new LocalStore(path,name->name.equals("Steve")?original.owner():null)) {
+            assertEquals(List.of(original),resolved.load());assertFalse(resolved.hasUnresolved());
+            assertEquals(List.of(original),resolved.dirty(10));
+        }
+        try(LocalStore again=new LocalStore(path)) {assertEquals(List.of(original),again.load());}
     }
     @Test void lateAcknowledgementCannotClearNewerChange() throws Exception {
         try (LocalStore db=new LocalStore(temp.resolve("cache"))) {

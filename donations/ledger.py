@@ -28,6 +28,8 @@ class Ledger:
                 CREATE TABLE IF NOT EXISTS operations(id TEXT PRIMARY KEY, payload TEXT NOT NULL, result TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS donation_audit(id INTEGER PRIMARY KEY AUTOINCREMENT, actor TEXT NOT NULL, owner TEXT NOT NULL, name TEXT NOT NULL, action TEXT NOT NULL, amount INTEGER NOT NULL, created INTEGER NOT NULL);
             ''')
+            if not any(row['name'] == 'stars' for row in db.execute('PRAGMA table_info(orders)')):
+                db.execute('ALTER TABLE orders ADD COLUMN stars INTEGER')
 
     @contextmanager
     def connection(self):
@@ -53,23 +55,27 @@ class Ledger:
         db.execute('INSERT INTO entries VALUES(?,?,?,?)', (key, owner, amount, int(time.time())))
         db.execute('UPDATE wallets SET balance=balance+? WHERE owner=?', (amount, owner))
 
-    def sync(self, order_id, buyer, amount, status, reviewed=False, bonus_percent=10):
-        if status not in ('PAID', 'CLOSED', 'REFUNDED') or type(amount) is not int or not 0 < amount <= 100_000_000:
+    def sync(self, order_id, buyer, amount, status, reviewed=False, stars=None):
+        if status not in ('PAID', 'CLOSED', 'REFUNDED'):
             raise ValueError('Unverified order')
-        if not 0 <= bonus_percent <= 100:
-            raise ValueError('Invalid bonus')
+        stars = stars if type(stars) is int and 1 <= stars <= 5 else None
         now = int(time.time())
         with self.connection() as db:
+            existing = db.execute('SELECT * FROM orders WHERE id=?', (order_id,)).fetchone()
+            if status == 'REFUNDED' and amount is None and existing:
+                amount = existing['amount']
+            if type(amount) is not int or not 0 < amount <= 100_000_000:
+                raise ValueError('Unverified order')
             db.execute('INSERT OR IGNORE INTO orders(id,buyer,amount,code,status,checked,created) VALUES(?,?,?,?,?,?,?)',
                        (order_id, buyer, amount, secrets.token_hex(16).upper(), status, now, now))
             row = db.execute('SELECT * FROM orders WHERE id=?', (order_id,)).fetchone()
-            if row['amount'] != amount or row['buyer'] != buyer:
+            if row['amount'] != amount or row['buyer'] != buyer and status != 'REFUNDED':
                 raise ValueError('Order amount or buyer changed; manual review required')
             # A refunded order is terminal. Reopened orders need a new payment/order.
             if row['status'] == 'REFUNDED':
                 status = 'REFUNDED'
-            db.execute('UPDATE orders SET status=?, reviewed=?, checked=? WHERE id=?',
-                       (status, int(reviewed), now, order_id))
+            db.execute('UPDATE orders SET status=?, reviewed=?, stars=?, checked=? WHERE id=?',
+                       (status, int(stars is not None), stars, now, order_id))
             if status == 'REFUNDED' and row['credited'] and not row['reversed']:
                 self.entry(db, order_id + ':refund', row['owner'], -row['amount'] - row['bonus'])
                 db.execute('UPDATE orders SET reversed=1 WHERE id=?', (order_id,))
@@ -78,11 +84,17 @@ class Ledger:
                     db.execute('UPDATE wallets SET blocked=1 WHERE owner=?', (row['owner'],))
                 db.execute('INSERT OR IGNORE INTO alerts VALUES(?,?,0)',
                            (order_id + ':refund', f'Возврат FunPay #{order_id}. Игрок UUID {row["owner"]}. Списано {(row["amount"]+row["bonus"])/100:.2f}. Баланс {balance/100:.2f}.'))
-            if status == 'CLOSED' and reviewed and row['credited'] and not row['reversed'] and not row['bonus']:
-                bonus = amount * bonus_percent // 100
+            if status == 'CLOSED' and row['status'] != 'CLOSED' and row['credited']:
+                db.execute('INSERT OR IGNORE INTO alerts VALUES(?,?,0)',
+                           (order_id + ':confirmed', f'Заказ FunPay #{order_id} подтверждён. Игрок UUID {row["owner"]}. Сумма {row["amount"]/100:.2f} доступна для покупок.'))
+            if status == 'CLOSED' and stars is not None and row['credited'] and not row['reversed'] and not row['bonus']:
+                bonus = amount * stars // 100
                 if bonus:
                     self.entry(db, order_id + ':review', row['owner'], bonus)
                     db.execute('UPDATE orders SET bonus=? WHERE id=?', (bonus, order_id))
+                    balance = db.execute('SELECT balance FROM wallets WHERE owner=?', (row['owner'],)).fetchone()[0]
+                    db.execute('INSERT OR IGNORE INTO alerts VALUES(?,?,0)',
+                               (order_id + ':review', f'{"★"*stars} · бонус {stars}% за отзыв FunPay #{order_id}. Игрок UUID {row["owner"]}. Зачислено {bonus/100:.2f}. Баланс {balance/100:.2f}.'))
             return db.execute('SELECT * FROM orders WHERE id=?', (order_id,)).fetchone()
 
     def lookup(self, code):
@@ -92,21 +104,36 @@ class Ledger:
             row = db.execute('SELECT * FROM orders WHERE code=?', (code,)).fetchone()
             return dict(row) if row else None
 
-    def claim(self, owner, code, bonus_percent=10):
+    def claim(self, owner, code):
         with self.connection() as db:
             row = db.execute('SELECT * FROM orders WHERE code=?', (code,)).fetchone()
             if not row or row['status'] not in ('PAID', 'CLOSED') or int(time.time())-row['checked'] > 30:
                 raise ValueError('Код недоступен или оплата не подтверждена. Повторите проверку позже.')
             if row['owner'] and row['owner'] != owner:
                 raise ValueError('Код недоступен или уже использован.')
+            credited_now = 0
             if not row['credited']:
                 self.entry(db, row['id'] + ':payment', owner, row['amount'])
                 db.execute('UPDATE orders SET owner=?,credited=1 WHERE id=?', (owner, row['id']))
-            if row['status'] == 'CLOSED' and row['reviewed'] and not row['bonus']:
-                bonus = row['amount'] * bonus_percent // 100
+                credited_now += row['amount']
+            if row['status'] == 'CLOSED' and row['stars'] in (1, 2, 3, 4, 5) and not row['bonus']:
+                bonus = row['amount'] * row['stars'] // 100
                 if bonus:
                     self.entry(db, row['id'] + ':review', owner, bonus)
                     db.execute('UPDATE orders SET bonus=? WHERE id=?', (bonus, row['id']))
+                    credited_now += bonus
+                    if row['credited']:
+                        balance = db.execute('SELECT balance FROM wallets WHERE owner=?', (owner,)).fetchone()[0]
+                        db.execute('INSERT OR IGNORE INTO alerts VALUES(?,?,0)',
+                                   (row['id'] + ':review', f'{"★"*row["stars"]} · бонус {row["stars"]}% за отзыв FunPay #{row["id"]}. Игрок UUID {owner}. Зачислено {bonus/100:.2f}. Баланс {balance/100:.2f}.'))
+            if not row['credited']:
+                balance = db.execute('SELECT balance FROM wallets WHERE owner=?', (owner,)).fetchone()[0]
+                pending = ' Ожидает подтверждения заказа.' if row['status'] == 'PAID' else ''
+                db.execute('INSERT OR IGNORE INTO alerts VALUES(?,?,0)',
+                           (row['id'] + ':payment', f'Пополнение FunPay #{row["id"]}. Игрок UUID {owner}. Зачислено {credited_now/100:.2f}. Баланс {balance/100:.2f}.{pending}'))
+                if row['status'] == 'CLOSED':
+                    db.execute('INSERT OR IGNORE INTO alerts VALUES(?,?,0)',
+                               (row['id'] + ':confirmed', f'Заказ FunPay #{row["id"]} подтверждён. Игрок UUID {owner}. Сумма {row["amount"]/100:.2f} доступна для покупок.'))
             return {'amountMinor': row['amount'], 'alreadyClaimed': bool(row['credited']), 'orderId': row['id']}
 
     def wallet(self, owner):
@@ -114,9 +141,17 @@ class Ledger:
             row = db.execute('SELECT * FROM wallets WHERE owner=?', (owner,)).fetchone()
             premium = db.execute('SELECT * FROM premium WHERE owner=?', (owner,)).fetchone()
             until = premium['until'] if premium else 0
-            return {'balanceMinor': row['balance'] if row else 0, 'blocked': bool(row['blocked']) if row else False,
+            balance = row['balance'] if row else 0
+            pending = self.pending_amount(db, owner)
+            return {'balanceMinor': balance, 'availableMinor': max(0, balance - pending),
+                    'pendingMinor': pending, 'blocked': bool(row['blocked']) if row else False,
                     'premium': until < 0 or until > time.time(), 'premiumUntil': until,
                     'premiumPending': bool(premium and premium['version'] != premium['applied'])}
+
+    @staticmethod
+    def pending_amount(db, owner):
+        return db.execute("SELECT COALESCE(SUM(amount),0) FROM orders WHERE owner=? AND credited=1 AND reversed=0 AND status='PAID'",
+                          (owner,)).fetchone()[0]
 
     def change(self, owner, request_id, action, actor, name, days=0, amount=0, base_until=0):
         if action not in ('buy', 'grant', 'remove', 'add', 'subtract', 'spend'):
@@ -140,16 +175,23 @@ class Ledger:
                 return json.loads(previous['result'])
             db.execute('INSERT OR IGNORE INTO wallets(owner) VALUES(?)',(owner,))
             wallet=db.execute('SELECT * FROM wallets WHERE owner=?',(owner,)).fetchone()
+            pending=self.pending_amount(db,owner)
+            available=wallet['balance']-pending
             delta=0
             if action=='buy':
                 cost=60000 if days==30 else 100000
                 if wallet['blocked']: raise ValueError('Покупки заблокированы после возврата. Обратитесь к администратору.')
-                if wallet['balance']<cost: raise ValueError('Недостаточно средств на балансе.')
+                if available<cost:
+                    if wallet['balance']>=cost and pending:
+                        raise ValueError('Средства станут доступны после подтверждения заказа на FunPay.')
+                    raise ValueError('Недостаточно средств на балансе.')
                 delta=-cost
             elif action in ('add','subtract','spend'):
                 if action=='spend' and wallet['blocked']: raise ValueError('Покупки заблокированы после возврата.')
                 delta=amount if action=='add' else -amount
                 if wallet['balance']+delta<0 and action!='add': raise ValueError('Нельзя списать больше текущего баланса.')
+                if action=='spend' and available<amount:
+                    raise ValueError('Средства станут доступны после подтверждения заказа на FunPay.')
             if delta: self.entry(db,request_id+':balance',owner,delta)
             if action in ('buy','grant','remove'):
                 old=db.execute('SELECT * FROM premium WHERE owner=?',(owner,)).fetchone()
@@ -161,7 +203,7 @@ class Ledger:
                 version=(old['version'] if old else 0)+1
                 db.execute('INSERT INTO premium(owner,until,version) VALUES(?,?,?) ON CONFLICT(owner) DO UPDATE SET until=excluded.until,version=excluded.version', (owner,until,version))
             balance=db.execute('SELECT balance FROM wallets WHERE owner=?',(owner,)).fetchone()[0]
-            result={'balanceMinor':balance,'action':action}
+            result={'balanceMinor':balance,'availableMinor':max(0,balance-pending),'pendingMinor':pending,'action':action}
             db.execute('INSERT INTO operations VALUES(?,?,?)',(request_id,payload,json.dumps(result)))
             db.execute('INSERT INTO donation_audit(actor,owner,name,action,amount,created) VALUES(?,?,?,?,?,?)',
                        (actor,owner,name,action,days if action in ('buy','grant') else delta,int(time.time())))

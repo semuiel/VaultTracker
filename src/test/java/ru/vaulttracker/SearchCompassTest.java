@@ -30,6 +30,19 @@ class SearchCompassTest {
         compass=new SearchCompass(plugin);
     }
     OwnResourceSearch.Row row(int x) {return new OwnResourceSearch.Row(new BlockKey(world.getUID(),x,64,0),"DIAMOND",1,0);}
+    @Test void sharedChestSelectionAndOldResultsStopWorkingAfterRevocation() {
+        Catalogue catalogue=new Catalogue(v->{});GuardService guard=mock(GuardService.class);
+        UUID owner=UUID.randomUUID();BlockKey chest=row(7).chest();
+        catalogue.register(chest,owner,"Friend",List.of(chest),Map.of("DIAMOND",1L),0,0);
+        compass=new SearchCompass(plugin,catalogue,guard);
+        when(player.getWorld()).thenReturn(world);when(player.hasPermission("vaulttracker.search")).thenReturn(true);
+        assertTrue(compass.select(player,chest).contains("недоступен"));
+        when(guard.canSearch(player.getUniqueId(),owner)).thenReturn(true);
+        assertTrue(compass.select(player,chest).contains("направлен"));assertEquals(7,target.get().getBlockX());
+        when(guard.canSearch(player.getUniqueId(),owner)).thenReturn(false);
+        assertTrue(compass.select(player,chest).contains("недоступен"));
+        compass.point(player,List.of(row(7)));assertEquals(500,target.get().getBlockX());
+    }
     @Test void pointsToNearestEvenWhenResultsAreUnsortedAndRestoresAfterTwoMinutes() {
         Location original=target.get();compass.point(player,List.of(row(80),row(3)));
         assertEquals(3,target.get().getBlockX());assertEquals(1,timers.size());
@@ -60,10 +73,18 @@ class SearchCompassTest {
         compass.point(player,List.of(row(3),row(80)));assertEquals(3,target.get().getBlockX());
         assertTrue(compass.select(player,far).contains("направлен"));assertEquals(80.5,target.get().getX());assertEquals(64.5,target.get().getY());
         BlockKey foreign=row(90).chest();catalogue.register(foreign,UUID.randomUUID(),"Other",List.of(foreign),Map.of(),0,0);
-        assertTrue(compass.select(player,foreign).contains("не зарегистрирован"));assertEquals(80.5,target.get().getX());
-        catalogue.remove(far,chosen.generation(),1);assertTrue(compass.select(player,far).contains("не зарегистрирован"));
+        assertTrue(compass.select(player,foreign).contains("недоступен"));assertEquals(80.5,target.get().getX());
+        catalogue.remove(far,chosen.generation(),1);assertTrue(compass.select(player,far).contains("недоступен"));
         BlockKey dimension=new BlockKey(UUID.randomUUID(),1,2,3);catalogue.register(dimension,player.getUniqueId(),"Alex",List.of(dimension),Map.of(),0,0);
         assertTrue(compass.select(player,dimension).contains("другом мире"));assertEquals(80.5,target.get().getX());
         when(player.hasPermission("vaulttracker.search")).thenReturn(false);assertTrue(compass.select(player,near).contains("Нет права"));
+    }
+    @Test void doubleChestOutlineContainsBothPhysicalHalvesWithoutDuplicateSearchRows() {
+        Catalogue catalogue=new Catalogue(v->{});UUID owner=UUID.randomUUID();
+        BlockKey first=row(3).chest(),second=row(4).chest();
+        catalogue.register(new BlockKey(world.getUID(),3,65,0),owner,"Alex",List.of(first,second),Map.of("DIAMOND",2L),0,0);
+        assertEquals(List.of(first,second),SearchCompass.outlineBlocks(catalogue,first));
+        assertEquals(List.of(first,second),SearchCompass.outlineBlocks(catalogue,second));
+        assertEquals(1,OwnResourceSearch.find(catalogue,owner,"алмаз",first).size());
     }
 }

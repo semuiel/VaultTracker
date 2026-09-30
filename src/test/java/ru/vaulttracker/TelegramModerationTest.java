@@ -8,6 +8,7 @@ import java.util.function.Consumer;
 import java.util.logging.Logger;
 import org.bukkit.*;
 import org.bukkit.ban.ProfileBanList;
+import org.bukkit.BanEntry;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
@@ -45,16 +46,45 @@ class TelegramModerationTest {
         moderation=new TelegramModeration(plugin,guard);
     }
     @AfterEach void close() {guard.close();}
+    @Test void latestLogPathWorksWithRelativePluginDataFolder() {
+        when(plugin.getDataFolder()).thenReturn(new java.io.File("plugins/VaultTracker"));
+        Path expected=Path.of("logs/latest.log").toAbsolutePath().normalize();
+        assertEquals(expected,moderation.latestLogPath());
+    }
+    @Test void consoleCommandRunsOnGlobalSchedulerAndRechecksRoot() throws Exception {
+        var console=mock(ConsoleCommandSender.class);when(server.getConsoleSender()).thenReturn(console);
+        when(server.dispatchCommand(console,"list")).thenReturn(true);
+        assertThrows(SecurityException.class,()->moderation.consoleCommand(501,"list"));
+        assertTrue(moderation.consoleCommand(500,"list").get());
+        verify(server).dispatchCommand(console,"list");
+        AtomicReference<Consumer<ScheduledTask>> pending=new AtomicReference<>();
+        var scheduler=server.getGlobalRegionScheduler();
+        doAnswer(call->{pending.set(call.getArgument(1));return mock(ScheduledTask.class);})
+                .when(scheduler).run(eq(plugin),any());
+        var deferred=moderation.consoleCommand(500,"ban Test");
+        guard.configure(new GuardConfig(true,120000,0),Set.of(99L));
+        pending.get().accept(mock(ScheduledTask.class));
+        assertThrows(ExecutionException.class,deferred::get);
+        verify(server,never()).dispatchCommand(console,"ban Test");
+    }
     @Test void privateMessageUsesOnlyTargetEntityAndRechecksAdminBeforeSending() throws Exception {
         Player target=mock(Player.class);when(server.getPlayer(uuid)).thenReturn(target);
         EntityScheduler scheduler=mock(EntityScheduler.class);when(target.getScheduler()).thenReturn(scheduler);
         AtomicReference<Consumer<ScheduledTask>> pending=new AtomicReference<>();
         doAnswer(c->{pending.set(c.getArgument(1));return mock(ScheduledTask.class);}).when(scheduler).run(eq(plugin),any(),any());
-        var result=moderation.privateMessage(99,uuid,"/op test <red>literal");pending.get().accept(mock(ScheduledTask.class));
-        assertTrue(result.get().contains("Личное сообщение"));verify(target).sendMessage(Component.text("[FLEXITY] /op test <red>literal"));
+        var result=moderation.privateMessage(500,uuid,"/op test <red>literal",TelegramModeration.MessageSender.FLEXITY);pending.get().accept(mock(ScheduledTask.class));
+        assertTrue(result.get().contains("Личное сообщение"));verify(target).sendMessage(GameMessages.format("/op test <red>literal",GameMessages.Tone.INFO));
         verify(server,never()).dispatchCommand(any(),anyString());verify(server,never()).getOnlinePlayers();
-        var revoked=moderation.privateMessage(99,uuid,"Не отправлять");guard.changeAdmin(500,99,false).get();pending.get().accept(mock(ScheduledTask.class));
-        assertThrows(ExecutionException.class,revoked::get);verify(target,never()).sendMessage(Component.text("[FLEXITY] Не отправлять"));
+        guard.link(UUID.randomUUID(),"Moderator",guard.generate(99).get().split("/vtrack link ")[1].substring(0,GuardService.LINK_CODE_LENGTH)).get();
+        assertThrows(SecurityException.class,()->moderation.privateMessage(99,uuid,"Подмена",TelegramModeration.MessageSender.FLEXITY));
+        pending.set(null);var fromAdmin=moderation.privateMessage(99,uuid,"Здравствуйте",TelegramModeration.MessageSender.PLAYER);
+        for(int i=0;i<200 && pending.get()==null;i++) Thread.sleep(10);
+        assertNotNull(pending.get());pending.get().accept(mock(ScheduledTask.class));assertTrue(fromAdmin.get().contains("Moderator"));
+        verify(target).sendMessage(Component.text("[Moderator] Здравствуйте"));
+        pending.set(null);var revoked=moderation.privateMessage(99,uuid,"Не отправлять",TelegramModeration.MessageSender.PLAYER);
+        for(int i=0;i<200 && pending.get()==null;i++) Thread.sleep(10);
+        assertNotNull(pending.get());guard.changeAdmin(500,99,false).get();pending.get().accept(mock(ScheduledTask.class));
+        assertThrows(ExecutionException.class,revoked::get);verify(target,never()).sendMessage(GameMessages.format("Не отправлять",GameMessages.Tone.INFO));
     }
     public abstract static class FreezePlugin implements Plugin {Object bootstrap;}
     public static class Bootstrap {Object serviceRegistry;}
@@ -74,6 +104,30 @@ class TelegramModerationTest {
         guard.capability(500,"freeze",false).get();assertThrows(SecurityException.class,()->moderation.act(99,"unfreeze",uuid));
         when(server.getPlayer(uuid)).thenReturn(null);assertTrue(moderation.act(500,"unfreeze",uuid).get().contains("разморожен"));
         assertFalse(registry.service.frozen);
+    }
+    @Test void conversationFreezesBeforePardonAndRestoresOriginalBanOnlyWhileItIsValid() throws Exception {
+        PluginManager manager=mock(PluginManager.class);when(server.getPluginManager()).thenReturn(manager);
+        FreezePlugin flexity=mock(FreezePlugin.class);when(manager.getPlugin("flexity")).thenReturn(flexity);when(flexity.isEnabled()).thenReturn(true);
+        Bootstrap bootstrap=new Bootstrap();Registry registry=new Registry();bootstrap.serviceRegistry=registry;flexity.bootstrap=bootstrap;
+        registry.service.result.complete(true);
+        @SuppressWarnings("unchecked") BanEntry<PlayerProfile> entry=mock(BanEntry.class);
+        Date expires=new Date(System.currentTimeMillis()+86_400_000);
+        when(player.getName()).thenReturn("Player");when(bans.getBanEntry(profile)).thenReturn(entry);
+        when(entry.getReason()).thenReturn("Original reason");when(entry.getExpiration()).thenReturn(expires);
+        when(entry.getSource()).thenReturn("Original issuer");
+        doAnswer(call->{assertTrue(registry.service.frozen);return null;}).when(bans).pardon(profile);
+        var facts=moderation.unbanFacts(uuid).get();
+        assertEquals("Original reason",facts.ban().reason());
+        moderation.liftForConversation(500,uuid,facts.ban()).get();
+        assertTrue(registry.service.frozen);
+        verify(bans).pardon(profile);
+        moderation.restoreAfterConversation(uuid,facts.ban(),500,true).get();
+        verify(bans).addBan(profile,"Original reason",expires,"Original issuer");
+        assertFalse(registry.service.frozen);
+        clearInvocations(bans);
+        var expired=new TelegramModeration.BanSnapshot("Old",System.currentTimeMillis()-1,"Issuer");
+        moderation.restoreAfterConversation(uuid,expired,500,true).get();
+        verify(bans,never()).addBan(eq(profile),anyString(),any(Date.class),anyString());
     }
     @Test void temporaryBanUsesFiveMinuteNativeProfileBanAndDoesNotShortenExistingBan() throws Exception {
         guard.capability(500,"ban",true).get();
@@ -153,9 +207,9 @@ class TelegramModerationTest {
         var request=moderation.teleport(500,uuid,null,"1 200 1");guard.configure(new GuardConfig(true,120000,600),Set.of(99L));pending.get().accept(mock(ScheduledTask.class));
         assertThrows(ExecutionException.class,request::get);verify(online,times(1)).teleportAsync(any(Location.class));
     }
-    @Test void superActionsHaveNoPluginConsoleAuditButAdminActionsStillDo() throws Exception {
+    @Test void superAndAdminActionsAreAudited() throws Exception {
         Logger logger=mock(Logger.class);when(plugin.getLogger()).thenReturn(logger);
-        moderation.act(500,"unban",uuid).get();verify(logger,never()).info(anyString());
+        moderation.act(500,"unban",uuid).get();verify(logger).info(contains("Telegram 500: unban"));
         guard.capability(500,"ban",true).get();
         moderation.act(99,"ban",uuid).get();verify(logger).info(contains("Telegram 99"));
     }

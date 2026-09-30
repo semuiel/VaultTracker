@@ -1,15 +1,22 @@
 package ru.vaulttracker;
 
 import com.google.gson.Gson;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import java.nio.file.Path;
 import java.sql.*;
 import java.util.*;
+import java.util.function.Function;
 
 /** Durable outbox. Only the database worker may access this connection. */
 public final class LocalStore implements AutoCloseable {
     private static final Gson JSON = new Gson();
     private final Connection db;
-    public LocalStore(Path path) throws SQLException {
+    private final Function<String,UUID> knownOwner;
+    private int unresolved;
+    public LocalStore(Path path) throws SQLException {this(path,name->null);}
+    public LocalStore(Path path,Function<String,UUID> knownOwner) throws SQLException {
+        this.knownOwner=knownOwner;
         db = DriverManager.getConnection("jdbc:h2:file:" + path.toAbsolutePath().toString().replace('\\', '/') + ";DB_CLOSE_ON_EXIT=FALSE;WRITE_DELAY=0", "sa", "");
         try (Statement s = db.createStatement()) {
             s.executeUpdate("CREATE TABLE IF NOT EXISTS outbox (vault_id VARCHAR(160) PRIMARY KEY, revision BIGINT NOT NULL, payload CLOB NOT NULL, dirty BOOLEAN NOT NULL)");
@@ -20,10 +27,41 @@ public final class LocalStore implements AutoCloseable {
         try (Statement s = db.createStatement()) { s.executeUpdate("UPDATE outbox SET dirty=TRUE"); }
     }
     public List<Snapshot> dirty(int limit) throws SQLException { return select(true, limit); }
+    public boolean hasUnresolved() {return unresolved>0;}
+    public int unresolvedCount() {return unresolved;}
+    private record Row(String id,String payload,JsonObject json) {}
     private List<Snapshot> select(boolean dirty, int limit) throws SQLException {
-        List<Snapshot> result = new ArrayList<>();
-        try (Statement s = db.createStatement(); ResultSet r = s.executeQuery("SELECT payload FROM outbox" + (dirty ? " WHERE dirty=TRUE ORDER BY revision LIMIT " + limit : " ORDER BY revision"))) {
-            while (r.next()) result.add(JSON.fromJson(r.getString(1), Snapshot.class));
+        List<Row> rows=new ArrayList<>();Map<String,Set<UUID>> localNames=new HashMap<>();
+        try (Statement s = db.createStatement(); ResultSet r = s.executeQuery("SELECT vault_id,payload FROM outbox" + (dirty ? " WHERE dirty=TRUE ORDER BY revision" : " ORDER BY revision"))) {
+            while (r.next()) {
+                String payload=r.getString(2);JsonObject json=JsonParser.parseString(payload).getAsJsonObject();
+                rows.add(new Row(r.getString(1),payload,json));
+                if(json.has("owner") && !json.get("owner").isJsonNull() && json.has("playerName")) try {
+                    UUID uuid=UUID.fromString(json.get("owner").getAsString());
+                    localNames.computeIfAbsent(json.get("playerName").getAsString().toLowerCase(Locale.ROOT),ignored->new HashSet<>()).add(uuid);
+                } catch(IllegalArgumentException ignored) {}
+            }
+        }
+        List<Snapshot> result = new ArrayList<>();unresolved=0;
+        try(var update=db.prepareStatement("UPDATE outbox SET payload=?,dirty=TRUE WHERE vault_id=?")) {
+            for(Row row:rows) {
+                JsonObject json=row.json();
+                if(!json.has("owner") || json.get("owner").isJsonNull()) {
+                    String name=json.has("playerName")?json.get("playerName").getAsString()
+                            :json.has("ownerName")?json.get("ownerName").getAsString():null;
+                    if(name==null || name.isBlank()) {unresolved++;continue;}
+                    Set<UUID> candidates=new HashSet<>(localNames.getOrDefault(name.toLowerCase(Locale.ROOT),Set.of()));
+                    UUID known=knownOwner.apply(name);if(known!=null) candidates.add(known);
+                    if(candidates.size()!=1) {unresolved++;continue;}
+                    if(!json.has("playerName")) json.addProperty("playerName",name);
+                    json.addProperty("owner",candidates.iterator().next().toString());
+                    update.setString(1,json.toString());update.setString(2,row.id());update.addBatch();
+                }
+                try {result.add(JSON.fromJson(json,Snapshot.class));}
+                catch(RuntimeException invalid) {unresolved++;}
+                if(dirty && result.size()>=limit) break;
+            }
+            update.executeBatch();
         }
         return result;
     }

@@ -9,6 +9,8 @@ import org.bukkit.block.sign.SignSide;
 import org.bukkit.entity.Player;
 import org.bukkit.event.block.SignChangeEvent;
 import org.bukkit.event.block.BlockBreakEvent;
+import org.bukkit.event.block.BlockExplodeEvent;
+import org.bukkit.event.entity.EntityExplodeEvent;
 import org.junit.jupiter.api.Test;
 import java.util.*;
 import static org.junit.jupiter.api.Assertions.*;
@@ -108,6 +110,28 @@ class SignEditTest {
         VaultTrackerPlugin.decorateOwner(block,"Alex");
         verify(front).line(2,Component.text("Alex"));verify(block).update(true,false);
     }
+    @Test void markerCanAppearOnAnyLineWithSurroundingText() {
+        for(int row=0;row<4;row++) {
+            SignChangeEvent event=edit("Обычная надпись",owner);
+            when(event.line(row)).thenReturn(Component.text("лишний символ! [VaUlT] текст"));
+            assertTrue(VaultTrackerPlugin.marker(event));
+            when(event.line(row)).thenReturn(Component.text("текст [v]!"));
+            assertTrue(VaultTrackerPlugin.marker(event));
+        }
+        assertTrue(VaultTrackerPlugin.marker("префикс [ v ] суффикс"));
+        assertTrue(VaultTrackerPlugin.marker("[vault!]"));
+        assertTrue(VaultTrackerPlugin.marker("[xv]"));
+        assertFalse(VaultTrackerPlugin.marker("vault без квадратных скобок"));
+    }
+    @Test void ownerLabelReplacesMarkerFromAnotherLineOrBackSide() {
+        Sign sign=mock(Sign.class);SignSide front=mock(SignSide.class),back=mock(SignSide.class);
+        when(sign.getSide(Side.FRONT)).thenReturn(front);when(sign.getSide(Side.BACK)).thenReturn(back);
+        when(front.line(0)).thenReturn(Component.text("Обычный текст"));
+        when(back.line(3)).thenReturn(Component.text("! [v]"));
+        VaultTrackerPlugin.decorateOwner(sign,"Alex");
+        verify(back).line(2,Component.text("Alex"));
+        verify(front,never()).line(anyInt(),any(Component.class));
+    }
     @Test void breakingSignStillRemovesRegistration() throws Exception {
         var plugin=plugin();var event=mock(BlockBreakEvent.class);
         Block block=edit("",owner).getBlock();
@@ -120,5 +144,13 @@ class SignEditTest {
         Player breaker=mock(Player.class);when(breaker.getName()).thenReturn("Griefer");when(event.getPlayer()).thenReturn(breaker);
         when(block.getZ()).thenReturn(1);when(event.getBlock()).thenReturn(block);plugin.broken(event);
         assertNull(catalogue.get(sign));assertEquals(1,published.size());assertFalse(published.getFirst().active());
+    }
+    @Test void explosionCandidatesDoNotImmediatelyRemoveIntactRegistration() throws Exception {
+        var plugin=plugin();Block block=edit("",owner).getBlock();
+        var entityExplosion=mock(EntityExplodeEvent.class);when(entityExplosion.blockList()).thenReturn(new ArrayList<>(List.of(block)));
+        plugin.explode(entityExplosion);
+        var blockExplosion=mock(BlockExplodeEvent.class);when(blockExplosion.blockList()).thenReturn(new ArrayList<>(List.of(block)));
+        plugin.explode(blockExplosion);
+        assertNotNull(catalogue.get(sign));assertTrue(published.isEmpty());
     }
 }
