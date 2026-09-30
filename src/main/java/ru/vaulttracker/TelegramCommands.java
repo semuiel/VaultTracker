@@ -14,7 +14,10 @@ final class TelegramCommands {
         static Button copy(String text,String value,int row) {return new Button(text,"",row,null,value);}
     }
     record Contact(UUID uuid,String name) {}
-    record View(String text,List<Button> buttons,List<Contact> contacts) {
+    record View(String text,List<Button> buttons,List<Contact> contacts,String templateKey,Map<String,String> parameters) {
+        View(String text,List<Button> buttons,List<Contact> contacts) {this(text,buttons,contacts,null,Map.of());}
+        View template(String key,Map<String,String> values) {return new View(text,buttons,contacts,key,Map.copyOf(values));}
+        View withButtons(List<Button> values) {return new View(text,values,contacts,templateKey,parameters);}
         View(String text) { this(text,List.of(),List.of()); }
         View(String text,List<Button> buttons) {this(text,buttons,List.of());}
     }

@@ -40,6 +40,23 @@ class CabinetRolesTest {
         throw new NoSuchElementException("Кнопка: "+text);
     }
     Snapshot snap(UUID uuid,long amount,long revision) {return new Snapshot(new BlockKey(world,uuid.equals(owner) ? 1 : 2,64,0),generation,uuid,"SameName",List.of(new BlockKey(world,uuid.equals(owner) ? 1 : 2,64,1)),Map.of("DIAMOND",amount),true,clock.get(),revision);}
+    @Test void rootUnblockRequiresConfirmationAndIsDeniedToAdmin() throws Exception {
+        var person=new TelegramModeration.Person(owner,"Player42",true,"",false);
+        when(moderation.players(500,"online")).thenReturn(CompletableFuture.completedFuture(List.of(person)));
+        when(moderation.info(500,owner)).thenReturn(CompletableFuture.completedFuture(person));
+        var result=new com.google.gson.JsonObject();result.addProperty("balanceMinor",0);
+        when(moderation.donationChange(eq(500L),eq(owner),anyString(),anyString(),eq("unblock"),eq(0),eq(0L))).thenReturn(result);
+        var screen=menu.cabinet.donationAdmin(500);
+        String select=screen.buttons().stream().filter(b->b.text().contains("Разблокировать")).findFirst().orElseThrow().data();
+        var players=menu.callback(500,select).view();
+        var confirm=menu.callback(500,players.buttons().stream().filter(b->b.text().equals("Player42")).findFirst().orElseThrow().data()).view();
+        verify(moderation,never()).donationChange(anyLong(),any(),anyString(),anyString(),anyString(),anyInt(),anyLong());
+        String apply=confirm.buttons().stream().filter(b->b.text().equals("Подтвердить")).findFirst().orElseThrow().data();
+        menu.callback(99,apply);
+        verify(moderation,never()).donationChange(anyLong(),any(),anyString(),anyString(),anyString(),anyInt(),anyLong());
+        menu.callback(500,apply);
+        verify(moderation).donationChange(eq(500L),eq(owner),eq("Player42"),anyString(),eq("unblock"),eq(0),eq(0L));
+    }
     @Test void cabinetRowsAndSettingsAreSeparatedByRole() throws Exception {
         var home=menu.home(42);assertEquals(List.of("📦 Мои ресурсы","📊 Статистика","⚙️ Настройки","💬 Сообщения","⌂ Меню"),home.buttons().stream().map(TelegramCommands.Button::text).toList());
         assertFalse(menu.home(99).buttons().stream().anyMatch(b->b.text().contains("Супер")));

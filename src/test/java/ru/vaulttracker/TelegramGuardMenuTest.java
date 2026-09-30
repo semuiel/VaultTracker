@@ -136,11 +136,11 @@ class TelegramGuardMenuTest {
         var notify=TelegramBotService.class.getDeclaredMethod("notifyDirectMessages");notify.setAccessible(true);
         try(var apis=mockConstruction(TelegramApi.class);var service=new TelegramBotService(config,catalogue,storage,Logger.getAnonymousLogger(),guard)) {
             var api=apis.constructed().getFirst();when(api.send(eq(41L),eq(0),any())).thenReturn(77);
-            notify.invoke(service);
+            notify.invoke(service);assertTrue(service.awaitIdle(5000));
             verify(api,never()).createPrivateTopic(anyLong(),anyString());
             verify(api).send(eq(41L),eq(0),argThat(view->view.text().equals("💬 Новых сообщений: 2")&&view.buttons().isEmpty()));
             assertTrue(guard.pendingDirectNotifications(10).get().isEmpty());
-            notify.invoke(service);verify(api,times(1)).send(eq(41L),eq(0),any());
+            notify.invoke(service);assertTrue(service.awaitIdle(5000));verify(api,times(1)).send(eq(41L),eq(0),any());
             verify(api,never()).delete(41L,77);
         }
     }
@@ -157,7 +157,7 @@ class TelegramGuardMenuTest {
             when(api.send(eq(41L),eq(0),any())).thenReturn(70,77);
             when(api.send(eq(41L),eq(0),any(),eq(true))).thenReturn(78);
             process.invoke(service,new TelegramApi.Incoming(1,41,0,41,1,"/menu",null,null,true));
-            notify.invoke(service);
+            notify.invoke(service);assertTrue(service.awaitIdle(5000));
             verify(api).send(eq(41L),eq(0),argThat(view->view.text().contains("торговый бот FLEXITY")),eq(true));
             verify(api).delete(41L,70);
             var ordered=inOrder(api);
@@ -539,9 +539,9 @@ class TelegramGuardMenuTest {
             var service=new TelegramBotService(config,catalogue,storage,Logger.getAnonymousLogger(),guard)) {
             var api=apis.constructed().getFirst();
             when(api.send(eq(99L),eq(0),any())).thenThrow(new java.io.IOException("unavailable"));
-            notify.invoke(service);verify(api).send(eq(99L),eq(0),any());assertTrue(guard.deliveries().get().isEmpty());
+            notify.invoke(service);assertTrue(service.awaitIdle(5000));verify(api).send(eq(99L),eq(0),any());assertTrue(guard.deliveries().get().isEmpty());
             clock.addAndGet(300_000);when(api.send(eq(99L),eq(0),any())).thenReturn(123);
-            notify.invoke(service);verify(api,times(2)).send(eq(99L),eq(0),any());assertTrue(guard.deliveries().get().isEmpty());
+            notify.invoke(service);assertTrue(service.awaitIdle(5000));verify(api,times(2)).send(eq(99L),eq(0),any());assertTrue(guard.deliveries().get().isEmpty());
             assertEquals(1,guard.history(99,0,10).get().size());
         }
     }

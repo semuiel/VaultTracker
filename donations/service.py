@@ -142,13 +142,19 @@ def handler(service):
                         return
                     body['actor']='website'
                 if self.path == '/alerts':
-                    result = {'alerts': service.ledger.alerts()}
+                    result = {'alerts': service.ledger.recipient_alerts(body['recipients']) if 'recipients' in body else service.ledger.alerts()}
+                elif self.path == '/alert-retry':
+                    service.ledger.acknowledge_recipient(str(body['id']),int(body['recipient']),False)
+                    result = {'ok': True}
                 elif self.path == '/premium-tasks':
                     result = {'tasks': service.ledger.premium_tasks()}
                 elif self.path == '/donation-audit':
                     result = service.ledger.audit(int(body.get('page',0)))
                 elif self.path == '/ack':
-                    service.ledger.acknowledge(str(body['id']))
+                    if 'recipient' in body:
+                        service.ledger.acknowledge_recipient(str(body['id']),int(body['recipient']))
+                    else:
+                        service.ledger.acknowledge(str(body['id']))
                     result = {'ok': True}
                 else:
                     owner = str(uuid.UUID(body['owner']))

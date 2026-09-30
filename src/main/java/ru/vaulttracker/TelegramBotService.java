@@ -19,6 +19,7 @@ final class TelegramBotService implements AutoCloseable {
             r->Thread.ofVirtual().name("VaultTracker-guard-notify").unstarted(r));
     private final ScheduledExecutorService donationNotifications=Executors.newSingleThreadScheduledExecutor(
             r->Thread.ofVirtual().name("VaultTracker-donation-notify").unstarted(r));
+    private final TelegramWorkQueue incoming;
     private String username;
     private TelegramChatBridge chatBridge;
     private static final Set<String> COMMANDS=Set.of("/start","/help","/id","/status","/items","/item","/topitem","/itemtop");
@@ -34,6 +35,7 @@ final class TelegramBotService implements AutoCloseable {
     }
     TelegramBotService(TelegramConfig config,Catalogue catalogue,StorageEngine storage,Logger log,GuardService guard,TelegramModeration moderation) {
         this.config=config;this.log=log;
+        incoming=new TelegramWorkQueue(1024,error->log.warning("Ошибка обработчика Telegram: "+failureLocation(error)));
         var offset=config.offsetFile();var menuFolder=offset==null||offset.getParent()==null?java.nio.file.Path.of("."):offset.getParent();
         var menuText=TelegramMenuText.load(menuFolder,log);this.api=new TelegramApi(config,menuText);this.commands=new TelegramCommands(catalogue,storage,config.pageSize());
         this.privateMenu=new TelegramPrivateMenu(catalogue,storage,commands,config.pageSize());
@@ -45,17 +47,25 @@ final class TelegramBotService implements AutoCloseable {
         commands.adminAccess(this::isAdmin);
         worker=Thread.ofVirtual().name("VaultTracker-telegram").unstarted(this::run);
     }
-    void start() {worker.start();if(guard!=null) {donationNotifications.scheduleWithFixedDelay(this::notifyDonations,60,60,TimeUnit.SECONDS);donationNotifications.scheduleWithFixedDelay(()->{try {if(moderation!=null) moderation.syncDonations();}catch(Exception | LinkageError pending){log.fine("Выдача премиума ожидает повторной синхронизации.");}},5,10,TimeUnit.SECONDS);if(support!=null) notifications.scheduleWithFixedDelay(support::expirePending,5,15,TimeUnit.SECONDS);} }
+    void start() {worker.start();if(guard!=null) {donationNotifications.scheduleWithFixedDelay(this::notifyDonations,60,60,TimeUnit.SECONDS);donationNotifications.scheduleWithFixedDelay(()->{try {if(moderation!=null) moderation.syncDonations();}catch(Exception | LinkageError pending){log.fine("Выдача премиума ожидает повторной синхронизации.");}},5,10,TimeUnit.SECONDS);if(support!=null) {notifications.scheduleWithFixedDelay(support::expirePending,5,15,TimeUnit.SECONDS);notifications.scheduleWithFixedDelay(support::retryDeliveries,5,15,TimeUnit.SECONDS);}} }
     private void notifyDonations() {
         if(stopping.get()) return;
         try {
             if(!guard.donations.enabled()) return;
             var recipients=guard.adminIds().stream().filter(guard::rootAdmin).toList();if(recipients.isEmpty()) return;
-            var alerts=guard.donations.call("alerts",new com.google.gson.JsonObject()).getAsJsonArray("alerts");
+            var request=new com.google.gson.JsonObject();var rootIds=new com.google.gson.JsonArray();
+            recipients.forEach(rootIds::add);request.add("recipients",rootIds);
+            var alerts=guard.donations.call("alerts",request).getAsJsonArray("alerts");
             for(var item:alerts) {
-                var alert=item.getAsJsonObject();boolean delivered=true;
-                for(long user:recipients) {try {api.send(user,notificationTopic(user),new TelegramCommands.View("💝 "+alert.get("body").getAsString()));}catch(Exception failure){delivered=false;}}
-                if(delivered) {var ack=new com.google.gson.JsonObject();ack.addProperty("id",alert.get("id").getAsString());guard.donations.call("ack",ack);}
+                var alert=item.getAsJsonObject();
+                // A service without recipient delivery support must be updated first.
+                if(!alert.has("recipient")) {log.warning("Обновите платёжный сервис: нужен учёт доставки каждому Root.");return;}
+                long user=alert.get("recipient").getAsLong();
+                if(!guard.rootAdmin(user)) continue;
+                var ack=new com.google.gson.JsonObject();ack.addProperty("id",alert.get("id").getAsString());ack.addProperty("recipient",user);
+                try {api.send(user,notificationTopic(user),new TelegramCommands.View("💝 "+alert.get("body").getAsString()));}
+                catch(Exception failure) {guard.donations.call("alert-retry",ack);continue;}
+                guard.donations.call("ack",ack);
             }
         } catch(InterruptedException interrupted) {Thread.currentThread().interrupt();}
         catch(Exception unavailable) {log.fine("Сервис пожертвований временно недоступен.");}
@@ -81,9 +91,9 @@ final class TelegramBotService implements AutoCloseable {
                 List<TelegramApi.Incoming> updates=api.updates(offset);
                 for(var update:updates) {
                     // Persist consumption before effects: a failed reply must never replay a moderation action.
-                    offset=Math.max(offset,update.updateId()+1);
-                    TelegramApi.saveOffset(config.offsetFile(),offset);
-                    consume(update);
+                    long consumedOffset=Math.max(offset,update.updateId()+1);
+                    incoming.submit(update.userId(),()->consume(update),()->TelegramApi.saveOffset(config.offsetFile(),consumedOffset));
+                    offset=consumedOffset;
                 }
                 if(!updates.isEmpty()) TelegramApi.saveOffset(config.offsetFile(),offset);
                 failures=0;
@@ -277,7 +287,7 @@ final class TelegramBotService implements AutoCloseable {
                     String notice=batch.size()>1?"💬 Новых сообщений: "+batch.size():"💬 Новое сообщение от "+message.senderName();
                     api.send(message.telegram(),0,new TelegramCommands.View(notice));
                     for(var sent:batch) guard.directNotified(sent.id()).get();
-                    refreshMenuBelowNotice(message.telegram());
+                    incoming.offer(message.telegram(),()->refreshMenuBelowNotice(message.telegram()));
                 } catch(Exception failure) {log.warning("Личное уведомление не доставлено Telegram-пользователю "+message.telegram()+": "+api.safe(failure));}
             }
         } catch(InterruptedException interrupted) {Thread.currentThread().interrupt();}
@@ -306,8 +316,10 @@ final class TelegramBotService implements AutoCloseable {
         if(error.getCause()!=null && error.getCause()!=error) result.append("; cause ").append(failureLocation(error.getCause()));
         return result.toString();
     }
+    boolean awaitIdle(long timeoutMillis) throws InterruptedException {return incoming.awaitIdle(timeoutMillis);}
     @Override public void close() {
-        stopping.set(true); worker.interrupt(); deletionScheduler.shutdownNow();api.close();
+        stopping.set(true); worker.interrupt(); deletionScheduler.shutdownNow();
+        incoming.close();api.close();
         notifications.shutdownNow();
         donationNotifications.shutdownNow();
         try {notifications.awaitTermination(5,TimeUnit.SECONDS);} catch(InterruptedException e) {Thread.currentThread().interrupt();}

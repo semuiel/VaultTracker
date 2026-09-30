@@ -24,6 +24,9 @@ class Ledger:
                 CREATE TABLE IF NOT EXISTS entries(id TEXT PRIMARY KEY, owner TEXT NOT NULL,
                     amount INTEGER NOT NULL, created INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS alerts(id TEXT PRIMARY KEY, body TEXT NOT NULL, delivered INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE IF NOT EXISTS alert_deliveries(alert_id TEXT NOT NULL, recipient INTEGER NOT NULL,
+                    delivered INTEGER NOT NULL DEFAULT 0, due INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(alert_id,recipient));
+                CREATE INDEX IF NOT EXISTS alert_deliveries_due ON alert_deliveries(delivered,due);
                 CREATE TABLE IF NOT EXISTS premium(owner TEXT PRIMARY KEY, until INTEGER NOT NULL, version INTEGER NOT NULL, applied INTEGER NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS operations(id TEXT PRIMARY KEY, payload TEXT NOT NULL, result TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS donation_audit(id INTEGER PRIMARY KEY AUTOINCREMENT, actor TEXT NOT NULL, owner TEXT NOT NULL, name TEXT NOT NULL, action TEXT NOT NULL, amount INTEGER NOT NULL, created INTEGER NOT NULL);
@@ -154,7 +157,7 @@ class Ledger:
                           (owner,)).fetchone()[0]
 
     def change(self, owner, request_id, action, actor, name, days=0, amount=0, base_until=0):
-        if action not in ('buy', 'grant', 'remove', 'add', 'subtract', 'spend'):
+        if action not in ('buy', 'grant', 'remove', 'add', 'subtract', 'spend', 'unblock'):
             raise ValueError('Unknown operation')
         if action == 'buy' and (type(days) is not int or days not in (30,60)):
             raise ValueError('Invalid duration')
@@ -177,6 +180,10 @@ class Ledger:
             wallet=db.execute('SELECT * FROM wallets WHERE owner=?',(owner,)).fetchone()
             pending=self.pending_amount(db,owner)
             available=wallet['balance']-pending
+            if action=='unblock':
+                if available<0:
+                    raise ValueError('Сначала погасите долг подтверждёнными средствами.')
+                db.execute('UPDATE wallets SET blocked=0 WHERE owner=?',(owner,))
             delta=0
             if action=='buy':
                 cost=60000 if days==30 else 100000
@@ -243,3 +250,28 @@ class Ledger:
     def acknowledge(self, alert_id):
         with self.connection() as db:
             db.execute('UPDATE alerts SET delivered=1 WHERE id=?', (alert_id,))
+
+    def recipient_alerts(self, recipients):
+        if not isinstance(recipients, list) or len(recipients)>1000 or any(type(r) is not int or r<=0 for r in recipients):
+            raise ValueError('Invalid recipients')
+        recipients=list(dict.fromkeys(recipients))
+        if not recipients:
+            return []
+        with self.connection() as db:
+            for recipient in recipients:
+                db.execute('INSERT OR IGNORE INTO alert_deliveries(alert_id,recipient) SELECT id,? FROM alerts WHERE delivered=0',(recipient,))
+            placeholders=','.join('?' for _ in recipients)
+            return [dict(row) for row in db.execute(
+                'SELECT a.id,a.body,d.recipient FROM alerts a JOIN alert_deliveries d ON a.id=d.alert_id '
+                f'WHERE a.delivered=0 AND d.delivered=0 AND d.due<=? AND d.recipient IN ({placeholders}) ORDER BY d.due,a.id,d.recipient LIMIT 20',
+                (int(time.time()),*recipients))]
+
+    def acknowledge_recipient(self, alert_id, recipient, success=True):
+        with self.connection() as db:
+            if success:
+                db.execute('UPDATE alert_deliveries SET delivered=1 WHERE alert_id=? AND recipient=?',(alert_id,recipient))
+                db.execute('UPDATE alerts SET delivered=1 WHERE id=? AND EXISTS(SELECT 1 FROM alert_deliveries WHERE alert_id=?) '
+                           'AND NOT EXISTS(SELECT 1 FROM alert_deliveries WHERE alert_id=? AND delivered=0)',(alert_id,alert_id,alert_id))
+            else:
+                db.execute('UPDATE alert_deliveries SET due=? WHERE alert_id=? AND recipient=? AND delivered=0',
+                           (int(time.time())+300,alert_id,recipient))

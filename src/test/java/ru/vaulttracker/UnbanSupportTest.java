@@ -69,6 +69,16 @@ class UnbanSupportTest {
         verify(api).editHtml(eq(CHAT),eq(100),argThat(text->text.contains("закрыл: GameAdmin") &&
                 !text.contains("администратор TG 88")),anyList());
     }
+    @Test void queuedUnbanSurvivesRestartAndReservesOnlyOneAttempt() throws Exception {
+        when(api.sendDocument(anyLong(),anyInt(),anyString(),anyString())).thenThrow(new java.io.IOException("offline"));
+        var ticket=submit(42,guard.account(42).get());
+        assertEquals("DELIVERY_PENDING",ticket.status());
+        assertEquals(1,guard.unbanState(ticket.id()).get().attempt());
+        guard.close();guard=new GuardService(folder.resolve("guard"),new GuardConfig(true,0,88),Logger.getAnonymousLogger());
+        assertEquals("DELIVERY_PENDING",guard.support(ticket.id()).get().status());
+        assertThrows(Exception.class,()->guard.unbanAttempt(42,player,true).get());
+        verify(api,never()).delete(anyLong(),anyInt());
+    }
     @Test void missingBanExplainsWhyRequestWasNotSent() throws Exception {
         when(moderation.unbanFacts(player)).thenReturn(CompletableFuture.failedFuture(
                 new IllegalArgumentException("У этого персонажа сейчас нет действующего бана.")));

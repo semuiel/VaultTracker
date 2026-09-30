@@ -20,7 +20,7 @@ final class SupportMenu extends TelegramMenuSection {
         final List<String> answers=new ArrayList<>();
         Draft(SupportTicket.Type type) {this.type=type;stage=type==SupportTicket.Type.COMPLAINT||type==SupportTicket.Type.UNBAN?Stage.TARGET:Stage.TEXT;}
     }
-    private final Map<Long,Draft> drafts=new HashMap<>();
+    private final Map<Long,Draft> drafts=new java.util.concurrent.ConcurrentHashMap<>();
     private final SupportService service;
     SupportMenu(TelegramGuardMenu root,SupportService service) {super(root);this.service=service;}
     TelegramCommands.View home(long user) throws Exception {
@@ -30,7 +30,7 @@ final class SupportMenu extends TelegramMenuSection {
         buttons.add(b(user,"🐞 Баг","supportStart","BUG",0,row++));
         buttons.add(b(user,"🔓 Заявка на разбан","supportStart","UNBAN",0,row++));
         buttons.add(homeButton(row));
-        return new TelegramCommands.View("🆘 Поддержка\nВыберите тип обращения.",List.copyOf(buttons));
+        return new TelegramCommands.View("🆘 Поддержка\nВыберите тип обращения.",List.copyOf(buttons)).template("support.home",Map.of());
     }
     private GuardService.Account linked(long user) throws Exception {
         var account=guard.account(user).get();if(account==null) throw new SecurityException("Сначала свяжите игровой аккаунт.");return account;
@@ -48,7 +48,7 @@ final class SupportMenu extends TelegramMenuSection {
             cancel(user);
             return new TelegramCommands.View("Чтобы отправить обращение, сначала свяжите Telegram с игровым аккаунтом.",List.of(
                     b(user,"🔗 Привязать персонажа","link","",0,0),
-                    b(user,"↩ Поддержка","supportHome","",0,1)));
+                    b(user,"↩ Поддержка","supportHome","",0,1))).template("support.link-required",Map.of());
         }
         long now=System.currentTimeMillis();drafts.entrySet().removeIf(entry->now-entry.getValue().created>DRAFT_TTL);
         if(drafts.size()>=2048) drafts.remove(drafts.keySet().iterator().next());
@@ -65,7 +65,7 @@ final class SupportMenu extends TelegramMenuSection {
         }
         if(type==SupportTicket.Type.COMPLAINT) {
             value.stage=Stage.SEARCH;
-            return prompt(user,"supportSearch","🚨 Жалоба · 1/3\nНа кого жалуетесь? Введите ник или его часть. Игрок может быть офлайн.");
+            return prompt(user,"supportSearch","🚨 Жалоба · 1/3\nНа кого жалуетесь? Введите ник или его часть. Игрок может быть офлайн.").template("support.complaint.search",Map.of());
         }
         return instruction(user,value);
     }
@@ -98,7 +98,8 @@ final class SupportMenu extends TelegramMenuSection {
             case BUG -> "🐞 Баг\nНапишите: что произошло, что вы ожидали, как повторить ошибку и когда она возникла. Пример: «После ... случилось ...; ожидал ...». Фото/видео необязательны.";
             case UNBAN -> throw new IllegalStateException();
         };
-        return prompt(user,"supportText",text+"\n\nОтправьте описание текстом (до 3000 символов).");
+        return prompt(user,"supportText",text+"\n\nОтправьте описание текстом (до 3000 символов).")
+                .template("support."+value.type.name().toLowerCase(Locale.ROOT)+".description",Map.of("player",Objects.toString(value.targetName,"")));
     }
     private TelegramCommands.View question(long user,Draft value) {
         value.stage=Stage.QUESTION;
@@ -148,16 +149,17 @@ final class SupportMenu extends TelegramMenuSection {
         if(service==null || !service.configured(value.type)) return new TelegramCommands.View(
                 "Тема поддержки ещё не настроена. Обращение не отправлено; текст и материалы пока сохранены в этом меню.",List.of(
                         b(user,"↩ К обращению","supportReview","",0,0),b(user,"❌ Отмена","supportCancel","",0,1)));
+        SupportTicket submitted;
         try {
-            if(value.type==SupportTicket.Type.UNBAN) service.submitUnban(user,guard.account(user).get(),value.target,value.targetName,value.body,List.copyOf(value.media),moderation);
-            else service.submit(value.type,user,linked(user),value.target,value.targetName,value.body,List.copyOf(value.media));
+            if(value.type==SupportTicket.Type.UNBAN) submitted=service.submitUnban(user,guard.account(user).get(),value.target,value.targetName,value.body,List.copyOf(value.media),moderation);
+            else submitted=service.submit(value.type,user,linked(user),value.target,value.targetName,value.body,List.copyOf(value.media));
         }
         catch(Exception failure) {return new TelegramCommands.View((failure instanceof SecurityException?
                 "Свяжите игровой аккаунт заново. Обращение не отправлено.":
                 failure instanceof IllegalArgumentException?failure.getMessage():
                 "Не удалось отправить обращение. Проверьте доступность бота и попробуйте ещё раз. Текст и материалы сохранены в этом меню."),List.of(
                 b(user,"🔁 Повторить","supportSend","",0,0),b(user,"❌ Отмена","supportCancel","",0,1)));}
-        cancel(user);return new TelegramCommands.View("✅ Обращение отправлено администраторам.",List.of(b(user,"↩ Поддержка","supportHome","",0,0),homeButton(1)));
+        cancel(user);return new TelegramCommands.View(submitted!=null && submitted.status().equals("DELIVERY_PENDING")?"✅ Обращение сохранено. Бот автоматически отправит его администраторам, когда связь восстановится. Повторять отправку не нужно.":"✅ Обращение отправлено администраторам.",List.of(b(user,"↩ Поддержка","supportHome","",0,0),homeButton(1)));
     }
     void registerActions(TelegramActionRegistry registry) {
         var scope=registry.scope("SupportMenu");

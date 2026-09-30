@@ -47,6 +47,22 @@ class PremiumTests(unittest.TestCase):
         with self.assertRaises(ValueError):self.ledger.change('player','spend','spend','website','Player',amount=1)
         with self.assertRaises(ValueError):self.ledger.change('player','buy','buy','user','Player',days=30)
 
+    def test_unblock_requires_confirmed_debt_repayment_and_is_idempotent(self):
+        with self.ledger.connection() as db:
+            db.execute("UPDATE wallets SET balance=-100,blocked=1 WHERE owner='player'")
+        with self.assertRaises(ValueError):
+            self.ledger.change('player','unlock','unblock','root','Player')
+        order=self.ledger.sync('ORDER','buyer',100,'PAID')
+        self.ledger.claim('player',order['code'])
+        with self.assertRaises(ValueError):
+            self.ledger.change('player','unlock','unblock','root','Player')
+        self.ledger.sync('ORDER','buyer',100,'CLOSED')
+        self.assertTrue(self.ledger.wallet('player')['blocked'])
+        self.ledger.change('player','unlock','unblock','root','Player')
+        self.ledger.change('player','unlock','unblock','root','Player')
+        self.assertFalse(self.ledger.wallet('player')['blocked'])
+        self.assertEqual(1,sum(row['action']=='unblock' for row in self.ledger.audit(0)['rows']))
+
     def test_external_lp_time_preserved(self):
         future=int(time.time())+10*86400
         self.ledger.change('player','purchase','buy','user','Player',days=30,base_until=future)

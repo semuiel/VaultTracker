@@ -29,7 +29,7 @@ final class SupportService {
             throw wrapped;
         }
     }
-    SupportTicket submitUnban(long user,GuardService.Account author,UUID uuid,String name,String body,
+    synchronized SupportTicket submitUnban(long user,GuardService.Account author,UUID uuid,String name,String body,
                               List<Integer> sourceMedia,TelegramModeration lookup) throws Exception {
         if(!configured(SupportTicket.Type.UNBAN)) throw new IllegalStateException("Тема заявок на разбан ещё не настроена.");
         if(uuid==null || name==null) throw new IllegalArgumentException("Выберите персонажа.");
@@ -51,28 +51,9 @@ final class SupportService {
                 user,uuid,facts.name(),null,null,body.strip(),System.currentTimeMillis(),topics.chatId(),
                 topics.unbanRequests(),0,List.of(),"OPEN",List.of(),linked,number,
                 "Telegram: "+guard.telegramProfile(user)+"\n"+facts.description(),0);
-        int header=0,form=0;List<Integer> copied=new ArrayList<>();
-        try {
-            String document="# Заявка на разбан #"+number+"\n\nИгрок: "+facts.name()+"\nUUID: "+uuid+
-                    "\n\n"+body.strip()+"\n";
-            form=api.sendDocument(draft.adminChat(),draft.adminTopic(),"anketa-"+uuid+".md",document);
-            for(int source:sourceMedia) copied.add(api.copyMessage(user,source,draft.adminChat(),draft.adminTopic()));
-            var beforeCard=new SupportTicket(draft.id(),draft.type(),user,uuid,facts.name(),null,null,draft.body(),
-                    draft.created(),draft.adminChat(),draft.adminTopic(),0,List.copyOf(copied),"OPEN",
-                    List.of(form),linked,number,draft.facts(),0);
-            header=api.sendHtml(draft.adminChat(),draft.adminTopic(),html(beforeCard,copied.size()),false,buttons(beforeCard));
-            var sent=new SupportTicket(draft.id(),draft.type(),user,uuid,facts.name(),null,null,draft.body(),
-                    draft.created(),draft.adminChat(),draft.adminTopic(),header,List.copyOf(copied),"OPEN",
-                    List.of(form),linked,number,draft.facts(),0);
-            guard.saveUnban(sent).get();return sent;
-        } catch(Exception failure) {
-            for(int message:copied) try {api.delete(draft.adminChat(),message);} catch(Exception ignored) {}
-            if(header>0) try {api.delete(draft.adminChat(),header);} catch(Exception ignored) {}
-            if(form>0) try {api.delete(draft.adminChat(),form);} catch(Exception ignored) {}
-            log.warning("Заявка на разбан не доставлена: "+api.safe(failure));throw failure;
-        }
+        return queueAndDeliver(draft,sourceMedia);
     }
-    SupportTicket submit(SupportTicket.Type type,long user,GuardService.Account author,UUID target,String targetName,
+    synchronized SupportTicket submit(SupportTicket.Type type,long user,GuardService.Account author,UUID target,String targetName,
                          String body,List<Integer> sourceMedia) throws Exception {
         if(!topics.configured(type)) throw new IllegalStateException("Тема поддержки ещё не настроена. Обращение не отправлено; повторите позже.");
         var current=guard.account(user).get();
@@ -82,26 +63,53 @@ final class SupportService {
         if(body==null || body.isBlank() || body.length()>3000) throw new IllegalArgumentException("Описание: от 1 до 3000 символов.");
         var draft=new SupportTicket(UUID.randomUUID().toString().replace("-",""),type,user,author.uuid(),author.name(),
                 target,targetName,body.strip(),System.currentTimeMillis(),topics.chatId(),topics.topic(type),0,List.of(),"OPEN");
-        int header=0,document=0;List<Integer> copied=new ArrayList<>();
+        return queueAndDeliver(draft,sourceMedia);
+    }
+    private SupportTicket queueAndDeliver(SupportTicket ticket,List<Integer> sourceMedia) throws Exception {
+        if(sourceMedia.size()>10 || sourceMedia.stream().anyMatch(id->id<=0)) throw new IllegalArgumentException("Некорректные материалы.");
+        SupportTicket pending=ticket.withStatus("DELIVERY_PENDING");
+        guard.queueSupport(pending,List.copyOf(sourceMedia)).get();
+        return deliver(pending,sourceMedia);
+    }
+    synchronized void retryDeliveries() {
         try {
-            document=api.sendDocument(draft.adminChat(),draft.adminTopic(),"obrashchenie-"+draft.id()+".md",
-                    "# "+switch(type) {case COMPLAINT->"Жалоба";case SUGGESTION->"Предложение";case BUG->"Баг";case UNBAN->"Заявка на разбан";}+
-                    "\n\nОт: "+author.name()+"\nUUID: "+author.uuid()+"\n\n"+body.strip()+"\n");
-            for(int source:sourceMedia) copied.add(api.copyMessage(user,source,draft.adminChat(),draft.adminTopic()));
-            var beforeCard=new SupportTicket(draft.id(),type,user,author.uuid(),author.name(),target,targetName,body.strip(),
-                    draft.created(),draft.adminChat(),draft.adminTopic(),0,List.copyOf(copied),"OPEN",
-                    List.of(document),true,0,null,0);
-            header=api.sendHtml(draft.adminChat(),draft.adminTopic(),html(beforeCard,copied.size()),false,buttons(beforeCard));
-            var sent=new SupportTicket(draft.id(),type,user,author.uuid(),author.name(),target,targetName,body.strip(),
-                    draft.created(),draft.adminChat(),draft.adminTopic(),header,List.copyOf(copied),"OPEN",
-                    List.of(document),true,0,null,0);
-            guard.saveSupport(sent).get();return sent;
-        } catch(Exception failure) {
-            for(int message:copied) try {api.delete(draft.adminChat(),message);} catch(Exception ignored) {}
-            if(header>0) try {api.delete(draft.adminChat(),header);} catch(Exception ignored) {}
-            if(document>0) try {api.delete(draft.adminChat(),document);} catch(Exception ignored) {}
-            log.warning("Обращение в поддержку не доставлено: "+api.safe(failure));
-            throw failure;
+            for(var pending:guard.pendingSupport().get()) deliver(pending.ticket(),pending.sources());
+        } catch(InterruptedException interrupted) {Thread.currentThread().interrupt();}
+        catch(Exception failure) {log.warning("Очередь обращений временно недоступна: "+failure.getClass().getSimpleName());}
+    }
+    private SupportTicket deliver(SupportTicket pending,List<Integer> sources) throws Exception {
+        SupportTicket progress=pending;
+        try {
+            if(progress.forms().isEmpty()) {
+                boolean unban=progress.type()==SupportTicket.Type.UNBAN;
+                String title=unban?"Заявка на разбан #"+progress.attempt():switch(progress.type()) {
+                    case COMPLAINT->"Жалоба";case SUGGESTION->"Предложение";case BUG->"Баг";default->throw new IllegalStateException();};
+                String document="# "+title+"\n\nИгрок: "+progress.authorName()+"\nUUID: "+progress.authorUuid()+"\n\n"+progress.body()+"\n";
+                int form=api.sendDocument(progress.adminChat(),progress.adminTopic(),
+                        unban?"anketa-"+progress.authorUuid()+".md":"obrashchenie-"+progress.id()+".md",document);
+                progress=progress.withDelivery(progress.adminMessage(),progress.adminMedia(),List.of(form));
+                guard.supportDeliveryProgress(progress,false).get();
+            }
+            List<Integer> copied=new ArrayList<>(progress.adminMedia());
+            for(int index=copied.size();index<sources.size();index++) {
+                copied.add(api.copyMessage(progress.authorTelegram(),sources.get(index),progress.adminChat(),progress.adminTopic()));
+                progress=progress.withDelivery(progress.adminMessage(),copied,progress.forms());
+                guard.supportDeliveryProgress(progress,false).get();
+            }
+            if(progress.adminMessage()==0) {
+                SupportTicket card=progress.withStatus("OPEN");
+                int message=api.sendHtml(card.adminChat(),card.adminTopic(),html(card,copied.size()),false,buttons(card));
+                progress=progress.withDelivery(message,copied,progress.forms());
+                guard.supportDeliveryProgress(progress,false).get();
+            }
+            SupportTicket sent=progress.withStatus("OPEN");
+            guard.supportDeliveryProgress(sent,true).get();
+            return sent;
+        } catch(InterruptedException interrupted) {Thread.currentThread().interrupt();throw interrupted;}
+        catch(Exception failure) {
+            guard.supportDeliveryRetry(progress.id()).get();
+            log.warning("Обращение "+progress.id()+" сохранено и ожидает доставки: "+api.safe(failure));
+            return progress;
         }
     }
     synchronized void callback(TelegramApi.Incoming update,AdminMenu admin) throws Exception {

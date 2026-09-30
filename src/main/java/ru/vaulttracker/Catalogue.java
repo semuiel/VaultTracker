@@ -9,6 +9,9 @@ public final class Catalogue {
     private final Map<BlockKey, BlockKey> claims = new HashMap<>();
     private final Map<BlockKey.ChunkKey, Set<BlockKey>> chunks = new HashMap<>();
     private final Map<String,Map<UUID,Long>> totalsByMaterial = new HashMap<>();
+    private final Map<UUID,Map<String,Long>> totalsByOwner = new HashMap<>();
+    private final Map<UUID,Long> ownerTotals = new HashMap<>();
+    private final Map<UUID,Set<BlockKey>> ownerVaults = new HashMap<>();
     private final Map<UUID,String> indexedNames = new HashMap<>();
     private final Consumer<Snapshot> output;
     private long revision;
@@ -37,6 +40,12 @@ public final class Catalogue {
     private void index(Snapshot v) {
         vaults.put(v.sign(), v);
         indexedNames.put(v.owner(),v.playerName());
+        ownerVaults.computeIfAbsent(v.owner(),ignored->new HashSet<>()).add(v.sign());
+        Map<String,Long> ownerItems=totalsByOwner.computeIfAbsent(v.owner(),ignored->new HashMap<>());
+        ownerTotals.putIfAbsent(v.owner(),0L);
+        v.items().forEach((material,amount)->{
+            ownerItems.merge(material,amount,Long::sum);ownerTotals.merge(v.owner(),amount,Long::sum);
+        });
         v.items().forEach((material,amount)->{
             if(amount>0) totalsByMaterial.computeIfAbsent(material,ignored->new HashMap<>()).merge(v.owner(),amount,Long::sum);
         });
@@ -51,6 +60,16 @@ public final class Catalogue {
     }
     private void unindex(Snapshot v) {
         vaults.remove(v.sign());
+        var owned=ownerVaults.get(v.owner());owned.remove(v.sign());
+        if(owned.isEmpty()) {
+            ownerVaults.remove(v.owner());totalsByOwner.remove(v.owner());ownerTotals.remove(v.owner());
+        } else {
+            var ownerItems=totalsByOwner.get(v.owner());
+            v.items().forEach((material,amount)->{
+                ownerItems.computeIfPresent(material,(ignored,total)->total<=amount?null:total-amount);
+                ownerTotals.computeIfPresent(v.owner(),(ignored,total)->total-amount);
+            });
+        }
         v.items().forEach((material,amount)->{
             if(amount<=0) return;
             Map<UUID,Long> owners=totalsByMaterial.get(material);
@@ -70,7 +89,7 @@ public final class Catalogue {
                                           List<BlockKey> chests, Map<String, Long> items, long now, int limit) {
         Snapshot existing = vaults.get(sign);
         if (existing != null) throw new IllegalArgumentException("Это хранилище уже зарегистрировано.");
-        if (limit>0 && vaults.values().stream().filter(v -> v.owner().equals(owner)).count() >= limit)
+        if (limit>0 && ownerVaults.getOrDefault(owner,Set.of()).size() >= limit)
             throw new IllegalArgumentException("Достигнут лимит зарегистрированных сундуков.");
         for (BlockKey chest : chests) if (claims.containsKey(chest))
             throw new IllegalArgumentException("Этот сундук уже учтён другим маркером.");
@@ -125,51 +144,34 @@ public final class Catalogue {
     public synchronized int size() { return vaults.size(); }
     public record OwnerItems(UUID owner, String name, Map<String, Long> items) {}
     public synchronized OwnerItems ownerItems(UUID owner) {
-        Map<String,Long> items=new HashMap<>();String name=owner.toString();
-        for(Snapshot v:vaults.values()) if(v.owner().equals(owner)) {
-            name=v.playerName();v.items().forEach((item,amount)->items.merge(item,amount,Long::sum));
-        }
-        return new OwnerItems(owner,name,Map.copyOf(items));
+        return new OwnerItems(owner,indexedNames.getOrDefault(owner,owner.toString()),Map.copyOf(totalsByOwner.getOrDefault(owner,Map.of())));
     }
     public synchronized List<OwnerItems> ownerItems(String nickname) {
-        Map<UUID, String> matches = new HashMap<>();
-        for (Snapshot v : vaults.values()) if (v.playerName().equalsIgnoreCase(nickname)) matches.put(v.owner(),v.playerName());
-        List<OwnerItems> result = new ArrayList<>();
-        for (var match : matches.entrySet()) {
-            Map<String,Long> items = new HashMap<>();
-            for (Snapshot v : vaults.values()) if (v.owner().equals(match.getKey()))
-                v.items().forEach((material, amount) -> { if (amount > 0) items.merge(material,amount,Long::sum); });
-            result.add(new OwnerItems(match.getKey(),match.getValue(),Map.copyOf(items)));
-        }
-        return List.copyOf(result);
+        return ownerVaults.keySet().stream().filter(owner->indexedNames.get(owner).equalsIgnoreCase(nickname))
+                .map(this::ownerItems).toList();
+    }
+    public synchronized List<Snapshot> ownerVaults(UUID owner) {
+        return ownerVaults.getOrDefault(owner,Set.of()).stream().map(vaults::get).toList();
     }
     public synchronized List<String> ownerNames() {
-        return vaults.values().stream().map(Snapshot::playerName).distinct().sorted(String.CASE_INSENSITIVE_ORDER).toList();
+        return ownerVaults.keySet().stream().map(indexedNames::get).distinct().sorted(String.CASE_INSENSITIVE_ORDER).toList();
     }
-    /** Registered players ordered by the summed amount of every item in all their vaults. */
-    public synchronized List<String> ownerNamesByTotalItems() {
-        Map<UUID,Long> amounts=new HashMap<>();Map<UUID,String> names=new HashMap<>();
-        for(Snapshot vault:vaults.values()) {
-            names.put(vault.owner(),vault.playerName());amounts.putIfAbsent(vault.owner(),0L);
-            for(long amount:vault.items().values()) if(amount>0) amounts.merge(vault.owner(),amount,Math::addExact);
-        }
-        return amounts.entrySet().stream().sorted(Map.Entry.<UUID,Long>comparingByValue().reversed()
-                        .thenComparing(entry->names.get(entry.getKey()),String.CASE_INSENSITIVE_ORDER).thenComparing(Map.Entry::getKey))
-                .map(entry->names.get(entry.getKey())).distinct().toList();
+    /** Only copy owner aggregates under the catalogue lock; sort outside it. */
+    private synchronized List<OwnerAmount> ownerTotalsSnapshot(boolean includeEmpty) {
+        return ownerTotals.entrySet().stream().filter(entry->includeEmpty || entry.getValue()>0)
+                .map(entry->new OwnerAmount(entry.getKey(),indexedNames.get(entry.getKey()),entry.getValue())).toList();
+    }
+    private static final Comparator<OwnerAmount> OWNER_RANK=Comparator.comparingLong(OwnerAmount::amount).reversed()
+            .thenComparing(OwnerAmount::name,String.CASE_INSENSITIVE_ORDER).thenComparing(OwnerAmount::owner);
+    public List<String> ownerNamesByTotalItems() {
+        return ownerTotalsSnapshot(true).stream().sorted(OWNER_RANK).map(OwnerAmount::name).distinct().toList();
     }
     public synchronized List<String> find(String material, int limit) {
         return findTotals(material,limit).stream().map(row -> row.name()+" — "+row.amount()).toList();
     }
     public record OwnerAmount(UUID owner,String name,long amount) {}
-    public synchronized List<OwnerAmount> allItemTotals() {
-        Map<UUID,Long> amounts=new HashMap<>();Map<UUID,String> names=new HashMap<>();
-        for(Snapshot vault:vaults.values()) {
-            names.put(vault.owner(),vault.playerName());
-            for(long amount:vault.items().values()) if(amount>0) amounts.merge(vault.owner(),amount,Math::addExact);
-        }
-        return amounts.entrySet().stream().sorted(Map.Entry.<UUID,Long>comparingByValue().reversed()
-                .thenComparing(e->names.get(e.getKey()),String.CASE_INSENSITIVE_ORDER).thenComparing(Map.Entry::getKey))
-                .map(e->new OwnerAmount(e.getKey(),names.get(e.getKey()),e.getValue())).toList();
+    public List<OwnerAmount> allItemTotals() {
+        return ownerTotalsSnapshot(false).stream().sorted(OWNER_RANK).toList();
     }
     public synchronized List<OwnerAmount> findTotals(String material, int limit) {
         return ranked(totalsByMaterial.getOrDefault(material,Map.of()),limit);

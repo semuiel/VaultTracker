@@ -14,3 +14,8 @@ donations/config.local.json.tmp
 donations/*.sqlite*
 donations/.venv/
 **/__pycache__/
+
+# Local runtimes, historical artifacts and the obsolete nested checkout.
+/work/
+/outputs/
+/VaultTracker/

@@ -18,7 +18,7 @@ class TelegramResilienceTest {
             var api=apis.constructed().getFirst();AtomicInteger attempts=new AtomicInteger();
             when(api.verify()).thenAnswer(call->{if(attempts.incrementAndGet()<4) throw new IOException("proxy unavailable");return "TestBot";});
             when(api.updates(anyLong())).thenAnswer(call->{var field=TelegramBotService.class.getDeclaredField("stopping");field.setAccessible(true);((AtomicBoolean)field.get(service)).set(true);return List.of();});
-            var run=TelegramBotService.class.getDeclaredMethod("run");run.setAccessible(true);run.invoke(service);assertEquals(4,attempts.get());verify(api).updates(0);
+            var run=TelegramBotService.class.getDeclaredMethod("run");run.setAccessible(true);run.invoke(service);assertTrue(service.awaitIdle(5000));assertEquals(4,attempts.get());verify(api).updates(0);
         }
     }
     @Test void expiredCallbacksDoNotStopPollingAndOffsetsAdvanceBeforeProcessing() throws Exception {
@@ -35,10 +35,11 @@ class TelegramResilienceTest {
                 var field=TelegramBotService.class.getDeclaredField("stopping");field.setAccessible(true);((AtomicBoolean)field.get(service)).set(true);return List.of();
             });
             doAnswer(call-> {
-                assertEquals(rounds.get(),Long.parseLong(Files.readString(path.resolve("offset"))));
+                long consumed=Long.parseLong(call.getArgument(0,String.class).substring("old-".length()));
+                assertTrue(Long.parseLong(Files.readString(path.resolve("offset")))>=consumed);
                 throw new IOException("Telegram API: Bad Request: query is too old and response timeout expired or query ID is invalid");
             }).when(api).answerCallback(anyString(),anyString(),anyBoolean());
-            var run=TelegramBotService.class.getDeclaredMethod("run");run.setAccessible(true);run.invoke(service);
+            var run=TelegramBotService.class.getDeclaredMethod("run");run.setAccessible(true);run.invoke(service);assertTrue(service.awaitIdle(5000));
             verify(api,times(12)).answerCallback(anyString(),anyString(),anyBoolean());verify(api).send(eq(42L),eq(0),any());
             assertEquals("13",Files.readString(path.resolve("offset")));assertEquals(14,rounds.get());
         }

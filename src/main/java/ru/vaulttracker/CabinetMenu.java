@@ -16,7 +16,7 @@ final class CabinetMenu extends TelegramMenuSection {
         try {if(guard.donationsVisible().get()) buttons.add(b(user,"💝 Пожертвования","donations","",0,3));}
         catch(InterruptedException interrupted) {Thread.currentThread().interrupt();}
         catch(Exception unavailable) {}
-        return new TelegramCommands.View("👋 Вас приветствует торговый бот FLEXITY!\n\n🔎 Хотите купить ресурс, но не знаете, у кого он есть? Нажмите «Поиск».\n🛡 Хотите защитить свои ресурсы? Откройте «Личный кабинет».",List.copyOf(buttons));
+        return new TelegramCommands.View("👋 Вас приветствует торговый бот FLEXITY!\n\n🔎 Хотите купить ресурс, но не знаете, у кого он есть? Нажмите «Поиск».\n🛡 Хотите защитить свои ресурсы? Откройте «Личный кабинет».",List.copyOf(buttons)).template("menu.main",Map.of());
     }
     TelegramCommands.View home(long user) throws Exception {
         cancelInput(user);
@@ -126,14 +126,16 @@ final class CabinetMenu extends TelegramMenuSection {
                 b(user,visible?"Выключить кнопку у игроков":"Включить кнопку у игроков","donationVisibility",Boolean.toString(!visible),0,0),
                 b(user,"Добавить премиум","donationPremiumAdd","",0,1),b(user,"Убрать премиум","donationPremiumRemove","",0,2),
                 b(user,"Добавить пожертвования","donationPlayers","add|online|",0,3),b(user,"Отнять пожертвования","donationPlayers","subtract|online|",0,4),
-                b(user,"Журнал","donationJournal","",0,5),b(user,"↩ Root","rootHome","",0,6),homeButton(7)));
+                b(user,"Разблокировать покупки","donationPlayers","unblock|online|",0,5),
+                b(user,"Журнал","donationJournal","",0,6),b(user,"↩ Root","rootHome","",0,7),homeButton(8)));
     }
     static String requestId(String value) {return UUID.nameUUIDFromBytes(value.getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();}
     static int premiumDays(String operation) {
-        if(operation.equals("remove")) return 0;if(operation.equals("grantPermanent")) return -1;
+        if(operation.equals("remove")||operation.equals("unblock")) return 0;if(operation.equals("grantPermanent")) return -1;
         if(operation.startsWith("grant")) return Integer.parseInt(operation.substring(5));throw new IllegalArgumentException("Неизвестный срок премиума");
     }
     static String premiumConfirmation(String operation,String name) {
+        if(operation.equals("unblock")) return "Разблокировать покупки для "+name+"? Долг должен быть погашен подтверждёнными средствами.";
         if(operation.equals("remove")) return "Убрать премиум у "+name+"?";
         int days=premiumDays(operation);return days<0?"Выдать бессрочный премиум: "+name+"?":"Выдать премиум на "+days+" дней: "+name+"?";
     }
@@ -163,7 +165,7 @@ final class CabinetMenu extends TelegramMenuSection {
     TelegramCommands.View donationJournal(long user,int page) throws Exception {
         guard.requireRoot(user);var body=new com.google.gson.JsonObject();body.addProperty("page",page);var result=guard.donations.call("donation-audit",body);
         page=result.get("page").getAsInt();int pages=result.get("pages").getAsInt();StringBuilder text=new StringBuilder("Журнал пожертвований · "+(page+1)+"/"+pages);
-        Map<String,String> labels=Map.of("buy","покупка премиума","grant","выдача премиума","remove","снятие премиума","add","начисление","subtract","списание");
+        Map<String,String> labels=Map.of("buy","покупка премиума","grant","выдача премиума","remove","снятие премиума","add","начисление","subtract","списание","unblock","разблокировка покупок");
         for(var element:result.getAsJsonArray("rows")){var row=element.getAsJsonObject();String action=row.get("action").getAsString();long value=row.get("amount").getAsLong();text.append("\n\n").append(java.time.Instant.ofEpochSecond(row.get("created").getAsLong()).atZone(java.time.ZoneId.systemDefault()).format(java.time.format.DateTimeFormatter.ofPattern("dd.MM HH:mm"))).append(" · ").append(row.get("actor").getAsString()).append(" → ").append(row.get("name").getAsString()).append("\n").append(labels.getOrDefault(action,action));if(!action.equals("remove"))text.append(": ").append(Set.of("buy","grant").contains(action)?(value<0?"навсегда":value+" дней"):DonationClient.money(value));}
         List<TelegramCommands.Button> buttons=new ArrayList<>();if(page>0)buttons.add(b(user,"◀ Назад","donationJournal","",page-1,0));if(page+1<pages)buttons.add(b(user,"Вперёд ▶","donationJournal","",page+1,0));buttons.add(b(user,"↩ Назад","donationAdmin","",0,1));return new TelegramCommands.View(text.toString(),List.copyOf(buttons));
     }
@@ -245,7 +247,7 @@ final class CabinetMenu extends TelegramMenuSection {
         });
         scope.on("donationApply",TelegramActionRegistry.Arguments.VALUE,TelegramActionRegistry.Requirement.ROOT,false, (user,a,data)-> {
             TelegramCommands.View view;
-            {guard.requireRoot(user);String[] parts=a.value().split("\\|",2);UUID target=UUID.fromString(parts[1]);var person=moderation.info(user,target).get();int days=premiumDays(parts[0]);view=donationResult(user,moderation.donationChange(user,target,person.name(),requestId(data),parts[0].equals("remove")?"remove":"grant",days,0),true);}
+            {guard.requireRoot(user);String[] parts=a.value().split("\\|",2);UUID target=UUID.fromString(parts[1]);var person=moderation.info(user,target).get();int days=premiumDays(parts[0]);view=donationResult(user,moderation.donationChange(user,target,person.name(),requestId(data),Set.of("remove","unblock").contains(parts[0])?parts[0]:"grant",days,0),true);}
             return view;
         });
         scope.on("donationJournal",TelegramActionRegistry.Arguments.PAGE,TelegramActionRegistry.Requirement.ROOT,false, (user,a,data)-> {

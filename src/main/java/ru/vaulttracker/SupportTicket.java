@@ -34,5 +34,9 @@ record SupportTicket(String id,Type type,long authorTelegram,UUID authorUuid,Str
     SupportTicket withClosedActor(long actor) {return new SupportTicket(id,type,authorTelegram,authorUuid,authorName,
             targetUuid,targetName,body,created,adminChat,adminTopic,adminMessage,adminMedia,status,
             formMessages,linked,attempt,facts,actionActor,takenActor,actor);}
+    SupportTicket withDelivery(int message,List<Integer> media,List<Integer> forms) {
+        return new SupportTicket(id,type,authorTelegram,authorUuid,authorName,targetUuid,targetName,body,created,
+                adminChat,adminTopic,message,List.copyOf(media),status,List.copyOf(forms),linked,attempt,facts,actionActor,takenActor,closedActor);
+    }
     List<Integer> forms() {return formMessages==null?List.of():formMessages;}
 }

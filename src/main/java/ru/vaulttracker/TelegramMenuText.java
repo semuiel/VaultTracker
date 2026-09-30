@@ -12,12 +12,14 @@ import java.util.regex.Pattern;
 final class TelegramMenuText {
     private record Replacement(String from,String to) {}
     private final Map<String,String> replacements;
+    private final Map<String,String> templates;
     private final Pattern pattern;
     private final Map<String,String> emojis;
     private final Pattern emojiPattern;
     private static final Pattern LOCATION=Pattern.compile("Мир: ([^\\r\\n]+)\\RКоординаты: (-?[0-9]+ -?[0-9]+ -?[0-9]+)");
 
-    private TelegramMenuText(List<Replacement> rows,List<Replacement> emojiRows) {
+    private TelegramMenuText(List<Replacement> rows,List<Replacement> emojiRows,Map<String,String> templates) {
+        this.templates=Map.copyOf(templates);
         Map<String,String> values=new HashMap<>();for(Replacement row:rows) values.put(row.from(),row.to());replacements=Map.copyOf(values);
         pattern=rows.isEmpty()?null:Pattern.compile(rows.stream().map(row->Pattern.quote(row.from())).reduce((left,right)->left+"|"+right).orElse("(?!)"));
         Map<String,String> icons=new HashMap<>();for(Replacement row:emojiRows) icons.put(row.from(),row.to());emojis=Map.copyOf(icons);
@@ -40,15 +42,18 @@ final class TelegramMenuText {
                 if(!original.isEmpty()) emojiRows.add(new Replacement(original,TelegramEmojiMarkup.marker(id,fallback)));
             }
             emojiRows.sort(Comparator.comparingInt((Replacement row)->row.from().length()).reversed());
-            return new TelegramMenuText(List.copyOf(rows),List.copyOf(emojiRows));
+            Map<String,String> templates=new HashMap<>();var section=yaml.getConfigurationSection("texts");
+            if(section!=null) section.getValues(true).forEach((key,value)->{if(value instanceof String text) templates.put(key,text);});
+            return new TelegramMenuText(List.copyOf(rows),List.copyOf(emojiRows),templates);
         } catch(Exception failure) {
             log.warning("Не удалось прочитать telegram-menu.yml: "+failure.getMessage()+". Используются встроенные тексты.");
-            return new TelegramMenuText(List.of(),List.of());
+            return new TelegramMenuText(List.of(),List.of(),Map.of());
         }
     }
-    String text(String value) {
+    String text(String value) {return text(value,true);}
+    private String text(String value,boolean legacyReplacements) {
         if(value==null||value.isEmpty()) return value;String result=value;
-        if(pattern!=null) {Matcher matcher=pattern.matcher(result);StringBuilder changed=new StringBuilder();while(matcher.find()) matcher.appendReplacement(changed,Matcher.quoteReplacement(replacements.get(matcher.group())));matcher.appendTail(changed);result=changed.toString();}
+        if(legacyReplacements && pattern!=null) {Matcher matcher=pattern.matcher(result);StringBuilder changed=new StringBuilder();while(matcher.find()) matcher.appendReplacement(changed,Matcher.quoteReplacement(replacements.get(matcher.group())));matcher.appendTail(changed);result=changed.toString();}
         {Matcher matcher=LOCATION.matcher(result);StringBuilder changed=new StringBuilder();while(matcher.find()) matcher.appendReplacement(changed,Matcher.quoteReplacement("📍 "+matcher.group(1)+" · "+TelegramEmojiMarkup.plainCode(matcher.group(2))));matcher.appendTail(changed);result=changed.toString();}
         for(String key:List.of("FLEXITY","Поиск ресурсов","«Игрок»","«Предмет»","[v]","[vault]")) result=boldOnce(result,key);
         if(emojiPattern!=null) {Matcher matcher=emojiPattern.matcher(result);StringBuilder changed=new StringBuilder();while(matcher.find()) matcher.appendReplacement(changed,Matcher.quoteReplacement(emojis.get(matcher.group())));matcher.appendTail(changed);result=changed.toString();}
@@ -64,6 +69,13 @@ final class TelegramMenuText {
         List<TelegramCommands.Button> buttons=source.buttons().stream()
                 .filter(button->!mainMenu || (!button.text().equals("↩ В кабинет")&&!button.data().equals("vg:menu")))
                 .map(button->new TelegramCommands.Button(text(button.text()),button.data(),button.row(),button.url(),button.copyText())).toList();
-        return new TelegramCommands.View(text(source.text()),buttons);
+        String template=source.templateKey()==null?null:templates.get(source.templateKey());
+        String body=source.text();
+        if(template!=null) {
+            Matcher tokens=Pattern.compile("\\{([A-Za-z0-9_]+)\\}").matcher(template);StringBuilder rendered=new StringBuilder();
+            while(tokens.find()) tokens.appendReplacement(rendered,Matcher.quoteReplacement(source.parameters().getOrDefault(tokens.group(1),tokens.group())));
+            tokens.appendTail(rendered);body=rendered.toString();
+        }
+        return new TelegramCommands.View(text(body,template==null),buttons,source.contacts());
     }
 }

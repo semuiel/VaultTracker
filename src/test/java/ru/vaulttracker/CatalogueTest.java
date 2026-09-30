@@ -13,6 +13,24 @@ class CatalogueTest {
         return new Snapshot(p(0),UUID.fromString("00000000-0000-0000-0000-000000000003"),OWNER,"Steve",List.of(p(1)),
                 amount>0 ? Map.of("DIAMOND",amount) : Map.of(),true,1000+revision,revision);
     }
+    @Test void ownerIndexesMatchSnapshotsAcrossUpdatesRemovalsAndRename() {
+        Catalogue catalogue=new Catalogue(v->{});Random random=new Random(42);UUID second=UUID.randomUUID();
+        for(int i=0;i<24;i++) catalogue.register(p(i*10),i%2==0?OWNER:second,i%2==0?"Steve":"Alex",List.of(p(i*10+1)),Map.of("STONE",(long)i+1),i,0);
+        for(int step=0;step<60;step++) {
+            var all=catalogue.all();if(all.isEmpty()) break;
+            var selected=all.get(random.nextInt(all.size()));
+            if(step%5==0) catalogue.remove(selected.sign(),selected.generation(),step);
+            else catalogue.observe(selected.sign(),selected.generation(),selected.chests(),Map.of("DIAMOND",(long)step+1),step);
+            if(step==20) catalogue.rename(OWNER,"Renamed");
+            for(UUID owner:List.of(OWNER,second)) {
+                Map<String,Long> expected=new HashMap<>();
+                for(var vault:catalogue.all()) if(vault.owner().equals(owner)) vault.items().forEach((key,amount)->expected.merge(key,amount,Long::sum));
+                assertEquals(expected,catalogue.ownerItems(owner).items());
+                long total=expected.values().stream().mapToLong(Long::longValue).sum();
+                assertEquals(total,catalogue.allItemTotals().stream().filter(row->row.owner().equals(owner)).mapToLong(Catalogue.OwnerAmount::amount).sum());
+            }
+        }
+    }
     @Test void sumsSeveralChestsAndUpdatesWithoutAccumulatingOldItems() {
         Catalogue c=new Catalogue(v->{});
         Snapshot a=c.register(p(0),OWNER,"Steve",List.of(p(1)),Map.of("DIAMOND",10L),1,100);

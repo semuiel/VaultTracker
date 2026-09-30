@@ -31,6 +31,8 @@ class HttpTests(unittest.TestCase):
                 self.assertEqual('website',ledger.audit(0)['rows'][0]['actor'])
                 body.update(requestId=str(uuid.uuid4()),action='spend',amountMinor=250)
                 self.assertEqual(750,request('/donation-change',body)[1]['balanceMinor'])
+                body.update(requestId=str(uuid.uuid4()),action='unblock')
+                self.assertEqual(403,request('/donation-change',body)[0])
                 body.update(requestId=str(uuid.uuid4()),action='grant',days=30)
                 self.assertEqual(403,request('/donation-change',body)[0])
                 self.assertEqual(403,request('/donation-audit',{})[0]);self.assertEqual(403,request('/premium-tasks',{})[0])
@@ -82,6 +84,14 @@ class HttpTests(unittest.TestCase):
                 alerts = request('/alerts', {})[1]['alerts']
                 self.assertEqual(['ORDER123:payment', 'ORDER123:confirmed', 'ORDER123:review', 'ORDER123:refund'],
                                  [alert['id'] for alert in alerts])
+                deliveries = request('/alerts', {'recipients':[11,22]})[1]['alerts']
+                self.assertEqual(8,len(deliveries))
+                for item in deliveries:
+                    path='/ack' if item['recipient']==11 else '/alert-retry'
+                    self.assertEqual(200,request(path,dict(id=item['id'],recipient=item['recipient']))[0])
+                self.assertEqual([],request('/alerts',{'recipients':[11,22]})[1]['alerts'])
+                self.assertEqual(400,request('/alerts',{'recipients':['not-an-id']})[0])
+                # Old plugin API remains accepted during a rolling service upgrade.
                 for alert in alerts:
                     self.assertEqual(200, request('/ack', dict(id=alert['id']))[0])
                 self.assertEqual([], request('/alerts', {})[1]['alerts'])

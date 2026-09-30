@@ -18,7 +18,7 @@ final class TelegramPrivateMenu {
         List<String> choices=List.of();
         String filter="";
         int page=1;
-        long touched;
+        volatile long touched;
         long user;
         String token;
         TelegramCommands.View result;
@@ -34,7 +34,7 @@ final class TelegramPrivateMenu {
     private final int pageSize;
     private final Predicate<String> validItem;
     private final LongSupplier clock;
-    private final Map<Key,State> states=new HashMap<>();
+    private final Map<Key,State> states=new java.util.concurrent.ConcurrentHashMap<>();
     private GuardService guard;
     private LongFunction<TelegramCommands.View> homeRenderer;
     void guard(GuardService guard) {this.guard=guard;commands.guard(guard);}
@@ -152,7 +152,7 @@ final class TelegramPrivateMenu {
 
     private List<String> choices(Mode mode,long user) {
         if(mode==Mode.PLAYERS) return catalogue.ownerNamesByTotalItems();
-        Map<String,Long> totals=new HashMap<>();
+        Map<String,Long> totals=new java.util.concurrent.ConcurrentHashMap<>();
         for(var snapshot:catalogue.all()) snapshot.items().forEach((item,amount)-> {if(amount>0) totals.merge(item,amount,Long::sum);});
         Set<String> items=new HashSet<>(totals.keySet());items.add("AR");items.add("IR");
         ItemSorting.Mode selected=guard==null?ItemSorting.Mode.MINECRAFT:guard.itemSortMode(user);

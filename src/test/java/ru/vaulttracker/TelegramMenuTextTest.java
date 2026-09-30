@@ -11,6 +11,16 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class TelegramMenuTextTest {
     @TempDir Path folder;
+    @Test void namedTemplateSurvivesChangedFallbackAndPreservesParametersAndContacts() throws Exception {
+        Files.writeString(folder.resolve("telegram-menu.yml"),"texts:\n  support.complaint.description: 'Жалоба на {player}'\nreplacements:\n  - from: Жалоба\n    to: OLD\n");
+        var text=TelegramMenuText.load(folder,Logger.getAnonymousLogger());
+        var contact=new TelegramCommands.Contact(java.util.UUID.randomUUID(),"Player");
+        var source=new TelegramCommands.View("Changed fallback",List.of(),List.of(contact))
+                .template("support.complaint.description",java.util.Map.of("player","Alex <&> {player}"));
+        var rendered=text.view(TelegramGuardMenu.withHome(source));
+        assertEquals("Жалоба на Alex <&> {player}",rendered.text());assertEquals(List.of(contact),rendered.contacts());
+        assertEquals(2,rendered.buttons().size());
+    }
     @Test void changesTextButtonsAndSafelyRendersCustomEmoji() throws Exception {
         Files.writeString(folder.resolve("telegram-menu.yml"),"""
                 emojis:

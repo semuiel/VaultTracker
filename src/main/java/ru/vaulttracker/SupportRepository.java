@@ -1,0 +1,155 @@
+package ru.vaulttracker;
+
+import com.google.gson.Gson;
+import java.sql.*;
+import java.util.*;
+import java.util.function.LongSupplier;
+import ru.vaulttracker.GuardService.PendingSupport;
+import ru.vaulttracker.GuardService.UnbanState;
+
+/** Support persistence only. All access is serialized by GuardService's disk worker. */
+final class SupportRepository {
+    private final Connection db;
+    private final Gson gson;
+    private final LongSupplier clock;
+    SupportRepository(Connection db,Gson gson,LongSupplier clock) throws SQLException {
+        this.db=db;this.gson=gson;this.clock=clock;
+        try(var s=db.createStatement()) {
+            s.execute("CREATE TABLE IF NOT EXISTS support_requests (id VARCHAR(32) PRIMARY KEY, payload CLOB NOT NULL, status VARCHAR(48) NOT NULL, created BIGINT NOT NULL)");
+            s.execute("CREATE TABLE IF NOT EXISTS support_delivery (id VARCHAR(32) PRIMARY KEY, sources CLOB NOT NULL, due BIGINT NOT NULL)");
+            s.execute("CREATE INDEX IF NOT EXISTS support_delivery_due ON support_delivery(due)");
+            s.execute("CREATE TABLE IF NOT EXISTS support_unban (id VARCHAR(32) PRIMARY KEY, tg BIGINT NOT NULL, uuid VARCHAR(36) NOT NULL, linked BOOLEAN NOT NULL, attempt INT NOT NULL, invite_until BIGINT NOT NULL DEFAULT 0, invite_message INT NOT NULL DEFAULT 0, access_until BIGINT NOT NULL DEFAULT 0, ban_reason CLOB, ban_expiry BIGINT NOT NULL DEFAULT 0, ban_source VARCHAR(256), actor BIGINT NOT NULL DEFAULT 0)");
+            s.execute("CREATE INDEX IF NOT EXISTS support_unban_uuid ON support_unban(uuid)");
+            s.execute("CREATE INDEX IF NOT EXISTS support_unban_tg ON support_unban(tg)");
+        }
+    }
+    Void saveSupport(SupportTicket ticket) throws Exception {
+        execute("INSERT INTO support_requests(id,payload,status,created) VALUES(?,?,?,?)",ticket.id(),gson.toJson(ticket),ticket.status(),ticket.created());
+        return null;
+    }
+    Void queueSupport(SupportTicket ticket,List<Integer> sources) throws Exception {
+        if(!ticket.status().equals("DELIVERY_PENDING")) throw new IllegalArgumentException("Invalid delivery status");
+        db.setAutoCommit(false);
+        try {
+            if(ticket.type()==SupportTicket.Type.UNBAN) {
+                int attempt=unbanAttemptNow(ticket.authorTelegram(),ticket.authorUuid(),ticket.linked());
+                if(attempt!=ticket.attempt()) throw new IllegalArgumentException("Число заявок изменилось. Начните заново.");
+                execute("INSERT INTO support_unban(id,tg,uuid,linked,attempt) VALUES(?,?,?,?,?)",ticket.id(),ticket.authorTelegram(),ticket.authorUuid().toString(),ticket.linked(),attempt);
+            }
+            execute("INSERT INTO support_requests(id,payload,status,created) VALUES(?,?,?,?)",ticket.id(),gson.toJson(ticket),ticket.status(),ticket.created());
+            execute("INSERT INTO support_delivery(id,sources,due) VALUES(?,?,?)",ticket.id(),gson.toJson(sources),clock.getAsLong());
+            db.commit();
+        } catch(Exception failure) {db.rollback();throw failure;}
+        finally {db.setAutoCommit(true);}
+        return null;
+    }
+    List<PendingSupport> pendingSupport() throws Exception {
+        List<PendingSupport> result=new ArrayList<>();
+        try(var statement=db.prepareStatement("SELECT id,sources FROM support_delivery WHERE due<=? ORDER BY due,id LIMIT 20")) {
+            statement.setLong(1,clock.getAsLong());
+            try(var rows=statement.executeQuery()) {while(rows.next()) {
+                SupportTicket ticket=supportNow(rows.getString(1));
+                if(ticket!=null) result.add(new PendingSupport(ticket,List.of(gson.fromJson(rows.getString(2),Integer[].class))));
+            }}
+        }
+        return List.copyOf(result);
+    }
+    Void supportDeliveryProgress(SupportTicket ticket,boolean complete) throws Exception {
+        db.setAutoCommit(false);
+        try {
+            execute("UPDATE support_requests SET payload=?,status=? WHERE id=? AND status='DELIVERY_PENDING'",gson.toJson(ticket),ticket.status(),ticket.id());
+            if(complete) execute("DELETE FROM support_delivery WHERE id=?",ticket.id());
+            db.commit();
+        } catch(Exception failure) {db.rollback();throw failure;}
+        finally {db.setAutoCommit(true);}
+        return null;
+    }
+    Void supportDeliveryRetry(String id) throws Exception {
+        execute("UPDATE support_delivery SET due=? WHERE id=?",clock.getAsLong()+60_000,id);return null;
+    }
+    private int unbanCount(String sql,Object value) throws SQLException {
+        try(var s=db.prepareStatement(sql)) {s.setObject(1,value);try(var rs=s.executeQuery()) {rs.next();return rs.getInt(1);}}
+    }
+    private int unbanAttemptNow(long telegram,UUID uuid,boolean linked) throws SQLException {
+        int character=unbanCount("SELECT COUNT(*) FROM support_unban WHERE uuid=?",uuid.toString());
+        int account=unbanCount("SELECT COUNT(*) FROM support_unban WHERE tg=?",telegram);
+        if(character>=3 || (linked?character>=3:account>=2)) throw new IllegalArgumentException("Лимит заявок на разбан исчерпан.");
+        try(var s=db.prepareStatement("SELECT 1 FROM support_unban u JOIN support_requests r ON r.id=u.id WHERE (u.uuid=? OR u.tg=?) AND r.status NOT IN ('CLOSED','UNBANNED','REJECTED','EXPIRED') LIMIT 1")) {
+            s.setString(1,uuid.toString());s.setLong(2,telegram);
+            try(var rs=s.executeQuery()) {if(rs.next()) throw new IllegalArgumentException("У вас уже есть открытая заявка на разбан.");}
+        }
+        return linked?character+1:account+1;
+    }
+    Integer unbanAttempt(long telegram,UUID uuid,boolean linked) throws Exception {
+        return unbanAttemptNow(telegram,uuid,linked);
+    }
+    Void saveUnban(SupportTicket ticket) throws Exception {
+        if(ticket.type()!=SupportTicket.Type.UNBAN || ticket.authorUuid()==null) throw new IllegalArgumentException("Некорректная заявка.");
+        int attempt=unbanAttemptNow(ticket.authorTelegram(),ticket.authorUuid(),ticket.linked());
+        if(attempt!=ticket.attempt()) throw new IllegalArgumentException("Число заявок изменилось. Начните заново.");
+        db.setAutoCommit(false);
+        try {
+            execute("INSERT INTO support_requests(id,payload,status,created) VALUES(?,?,?,?)",ticket.id(),gson.toJson(ticket),ticket.status(),ticket.created());
+            execute("INSERT INTO support_unban(id,tg,uuid,linked,attempt) VALUES(?,?,?,?,?)",ticket.id(),ticket.authorTelegram(),ticket.authorUuid().toString(),ticket.linked(),attempt);
+            db.commit();
+        } catch(Exception failure) {db.rollback();throw failure;}
+        finally {db.setAutoCommit(true);}
+        return null;
+    }
+    UnbanState unbanState(String id) throws Exception {
+        try(var s=db.prepareStatement("SELECT * FROM support_unban WHERE id=?")) {
+            s.setString(1,id);try(var rs=s.executeQuery()) {return rs.next()?readUnban(rs):null;}
+        }
+    }
+    private static UnbanState readUnban(ResultSet rs) throws SQLException {
+        return new UnbanState(rs.getString("id"),rs.getLong("tg"),UUID.fromString(rs.getString("uuid")),rs.getBoolean("linked"),rs.getInt("attempt"),
+                rs.getLong("invite_until"),rs.getInt("invite_message"),rs.getLong("access_until"),rs.getString("ban_reason"),
+                rs.getLong("ban_expiry"),rs.getString("ban_source"),rs.getLong("actor"));
+    }
+    Void unbanInvite(String id,long until,int message,long actor) throws Exception {
+        execute("UPDATE support_unban SET invite_until=?,invite_message=?,actor=? WHERE id=?",until,message,actor,id);return null;
+    }
+    Void unbanAccess(String id,long until,String reason,long expiry,String source) throws Exception {
+        execute("UPDATE support_unban SET access_until=?,ban_reason=?,ban_expiry=?,ban_source=? WHERE id=?",until,reason,expiry,source,id);return null;
+    }
+    Void clearUnbanAccess(String id) throws Exception {
+        execute("UPDATE support_unban SET access_until=0 WHERE id=?",id);return null;
+    }
+    List<UnbanState> unbanPending() throws Exception {
+        List<UnbanState> result=new ArrayList<>();
+        try(var s=db.prepareStatement("SELECT u.* FROM support_unban u JOIN support_requests r ON r.id=u.id WHERE r.status='UNBAN_PENDING' OR r.status IN ('INVITED','ACCESS','BUSY','UNBANNED') AND (u.invite_until>0 OR u.access_until>0)")) {
+            try(var rs=s.executeQuery()) {while(rs.next()) result.add(readUnban(rs));}
+        }
+        return List.copyOf(result);
+    }
+    Void supportActor(String id,long actor) throws Exception {
+        SupportTicket ticket=supportNow(id);if(ticket==null) return null;
+        execute("UPDATE support_requests SET payload=? WHERE id=?",gson.toJson(ticket.withActor(actor)),id);
+        return null;
+    }
+    SupportTicket support(String id) throws Exception {return supportNow(id);}
+    private SupportTicket supportNow(String id) throws SQLException {
+        try(var s=db.prepareStatement("SELECT payload,status FROM support_requests WHERE id=?")) {
+            s.setString(1,id);try(var rs=s.executeQuery()) {if(!rs.next()) return null;
+                return gson.fromJson(rs.getString(1),SupportTicket.class).withStatus(rs.getString(2));}
+        }
+    }
+    Boolean supportStatus(String id,String expected,String status) throws Exception {
+        try(var s=db.prepareStatement("UPDATE support_requests SET status=? WHERE id=? AND status=?")) {
+            s.setString(1,status);s.setString(2,id);s.setString(3,expected);return s.executeUpdate()==1;
+        }
+    }
+    Boolean supportChange(SupportTicket ticket,String expected) throws Exception {
+        try(var s=db.prepareStatement("UPDATE support_requests SET status=?,payload=? WHERE id=? AND status=?")) {
+            s.setString(1,ticket.status());s.setString(2,gson.toJson(ticket));s.setString(3,ticket.id());
+            s.setString(4,expected);return s.executeUpdate()==1;
+        }
+    }
+
+    private void execute(String sql,Object... args) throws SQLException {
+        try(var statement=db.prepareStatement(sql)) {
+            for(int i=0;i<args.length;i++) statement.setObject(i+1,args[i]);
+            statement.executeUpdate();
+        }
+    }
+}

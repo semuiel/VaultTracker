@@ -20,19 +20,29 @@ public final class LocalStore implements AutoCloseable {
         db = DriverManager.getConnection("jdbc:h2:file:" + path.toAbsolutePath().toString().replace('\\', '/') + ";DB_CLOSE_ON_EXIT=FALSE;WRITE_DELAY=0", "sa", "");
         try (Statement s = db.createStatement()) {
             s.executeUpdate("CREATE TABLE IF NOT EXISTS outbox (vault_id VARCHAR(160) PRIMARY KEY, revision BIGINT NOT NULL, payload CLOB NOT NULL, dirty BOOLEAN NOT NULL)");
+            s.executeUpdate("ALTER TABLE outbox ADD COLUMN IF NOT EXISTS resolved BOOLEAN NOT NULL DEFAULT FALSE");
+            s.executeUpdate("CREATE INDEX IF NOT EXISTS outbox_delivery ON outbox(dirty,resolved,revision)");
         }
     }
-    public List<Snapshot> load() throws SQLException { return select(false, 0); }
+    public List<Snapshot> load() throws SQLException { return loadAndResolve(); }
     public void republishAll() throws SQLException {
         try (Statement s = db.createStatement()) { s.executeUpdate("UPDATE outbox SET dirty=TRUE"); }
     }
-    public List<Snapshot> dirty(int limit) throws SQLException { return select(true, limit); }
+    public List<Snapshot> dirty(int limit) throws SQLException {
+        if(limit<=0) return List.of();
+        List<Snapshot> result=new ArrayList<>();
+        try(var query=db.prepareStatement("SELECT payload FROM outbox WHERE dirty=TRUE AND resolved=TRUE ORDER BY revision LIMIT ?")) {
+            query.setInt(1,limit);
+            try(var rows=query.executeQuery()) {while(rows.next()) result.add(JSON.fromJson(rows.getString(1),Snapshot.class));}
+        }
+        return List.copyOf(result);
+    }
     public boolean hasUnresolved() {return unresolved>0;}
     public int unresolvedCount() {return unresolved;}
     private record Row(String id,String payload,JsonObject json) {}
-    private List<Snapshot> select(boolean dirty, int limit) throws SQLException {
+    private List<Snapshot> loadAndResolve() throws SQLException {
         List<Row> rows=new ArrayList<>();Map<String,Set<UUID>> localNames=new HashMap<>();
-        try (Statement s = db.createStatement(); ResultSet r = s.executeQuery("SELECT vault_id,payload FROM outbox" + (dirty ? " WHERE dirty=TRUE ORDER BY revision" : " ORDER BY revision"))) {
+        try (Statement s = db.createStatement(); ResultSet r = s.executeQuery("SELECT vault_id,payload FROM outbox ORDER BY revision")) {
             while (r.next()) {
                 String payload=r.getString(2);JsonObject json=JsonParser.parseString(payload).getAsJsonObject();
                 rows.add(new Row(r.getString(1),payload,json));
@@ -43,6 +53,7 @@ public final class LocalStore implements AutoCloseable {
             }
         }
         List<Snapshot> result = new ArrayList<>();unresolved=0;
+        try(var reset=db.createStatement()) {reset.executeUpdate("UPDATE outbox SET resolved=FALSE WHERE resolved=TRUE");}
         try(var update=db.prepareStatement("UPDATE outbox SET payload=?,dirty=TRUE WHERE vault_id=?")) {
             for(Row row:rows) {
                 JsonObject json=row.json();
@@ -59,16 +70,20 @@ public final class LocalStore implements AutoCloseable {
                 }
                 try {result.add(JSON.fromJson(json,Snapshot.class));}
                 catch(RuntimeException invalid) {unresolved++;}
-                if(dirty && result.size()>=limit) break;
+
             }
             update.executeBatch();
+        }
+        try(var resolved=db.prepareStatement("UPDATE outbox SET resolved=TRUE WHERE vault_id=? AND revision=?")) {
+            for(Snapshot snapshot:result) {resolved.setString(1,snapshot.sign().id());resolved.setLong(2,snapshot.revision());resolved.addBatch();}
+            resolved.executeBatch();
         }
         return result;
     }
     public void save(Collection<Snapshot> batch) throws SQLException {
         db.setAutoCommit(false);
         try (PreparedStatement lookup = db.prepareStatement("SELECT revision FROM outbox WHERE vault_id=?");
-             PreparedStatement s = db.prepareStatement("MERGE INTO outbox(vault_id,revision,payload,dirty) KEY(vault_id) VALUES(?,?,?,TRUE)")) {
+             PreparedStatement s = db.prepareStatement("MERGE INTO outbox(vault_id,revision,payload,dirty,resolved) KEY(vault_id) VALUES(?,?,?,TRUE,TRUE)")) {
             for (Snapshot v : batch) {
                 lookup.setString(1, v.sign().id());
                 try (ResultSet r = lookup.executeQuery()) { if (r.next() && r.getLong(1) >= v.revision()) continue; }

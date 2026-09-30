@@ -10,7 +10,7 @@ final class OwnResourceSearch {
         String russian=query.strip().toLowerCase(Locale.ROOT).replace('ё','е');
         if(russian.isEmpty()) return List.of();
         List<Row> rows=new ArrayList<>();
-        for(Snapshot vault:catalogue.all()) if(vault.owner().equals(owner)&&!vault.chests().isEmpty()) {
+        for(Snapshot vault:catalogue.ownerVaults(owner)) if(!vault.chests().isEmpty()) {
             BlockKey chest=vault.chests().stream().min(Comparator.comparingDouble(c->distance(c,origin))).orElseThrow();
             for(var item:vault.items().entrySet()) if(item.getValue()>0 && (query.equals("*")||item.getKey().contains(normalized)||RussianItems.name(item.getKey()).toLowerCase(Locale.ROOT).replace('ё','е').contains(russian)))
                 rows.add(new Row(chest,item.getKey(),item.getValue(),distance(chest,origin)));

@@ -72,6 +72,31 @@ class StorageTest {
         engine.close();
         try (LocalStore db=new LocalStore(temp.resolve("cache"))) { assertEquals(List.of(fixture(1,42)),db.load()); }
     }
+    @Test void dirtyReadsOnlyRequestedSqlBatch() throws Exception {
+        Path path=temp.resolve("bounded");
+        try(LocalStore store=new LocalStore(path)) {
+            Snapshot first=fixture(1,10);
+            Snapshot second=new Snapshot(p(10),UUID.randomUUID(),OWNER,"Steve",List.of(p(11)),Map.of("STONE",1L),true,2,2);
+            store.save(List.of(first,second));
+            try(Connection db=DriverManager.getConnection("jdbc:h2:file:"+path.toAbsolutePath().toString().replace('\\','/')+";DB_CLOSE_ON_EXIT=FALSE","sa","");
+                var statement=db.prepareStatement("UPDATE outbox SET payload='invalid json' WHERE revision=2")) {statement.executeUpdate();}
+            // The later row must not even be parsed while fetching the first batch.
+            assertEquals(List.of(first),store.dirty(1));
+            assertTrue(store.dirty(0).isEmpty());
+        }
+    }
+    @Test void preResolvedSchemaMigratesWithoutDroppingLegacyRows() throws Exception {
+        Path path=temp.resolve("old-schema");Snapshot snapshot=fixture(1,10);
+        try(Connection db=DriverManager.getConnection("jdbc:h2:file:"+path.toAbsolutePath().toString().replace('\\','/')+";DB_CLOSE_ON_EXIT=FALSE","sa","");var statement=db.createStatement()) {
+            statement.execute("CREATE TABLE outbox(vault_id VARCHAR(160) PRIMARY KEY,revision BIGINT NOT NULL,payload CLOB NOT NULL,dirty BOOLEAN NOT NULL)");
+            try(var insert=db.prepareStatement("INSERT INTO outbox VALUES(?,?,?,TRUE)")) {
+                insert.setString(1,snapshot.sign().id());insert.setLong(2,1);insert.setString(3,new com.google.gson.Gson().toJson(snapshot));insert.executeUpdate();
+            }
+        }
+        try(LocalStore store=new LocalStore(path)) {
+            assertEquals(List.of(snapshot),store.load());assertEquals(List.of(snapshot),store.dirty(1));
+        }
+    }
     private Connection remote() throws SQLException {
         Connection db=DriverManager.getConnection("jdbc:h2:mem:"+UUID.randomUUID()+";MODE=MySQL");
         RemoteStore.initialize(db);

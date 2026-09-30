@@ -15,10 +15,10 @@ final class TelegramGuardMenu {
     final SupportMenu support;
     record Input(String kind,long expires) {}
     final TelegramActionRegistry routes;
-    final Map<Long,Input> waiting=new HashMap<>();
-    final Map<Long,Integer> dialogCards=new HashMap<>();
-    final Map<Long,Integer> editedDialogs=new HashMap<>();
-    final Map<String,Integer> playerPages=new HashMap<>();
+    final Map<Long,Input> waiting=new java.util.concurrent.ConcurrentHashMap<>();
+    final Map<Long,Integer> dialogCards=new java.util.concurrent.ConcurrentHashMap<>();
+    final Map<Long,Integer> editedDialogs=new java.util.concurrent.ConcurrentHashMap<>();
+    final Map<String,Integer> playerPages=new java.util.concurrent.ConcurrentHashMap<>();
     final Set<Long> adminPreview=java.util.concurrent.ConcurrentHashMap.newKeySet();
     final GuardService guard;
     final TelegramCommands commands;
@@ -116,7 +116,7 @@ final class TelegramGuardMenu {
     static TelegramCommands.Button homeButton(int row) {return new TelegramCommands.Button("⌂ Меню","vg:menu",row);}
     static TelegramCommands.View withHome(TelegramCommands.View view) {
         if(view==null) return new TelegramCommands.View("Откройте кабинет заново.",List.of(homeButton(0)));
-        var buttons=new ArrayList<>(view.buttons());int row=buttons.stream().mapToInt(TelegramCommands.Button::row).max().orElse(-1)+1;buttons.add(new TelegramCommands.Button("↩ В кабинет","vg:home",row));buttons.add(homeButton(row+1));return new TelegramCommands.View(view.text(),List.copyOf(buttons));
+        var buttons=new ArrayList<>(view.buttons());int row=buttons.stream().mapToInt(TelegramCommands.Button::row).max().orElse(-1)+1;buttons.add(new TelegramCommands.Button("↩ В кабинет","vg:home",row));buttons.add(homeButton(row+1));return view.withButtons(List.copyOf(buttons));
     }
     TelegramCommands.View resourceHome(long user,UUID owner) {return resources.resourceHome(user,owner);}
     TelegramCommands.View resourceResults(long user,String query,int requested) throws Exception {return resources.resourceResults(user,query,requested);}
