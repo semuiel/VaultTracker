@@ -41,11 +41,11 @@ class RootConsoleMenuTest {
         assertThrows(SecurityException.class,()->menu.callback(501,oldSuperButton.data()));
         assertThrows(Exception.class,()->guard.donationsVisible(501,true).get());
         var root=root();
-        assertNotNull(button(root,"Пожертвования"));
-        var donations=click(500,root,"Пожертвования");
+        assertNotNull(button(root,"Управление пожертвованиями"));
+        var donations=click(500,root,"Управление пожертвованиями");
         assertTrue(donations.text().contains("Кнопка у связанных игроков"));
         assertTrue(click(500,donations,"Root").text().equals("🔐 Root"));
-        String oldRootCallback=button(root,"Пожертвования");
+        String oldRootCallback=button(root,"Управление пожертвованиями");
         guard.configure(new GuardConfig(true,120000,0),Set.of(99L));
         assertThrows(SecurityException.class,()->menu.callback(500,oldRootCallback));
     }

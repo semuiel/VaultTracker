@@ -8,10 +8,13 @@ import threading
 import time
 import uuid
 import traceback
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs
 from ledger import Ledger
 from funpay_provider import FunPayProvider
+from vote_providers import configured_providers
+from voting import VoteService
 
 LOG = logging.getLogger('donations')
 
@@ -19,6 +22,7 @@ LOG = logging.getLogger('donations')
 class Service:
     def __init__(self, config, ledger, provider):
         self.config, self.ledger, self.provider = config, ledger, provider
+        self.voting = VoteService(config, ledger, configured_providers(config)) if hasattr(ledger,'connection') else None
         self.lock = threading.Lock()
         self.attempts = {}
         self.cursor = None
@@ -128,6 +132,12 @@ def handler(service):
                 # Drain the bounded request before closing even for denied auth.
                 # Unread request data causes Windows to reset instead of delivering 401.
                 payload = self.rfile.read(length)
+                if self.path == '/voting/minecraft-rating':
+                    self.minecraft_rating(payload)
+                    return
+                if self.client_address[0] not in ('127.0.0.1','::1'):
+                    self.reply(403, {'error':'Local API'})
+                    return
                 supplied = self.headers.get('Authorization', '')
                 expected = 'Bearer ' + service.config['api_key']
                 website_key=service.config.get('website_api_key','')
@@ -156,6 +166,19 @@ def handler(service):
                     else:
                         service.ledger.acknowledge(str(body['id']))
                     result = {'ok': True}
+                elif self.path == '/voting-providers':
+                    result = {'providers': service.voting.repository.providers_view(True)}
+                elif self.path == '/voting-admin':
+                    result = {'providers': service.voting.repository.providers_view(False)}
+                elif self.path == '/voting-update':
+                    result = service.voting.repository.update(str(body['provider']),str(body['actor']),
+                        body.get('enabled'),body.get('rewardMinor'))
+                elif self.path == '/voting-stats':
+                    result = service.voting.repository.statistics(body.get('provider'))
+                elif self.path == '/voting-pending':
+                    result = {'players': service.voting.repository.pending()}
+                elif self.path == '/voting-resolve':
+                    result = service.voting.repository.resolve(str(body['nickname']),str(body['owner']),str(body['displayName']))
                 else:
                     owner = str(uuid.UUID(body['owner']))
                     if self.path == '/wallet':
@@ -189,6 +212,24 @@ def handler(service):
                 LOG.warning('Local API %s failed (%s; %s)',self.path,type(error).__name__,' <- '.join(frames))
                 self.reply(503, {'error': 'Сервис временно недоступен. Повторите позже.'})
 
+        def minecraft_rating(self, payload):
+            try:
+                content_type=self.headers.get('Content-Type','').split(';',1)[0].strip().lower()
+                if content_type not in ('','application/x-www-form-urlencoded'):
+                    raise ValueError('invalid-content-type')
+                parsed=parse_qs(payload.decode('utf-8'),keep_blank_values=True,strict_parsing=True)
+                if any(len(values)!=1 for values in parsed.values()):
+                    raise ValueError('duplicate-fields')
+                fields={key:values[0] for key,values in parsed.items()}
+                result=service.voting.callback('minecraft_rating',fields)
+                LOG.info('Vote callback provider=minecraft_rating result=%s id=%s',result['status'],result['id'][:8])
+                self.reply_text(200,'ok')
+            except Exception as error:
+                reason=str(error) if str(error) in {'missing-fields','invalid-fields','invalid-signature','provider-disabled',
+                    'provider-not-configured','invalid-content-type','duplicate-fields'} else type(error).__name__
+                LOG.warning('Vote callback provider=minecraft_rating result=rejected reason=%s',reason)
+                self.reply_text(500,'site_error\nCallback rejected')
+
         def reply(self, status, value):
             data = json.dumps(value, ensure_ascii=False).encode()
             self.close_connection = True
@@ -196,6 +237,16 @@ def handler(service):
             self.send_header('Content-Type', 'application/json; charset=utf-8')
             self.send_header('Content-Length', str(len(data)))
             self.send_header('Connection', 'close')
+            self.end_headers()
+            self.wfile.write(data)
+
+        def reply_text(self,status,value):
+            data=value.encode('utf-8')
+            self.close_connection=True
+            self.send_response(status)
+            self.send_header('Content-Type','text/plain; charset=utf-8')
+            self.send_header('Content-Length',str(len(data)))
+            self.send_header('Connection','close')
             self.end_headers()
             self.wfile.write(data)
     return Handler
@@ -226,10 +277,13 @@ def main():
         raise SystemExit('FunPay connection/check failed (' + type(error).__name__ + '). No payment processed.') from None
     service = Service(config, Ledger(args.config.parent / 'donations.sqlite'), provider)
     stop = threading.Event()
-    server = HTTPServer(('127.0.0.1', config.get('port', 18763)), handler(service))
+    bind_host=config.get('bind_host','127.0.0.1')
+    if bind_host not in ('127.0.0.1','0.0.0.0'):
+        raise SystemExit('bind_host must be 127.0.0.1 or 0.0.0.0')
+    server = ThreadingHTTPServer((bind_host, config.get('port', 18763)), handler(service))
     thread = threading.Thread(target=service.poll, args=(stop,), daemon=True)
     thread.start()
-    LOG.info('Donation service listening on 127.0.0.1:%s', server.server_port)
+    LOG.info('Payment and voting service listening on %s:%s',bind_host,server.server_port)
     try:
         server.serve_forever()
     finally:

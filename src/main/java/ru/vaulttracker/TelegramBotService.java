@@ -47,7 +47,7 @@ final class TelegramBotService implements AutoCloseable {
         commands.adminAccess(this::isAdmin);
         worker=Thread.ofVirtual().name("VaultTracker-telegram").unstarted(this::run);
     }
-    void start() {worker.start();if(guard!=null) {donationNotifications.scheduleWithFixedDelay(this::notifyDonations,60,60,TimeUnit.SECONDS);donationNotifications.scheduleWithFixedDelay(()->{try {if(moderation!=null) moderation.syncDonations();}catch(Exception | LinkageError pending){log.fine("Выдача премиума ожидает повторной синхронизации.");}},5,10,TimeUnit.SECONDS);if(support!=null) {notifications.scheduleWithFixedDelay(support::expirePending,5,15,TimeUnit.SECONDS);notifications.scheduleWithFixedDelay(support::retryDeliveries,5,15,TimeUnit.SECONDS);}} }
+    void start() {worker.start();if(guard!=null) {donationNotifications.scheduleWithFixedDelay(this::notifyDonations,60,60,TimeUnit.SECONDS);donationNotifications.scheduleWithFixedDelay(()->{try {guard.donations.resolveKnownVotes(guard);if(moderation!=null) moderation.syncDonations();}catch(Exception | LinkageError pending){log.fine("Синхронизация премиума или голосов ожидает повторения.");}},5,10,TimeUnit.SECONDS);if(support!=null) {notifications.scheduleWithFixedDelay(support::expirePending,5,15,TimeUnit.SECONDS);notifications.scheduleWithFixedDelay(support::retryDeliveries,5,15,TimeUnit.SECONDS);}} }
     private void notifyDonations() {
         if(stopping.get()) return;
         try {

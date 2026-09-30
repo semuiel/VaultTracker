@@ -53,6 +53,28 @@ final class DonationClient {
     }
     JsonObject wallet(UUID owner) throws Exception {return call("wallet",owner(owner));}
     JsonObject redeem(UUID owner,String code) throws Exception {var data=owner(owner);data.addProperty("code",code);return call("redeem",data);}
+    JsonArray votingProviders(boolean admin) throws Exception {
+        return call(admin?"voting-admin":"voting-providers",new JsonObject()).getAsJsonArray("providers");
+    }
+    JsonObject votingUpdate(long actor,String provider,Boolean enabled,Long rewardMinor) throws Exception {
+        var body=new JsonObject();body.addProperty("actor",Long.toString(actor));body.addProperty("provider",provider);
+        if(enabled!=null) body.addProperty("enabled",enabled);if(rewardMinor!=null) body.addProperty("rewardMinor",rewardMinor);
+        return call("voting-update",body);
+    }
+    JsonObject votingStatistics(String provider) throws Exception {
+        var body=new JsonObject();if(provider!=null&&!provider.isBlank()) body.addProperty("provider",provider);
+        return call("voting-stats",body);
+    }
+    void resolveKnownVotes(GuardService guard) throws Exception {
+        var pending=call("voting-pending",new JsonObject()).getAsJsonArray("players");
+        for(var item:pending) {
+            String nickname=item.getAsJsonObject().get("nickname").getAsString();UUID owner=guard.knownPlayerUuid(nickname);
+            if(owner==null) continue;
+            String display=guard.knownPlayerName(owner);if(display==null||display.isBlank()) display=nickname;
+            var body=owner(owner);body.addProperty("nickname",nickname);body.addProperty("displayName",display);
+            call("voting-resolve",body);
+        }
+    }
     private static JsonObject owner(UUID owner) {var body=new JsonObject();body.addProperty("owner",owner.toString());return body;}
     static String money(long minor) {return java.math.BigDecimal.valueOf(minor,2).toPlainString();}
 }

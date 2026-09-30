@@ -13,6 +13,7 @@ final class TelegramGuardMenu {
     final AdminMenu admin;
     final SuperAdminMenu superAdmin;
     final SupportMenu support;
+    final VotingMenu voting;
     record Input(String kind,long expires) {}
     final TelegramActionRegistry routes;
     final Map<Long,Input> waiting=new java.util.concurrent.ConcurrentHashMap<>();
@@ -35,10 +36,10 @@ final class TelegramGuardMenu {
         this.guard=guard;this.commands=commands;this.moderation=moderation;this.tags=tags;this.api=api;
         cabinet=new CabinetMenu(this);resources=new ResourceMenu(this);friendsMenu=new FriendsMenu(this);
         messages=new MessagesMenu(this);settingsMenu=new SettingsMenu(this);statisticsMenu=new StatisticsMenu(this);admin=new AdminMenu(this);superAdmin=new SuperAdminMenu(this);
-        support=new SupportMenu(this,supportService);
+        support=new SupportMenu(this,supportService);voting=new VotingMenu(this);
         routes=new TelegramActionRegistry(guard);
         cabinet.registerActions(routes);resources.registerActions(routes);friendsMenu.registerActions(routes);
-        messages.registerActions(routes);settingsMenu.registerActions(routes);statisticsMenu.registerActions(routes);admin.registerActions(routes);superAdmin.registerActions(routes);support.registerActions(routes);
+        messages.registerActions(routes);settingsMenu.registerActions(routes);statisticsMenu.registerActions(routes);admin.registerActions(routes);superAdmin.registerActions(routes);support.registerActions(routes);voting.registerActions(routes);
         commands.sharedAccess((user,owner)->{var account=guard.account(user).join();return account!=null&&guard.canSearch(account.uuid(),owner);});
     }
 
@@ -80,6 +81,8 @@ final class TelegramGuardMenu {
         if(kind.startsWith("child")) return new TelegramCommands.View(text+"\nВвод действует 10 минут. Отмена: /cancel.",List.of(b(user,"↩ Дети","children","",0,0),homeButton(1)));
         if(kind.equals("friendAdd")) return new TelegramCommands.View(text+"\nВвод действует 10 минут. Отмена: /cancel.",List.of(b(user,"↩ Друзья","friends","",0,0),homeButton(1)));
         if(kind.startsWith("donationPremiumDays:")) return new TelegramCommands.View(text+"\nВвод действует 10 минут. Отмена: /cancel.",List.of(b(user,"↩ Пожертвования","donationAdmin","",0,0),homeButton(1)));
+        if(kind.startsWith("votingReward:")) return new TelegramCommands.View(text+"\nВвод действует 10 минут. Отмена: /cancel.",List.of(
+                b(user,"↩ К ресурсу","votingProvider",kind.substring("votingReward:".length()),0,0),homeButton(1)));
         return withHome(new TelegramCommands.View(text+"\nВвод действует 10 минут. Отмена: /cancel."));
     }
     TelegramCommands.View input(long user,String text) throws Exception {
@@ -98,6 +101,7 @@ final class TelegramGuardMenu {
         if(view!=null) return view;
         if(pending.expires()<System.currentTimeMillis()) {waiting.remove(user);return withHome(new TelegramCommands.View("Время ввода истекло. Откройте настройки снова."));}
         view=cabinet.onInput(user,text,pending);
+        if(view==null) view=voting.onInput(user,text,pending);
         if(view==null) view=friendsMenu.onInput(user,text,pending);
         if(view==null) view=superAdmin.onInput(user,text,pending);
         if(view==null) view=admin.onInput(user,text,pending);

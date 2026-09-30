@@ -35,7 +35,8 @@ final class SuperAdminMenu extends TelegramMenuSection {
         buttons.add(b(user,"👑 Суперадминистраторы","supers","",0,row++));
         buttons.add(b(user,"👮 Администраторы бота","admins","",0,row++));
         if(guard.primaryRoot(user)) buttons.add(b(user,"👥 Список Root","rootList","",0,row++));
-        buttons.add(b(user,"💝 Пожертвования","donationAdmin","",0,row++));
+        buttons.add(b(user,"💝 Управление пожертвованиями","donationAdmin","",0,row++));
+        buttons.add(b(user,"🗳 Управление голосованиями","votingAdmin","",0,row++));
         buttons.add(b(user,"🧒 Дети","children","",0,row++));
         buttons.add(b(user,"♻️ Перезагрузить VaultTracker","reloadPlugin","",0,row++));
         buttons.add(b(user,"📄 Логи","rootLogs","",0,row++));

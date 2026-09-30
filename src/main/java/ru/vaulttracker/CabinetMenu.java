@@ -108,7 +108,8 @@ final class CabinetMenu extends TelegramMenuSection {
         } catch(Exception unavailable) {extra="\n⚠️ Сервис пополнений недоступен или ещё настраивается. Попробуйте позже.";}
         return new TelegramCommands.View("💝 Пожертвования FLEXITY\n\n💰 Баланс: "+balance+"\n💎 Премиум: "+premium+extra
                 +"\n\nℹ️ Пожертвования добровольны. До подтверждения заказа монеты нельзя тратить; при возврате пополнение и бонус отменяются.",List.of(
-                b(user,"💳 Пополнить","donationPay","",0,0),b(user,"💎 Премиум","donationPremium","",0,1),homeButton(2)));
+                b(user,"💳 Пополнить","donationPay","",0,0),b(user,"💎 Премиум","donationPremium","",0,1),
+                b(user,"🗳 Голосование","votingUser","",0,2),homeButton(3)));
     }
     TelegramCommands.View donationPay(long user) throws Exception {
         requireDonations(user);List<TelegramCommands.Button> buttons=new ArrayList<>();String text;

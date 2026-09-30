@@ -334,7 +334,7 @@ class TelegramGuardMenuTest {
         when(moderation.players(99,"online")).thenReturn(java.util.concurrent.CompletableFuture.completedFuture(people.stream().filter(TelegramModeration.Person::online).toList()));
         when(moderation.players(99,"all")).thenReturn(java.util.concurrent.CompletableFuture.completedFuture(people));
         menu=new TelegramGuardMenu(guard,new TelegramCommands(catalogue,storage,20,v->true),moderation);
-        var admin=click(99,click(99,click(99,click(99,menu.home(99),"🛠 Админ"),"Суперадминистратор"),"Root"),"Пожертвования");var picker=click(99,admin,"Добавить пожертвования");
+        var admin=click(99,click(99,click(99,click(99,menu.home(99),"🛠 Админ"),"Суперадминистратор"),"Root"),"Управление пожертвованиями");var picker=click(99,admin,"Добавить пожертвования");
         assertEquals(10,picker.buttons().stream().filter(b->b.text().startsWith("Player")).count());
         assertTrue(click(99,picker,"Вперёд").text().contains("2/3"));var offline=click(99,picker,"офлайн");assertTrue(offline.buttons().stream().anyMatch(b->b.text().equals("OfflineAlex")));
         click(99,offline,"Поиск");assertTrue(menu.input(99,"alex").buttons().stream().anyMatch(b->b.text().equals("OfflineAlex")));
@@ -346,7 +346,7 @@ class TelegramGuardMenuTest {
         when(moderation.players(99,"online")).thenReturn(java.util.concurrent.CompletableFuture.completedFuture(List.of(person)));
         when(moderation.info(99,player)).thenReturn(java.util.concurrent.CompletableFuture.completedFuture(person));
         menu=new TelegramGuardMenu(guard,new TelegramCommands(catalogue,storage,20,v->true),moderation);
-        var admin=click(99,click(99,click(99,click(99,menu.home(99),"🛠 Админ"),"Суперадминистратор"),"Root"),"Пожертвования");var durations=click(99,admin,"Добавить премиум");
+        var admin=click(99,click(99,click(99,click(99,menu.home(99),"🛠 Админ"),"Суперадминистратор"),"Root"),"Управление пожертвованиями");var durations=click(99,admin,"Добавить премиум");
         assertTrue(durations.buttons().stream().anyMatch(b->b.text().equals("Навсегда")));assertTrue(durations.buttons().stream().anyMatch(b->b.text().equals("Свой срок")));
         var permanent=click(99,click(99,durations,"Навсегда"),"Player");assertTrue(permanent.text().contains("бессрочный премиум"));
         var customPlayer=click(99,click(99,durations,"Свой срок"),"Player");assertTrue(customPlayer.text().contains("от 1 до 36500"));
@@ -357,7 +357,7 @@ class TelegramGuardMenuTest {
         guard.link(id,"Alex",guard.generate(42).get().split("/vtrack link ")[1].substring(0,GuardService.LINK_CODE_LENGTH)).get();
         assertFalse(menu.home(42).buttons().stream().anyMatch(b->b.text().contains("Пожертвования")));
         assertThrows(Exception.class,()->guard.donationsVisible(42,true).get());
-        var admin=click(99,click(99,click(99,click(99,menu.home(99),"🛠 Админ"),"Суперадминистратор"),"Root"),"Пожертвования");
+        var admin=click(99,click(99,click(99,click(99,menu.home(99),"🛠 Админ"),"Суперадминистратор"),"Root"),"Управление пожертвованиями");
         click(99,admin,"Включить");
         assertFalse(menu.home(43).buttons().stream().anyMatch(b->b.text().contains("Пожертвования")));
         var donations=click(42,menu.mainMenu(42),"Пожертвования");
