@@ -134,6 +134,12 @@ class Service:
                 LOG.warning('Vote history recovery unavailable (%s); retry scheduled',type(error).__name__)
             stop.wait(interval)
 
+    def poll_monthly_votes(self,stop):
+        while not stop.is_set():
+            try: self.voting.repository.monthly.settle()
+            except Exception as error: LOG.warning('Monthly vote rewards pending (%s)',type(error).__name__)
+            stop.wait(60)
+
 
 def handler(service):
     class Handler(BaseHTTPRequestHandler):
@@ -177,9 +183,16 @@ def handler(service):
                     service.ledger.acknowledge_recipient(str(body['id']),int(body['recipient']),False)
                     result = {'ok': True}
                 elif self.path == '/premium-tasks':
-                    result = {'tasks': service.ledger.premium_tasks()}
+                    # Old Java clients assume every task belongs to premium.
+                    result = {'tasks': service.ledger.premium_tasks(include_lite=body.get('includeLite') is True)}
                 elif self.path == '/donation-audit':
                     result = service.ledger.audit(int(body.get('page',0)))
+                elif self.path == '/donation-stats':
+                    result = service.ledger.statistics()
+                elif self.path == '/link-reward-settings':
+                    result = service.ledger.link_rewards.settings()
+                elif self.path == '/link-reward-update':
+                    result = service.ledger.link_rewards.update(str(body['actor']),body['rewardMinor'])
                 elif self.path == '/ack':
                     if 'recipient' in body:
                         service.ledger.acknowledge_recipient(str(body['id']),int(body['recipient']))
@@ -187,7 +200,13 @@ def handler(service):
                         service.ledger.acknowledge(str(body['id']))
                     result = {'ok': True}
                 elif self.path == '/voting-providers':
-                    result = {'providers': service.voting.repository.providers_view(True)}
+                    result = {'providers': service.voting.repository.providers_view(True,body.get('owner'))}
+                elif self.path == '/voting-top':
+                    result = service.voting.repository.monthly.top(body.get('month'),body.get('page',0))
+                elif self.path == '/voting-month-settings':
+                    result = service.voting.repository.monthly.settings()
+                elif self.path == '/voting-month-update':
+                    result = service.voting.repository.monthly.update(str(body['actor']),body.get('rewardMinor'),body.get('tiePolicy'),body.get('place',1))
                 elif self.path == '/voting-admin':
                     result = {'providers': service.voting.repository.providers_view(False)}
                 elif self.path == '/voting-update':
@@ -210,12 +229,17 @@ def handler(service):
                     owner = str(uuid.UUID(body['owner']))
                     if self.path == '/wallet':
                         result = service.ledger.wallet(owner)
+                    elif self.path == '/player-summary':
+                        result = service.ledger.wallet(owner)
+                        result['votes'] = service.voting.repository.player_votes(owner)
                     elif self.path == '/premium-ack':
-                        service.ledger.premium_ack(owner,int(body['version']))
+                        service.ledger.premium_ack(owner,int(body['version']),body.get('product','premium'))
                         result = {'ok':True}
                     elif self.path == '/donation-change':
                         result = service.ledger.change(owner,str(uuid.UUID(body['requestId'])),body['action'],
-                            str(body['actor']),str(body['name']),body.get('days',0),body.get('amountMinor',0),body.get('baseUntil',0))
+                            str(body['actor']),str(body['name']),body.get('days',0),body.get('amountMinor',0),body.get('baseUntil',0),body.get('product','premium'))
+                    elif self.path == '/link-reward-claim':
+                        result = service.ledger.link_rewards.claim(owner,str(body['actor']),str(body['name']))
                     elif self.path == '/redeem':
                         code = str(body['code']).strip().upper()
                         if not re.fullmatch('[A-F0-9]{32}', code):
@@ -315,6 +339,7 @@ def main():
     thread.start()
     vote_thread = threading.Thread(target=service.poll_votes, args=(stop,), daemon=True)
     vote_thread.start()
+    threading.Thread(target=service.poll_monthly_votes,args=(stop,),daemon=True).start()
     LOG.info('Payment and voting service listening on %s:%s',bind_host,server.server_port)
     try:
         server.serve_forever()

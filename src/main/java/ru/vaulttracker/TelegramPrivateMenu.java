@@ -66,7 +66,7 @@ final class TelegramPrivateMenu {
                 if(command.equals("/help")) notice="Выберите поиск кнопками или используйте /item предмет, /item Ник.\n/cancel — отменить ввод.";
                 return render(state,notice);
             }
-            if(command.equals("/search")) { state.mode=Mode.SEARCH; return render(state,""); }
+            if(command.equals("/search")) { state.mode=Mode.SEARCH;BotAnalytics.event("search","search.open","screen_view");return render(state,""); }
             state.mode=Mode.RESULT;
             state.result=commands.handle(userId,chatId,topicId,text,admin);
             return render(state,"");
@@ -76,6 +76,7 @@ final class TelegramPrivateMenu {
         if(!storage.ready()) return render(state,"Каталог загружается. Повторите чуть позже.");
         state.filter=text.length()>128 ? text.substring(0,128) : text;
         state.choices=choices(state.mode,userId).stream().filter(value->matches(state.mode,value,state.filter)).toList();
+        BotAnalytics.search("search.filter",state.mode==Mode.PLAYERS?"player":"item","",state.choices.size(),BotAnalytics.language(text));
         state.page=1;
         return render(state,"");
     }
@@ -92,12 +93,15 @@ final class TelegramPrivateMenu {
         catch(NumberFormatException e) { return new TelegramCommands.Callback(null,"Неизвестная кнопка.",true); }
         if(index<0 || index>=state.actions.size()) return new TelegramCommands.Callback(null,"Неизвестная кнопка.",true);
         Action action=state.actions.get(index);
+        String analyticsId=switch(action.kind()){case PLAYERS->"search.player";case ITEMS->"search.item";case PAGE,RESULT_PAGE->"search.page";case SELECT->"search.select";case CLEAR->"search.clear";case TOTAL_TOP->"search.total";case CHAT,CONTACT_SELECT,CONTACT_BACK->"search.contacts";case SEARCH->"search.open";default->"search.back";};
+        BotAnalytics.event("search",analyticsId,"button_click");BotAnalytics.source(action.kind()==ActionKind.SELECT?"suggestion":Set.of(ActionKind.PAGE,ActionKind.RESULT_PAGE).contains(action.kind())?"pagination":"manual");
         switch(action.kind()) {
             case HOME -> state.mode=Mode.HOME;
             case SEARCH -> state.mode=Mode.SEARCH;
             case PLAYERS, ITEMS -> {
                 if(!storage.ready()) return new TelegramCommands.Callback(null,"Каталог загружается. Повторите чуть позже.",true);
                 state.mode=action.kind()==ActionKind.PLAYERS ? Mode.PLAYERS : Mode.ITEMS;
+                BotAnalytics.event("search",analyticsId,"screen_view");
                 state.choices=choices(state.mode,userId); state.page=1; state.filter="";
             }
             case PAGE -> {if(state.mode==Mode.CONTACTS) state.contactPage=Integer.parseInt(action.value());else state.page=Integer.parseInt(action.value());}
@@ -134,6 +138,7 @@ final class TelegramPrivateMenu {
     }
 
     private TelegramCommands.View choose(Key key,State state,String query) {
+        BotAnalytics.inputLanguage(state.filter);
         if(!storage.ready()) return render(state,"Каталог загружается. Повторите чуть позже.");
         if(state.mode==Mode.PLAYERS) {
             var owners=catalogue.ownerItems(query);

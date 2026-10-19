@@ -5,7 +5,7 @@ name: VaultTracker
 
 version: 0.12.1-folia26
 
-softdepend: [flexity, Bastion, bastion, LuckPerms, VotifierPlus]
+softdepend: [flexity, Bastion, bastion, LuckPerms, VotifierPlus, CoreProtect]
 
 main: ru.vaulttracker.VaultTrackerPlugin
 
@@ -17,8 +17,11 @@ description: Chest resource catalogue with durable MariaDB synchronization
 
 # Игровые команды и их псевдонимы.
 commands:
+  nr:
+    description: Repeat the latest Telegram news or poll in game
+    usage: /nr
   unlink:
-    description: Unlink your Minecraft character from Telegram
+    description: Unlink your Minecraft character from Telegram (OP only)
     usage: /unlink
   tg:
     description: Send a private message to a player linked with Telegram
@@ -36,6 +39,9 @@ commands:
 
 # Права доступа. default определяет доступ по умолчанию.
 permissions:
+  vaulttracker.news.repeat:
+    default: op
+    description: Repeat the latest accepted Telegram news or poll for online players
   vaulttracker.message:
     default: true
     description: Send private player-to-player messages

@@ -16,6 +16,7 @@ class VoteEvent:
 class VoteProvider:
     provider_id = ''
     display_name = ''
+    votifier_services = ()
 
     def __init__(self, config):
         self.config = config
@@ -23,10 +24,17 @@ class VoteProvider:
     def parse(self, fields):
         raise NotImplementedError
 
+    def matches_votifier(self, service):
+        aliases = self.config.get('votifier_services', self.votifier_services)
+        if not isinstance(aliases, (list, tuple)) or any(not isinstance(x, str) or not x.strip() for x in aliases):
+            raise ValueError('invalid-votifier-services')
+        return service.strip().casefold() in {x.strip().casefold() for x in aliases}
+
 
 class MinecraftRatingProvider(VoteProvider):
     provider_id = 'minecraft_rating'
     display_name = 'MinecraftRating'
+    votifier_services = ('MinecraftRating.ru',)
     _nickname = re.compile(r'[A-Za-z0-9_]{1,16}\Z')
 
     def parse(self, fields):
@@ -55,6 +63,21 @@ class MinecraftRatingProvider(VoteProvider):
         return VoteEvent(self.provider_id, username, int(timestamp_text), replay)
 
 
+class TopMinecrafterProvider(VoteProvider):
+    provider_id = 'top_minecrafter'
+    display_name = 'Top-Minecrafter'
+    # https://top-minecrafter.com/help/votifier/ documents the exact serviceName.
+    votifier_services = ('top-minecrafter.com',)
+
+
+class HotMcProvider(VoteProvider):
+    provider_id = 'hotmc'
+    display_name = 'HotMC'
+    # Confirmed from a real delivery by HotMC's Votifier handler.
+    votifier_services = ('HotMC.RU',)
+
+
 def configured_providers(config):
     settings = config.get('voting', {}).get('providers', {})
-    return {provider.provider_id: provider for provider in (MinecraftRatingProvider(settings.get('minecraft_rating', {})),)}
+    return {kind.provider_id: kind(settings.get(kind.provider_id, {}))
+            for kind in (MinecraftRatingProvider, TopMinecrafterProvider, HotMcProvider)}

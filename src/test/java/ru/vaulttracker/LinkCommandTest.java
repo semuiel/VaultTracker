@@ -37,6 +37,7 @@ class LinkCommandTest {
             verify(bastion,timeout(2000)).change(uuid,true);
 
             when(command.getName()).thenReturn("unlink");
+            when(player.isOp()).thenReturn(true);
             assertTrue(plugin.onCommand(player,command,"unlink",new String[0]));
             assertNull(guard.account(42).get());
             assertFalse(guard.linked(uuid));
@@ -48,6 +49,23 @@ class LinkCommandTest {
             plugin.onCommand(player,command,"vtrack",new String[]{"link",code});
             assertNull(guard.linkedPlayer(other).get());
             verifyNoInteractions(bastion);
+        }
+    }
+
+    @Test void unlinkRequiresActualOpEvenWithAllPermissions() throws Exception {
+        for(String form:List.of("unlink")) {
+            try(var guard=new GuardService(path.resolve(form),new GuardConfig(true,0,99),Logger.getAnonymousLogger())) {
+                var plugin=mock(VaultTrackerPlugin.class);var player=mock(Player.class,RETURNS_DEEP_STUBS);var command=mock(Command.class);
+                UUID uuid=UUID.randomUUID();when(player.getUniqueId()).thenReturn(uuid);when(player.hasPermission(anyString())).thenReturn(true);
+                var field=VaultTrackerPlugin.class.getDeclaredField("guard");field.setAccessible(true);field.set(plugin,guard);
+                String code=TelegramEmojiMarkup.plain(guard.generate(42).get()).split("/vtrack link ")[1].substring(0,GuardService.LINK_CODE_LENGTH);
+                guard.link(uuid,"Alex",code).get();when(command.getName()).thenReturn(form);
+                when(plugin.onCommand(eq(player),eq(command),anyString(),any(String[].class))).thenCallRealMethod();
+                String[] args=new String[0];
+                assertTrue(plugin.onCommand(player,command,form,args));assertTrue(guard.linked(uuid));
+                when(player.isOp()).thenReturn(true);when(player.hasPermission(anyString())).thenReturn(false);
+                assertTrue(plugin.onCommand(player,command,form,args));assertNull(guard.account(42).get());
+            }
         }
     }
 }

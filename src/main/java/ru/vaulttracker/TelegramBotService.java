@@ -23,6 +23,61 @@ final class TelegramBotService implements AutoCloseable {
     private final TelegramWorkQueue incoming;
     private String username;
     private TelegramChatBridge chatBridge;
+    private CoreProtectWebServer coreprotectWeb;
+    private TelegramWebRuntime webRuntime;
+    private TelegramAnalyticsWeb analyticsWeb;
+    private volatile TelegramAnalyticsService analytics;
+    private volatile BotAnalyticsService botAnalytics;
+    private BotAnalyticsWeb botAnalyticsWeb;
+    private volatile TelegramChatBridge analyticsBridge;
+    private org.bukkit.plugin.java.JavaPlugin webPlugin;
+    private final Object webLock=new Object();
+    void coreprotectViewer(org.bukkit.plugin.java.JavaPlugin plugin) {
+        webPlugin=plugin; // Disk/schema initialization happens on the Telegram worker, never a gameplay thread.
+    }
+    void analyticsBridge(TelegramChatBridge bridge){analyticsBridge=bridge;var current=analytics;if(current!=null&&bridge!=null)bridge.analytics(current);}
+    private void openWebApps() {
+        synchronized(webLock) {
+            if(webPlugin==null||guardMenu==null||stopping.get())return;
+            var folder=webPlugin.getDataFolder().toPath();TelegramAnalyticsConfig a=null;
+            BotAnalyticsConfig product=null;
+            try{product=BotAnalyticsConfig.load(folder);}catch(Exception invalid){log.warning("Аналитика бота выключена: проверьте botAnalytics в telegram.yml.");}
+            try{a=TelegramAnalyticsConfig.load(folder);}catch(Exception invalid){log.warning("Telegram analytics выключена: проверьте telegramAnalytics в telegram.yml.");}
+            try {
+                if(a!=null&&a.enabled())try{analytics=new TelegramAnalyticsService(folder,a);analytics.attach(api);if(analyticsBridge!=null)analyticsBridge.analytics(analytics);analytics.startSnapshots();}
+                catch(Exception unavailable){log.warning("Telegram analytics storage недоступно. Основной бот и CoreProtect продолжают работать.");}
+                var y=org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(folder.resolve("telegram.yml").toFile());
+                if(product!=null&&product.enabled())try{
+                    var catalog=guardMenu.routes.analyticsCatalog;
+                    for(String id:List.of("search.open","search.player","search.item","search.filter","search.select","search.page","search.result","search.clear","search.back","search.total","search.contacts"))catalog.register(id,"Search","player",false);
+                    for(String id:COMMANDS)catalog.register("command."+id.substring(1),"Commands","handler",false);
+                    botAnalytics=new BotAnalyticsService(folder,product,catalog);guard.botAnalytics=botAnalytics;
+                }catch(Exception unavailable){log.warning("Хранилище аналитики бота недоступно. Основной бот продолжает работу.");}
+                if(!y.getBoolean("coreprotectWeb.enabled",false)&&analytics==null&&botAnalytics==null)return;
+                int port=y.getInt("coreprotectWeb.bindPort",8194);if(port<1024||port>65535)throw new IllegalArgumentException();
+                webRuntime=new TelegramWebRuntime(y.getString("coreprotectWeb.bindHost","127.0.0.1"),port);
+                coreprotectWeb=CoreProtectViewer.create(webPlugin,config,api,guard,moderation,webRuntime);
+                if(coreprotectWeb!=null){guardMenu.coreprotectWeb=coreprotectWeb;coreprotectWeb.analytics(botAnalytics,user->BotAnalytics.role(guard,user));}
+                if(analytics!=null)try {
+                    String cpUrl=y.getString("coreprotectWeb.publicUrl","");
+                    if(coreprotectWeb!=null&&!cpUrl.isBlank()&&a.basePath().equals(java.net.URI.create(cpUrl.endsWith("/")?cpUrl:cpUrl+"/").getPath()))throw new IllegalArgumentException("Web routes must differ");
+                    analyticsWeb=new TelegramAnalyticsWeb(webRuntime,a,analytics,config.token(),guard::rootAdmin,api::chatAdministrator,System::currentTimeMillis);guardMenu.analyticsWeb=analyticsWeb;
+                }catch(Exception invalid){log.warning("Telegram analytics route недоступен. CoreProtect продолжает работать.");analytics.close();analytics=null;}
+                if(botAnalytics!=null)try {
+                    botAnalyticsWeb=new BotAnalyticsWeb(webRuntime,product,botAnalytics,config.token(),guard::rootAdmin,api::chatAdministrator,System::currentTimeMillis);guardMenu.botAnalyticsWeb=botAnalyticsWeb;
+                }catch(Exception invalid){log.warning("Маршрут аналитики бота недоступен. Остальные Mini Apps продолжают работу.");botAnalytics.close();botAnalytics=null;guard.botAnalytics=null;}
+                if(coreprotectWeb!=null||analyticsWeb!=null||botAnalyticsWeb!=null)webRuntime.start();else {webRuntime.close();webRuntime=null;}
+            }catch(Exception | LinkageError failure){log.warning("Mini Apps недоступны: проверьте отдельные HTTPS routes и общий localhost-порт. Live-конфигурация не менялась.");closeWebApps();}
+        }
+    }
+    private void closeWebApps() {
+        synchronized(webLock) {
+            if(botAnalyticsWeb!=null){botAnalyticsWeb.close();botAnalyticsWeb=null;}if(botAnalytics!=null){botAnalytics.close();botAnalytics=null;if(guard!=null)guard.botAnalytics=null;}
+            if(analyticsWeb!=null){analyticsWeb.close();analyticsWeb=null;}if(coreprotectWeb!=null){coreprotectWeb.close();coreprotectWeb=null;}if(webRuntime!=null){webRuntime.close();webRuntime=null;}
+            if(guardMenu!=null){guardMenu.coreprotectWeb=null;guardMenu.analyticsWeb=null;guardMenu.botAnalyticsWeb=null;}
+            if(analytics!=null){analytics.close();analytics=null;}
+        }
+    }
     private static final Set<String> COMMANDS=Set.of("/start","/help","/id","/status","/items","/item","/topitem","/itemtop");
     private static final Set<String> PRIVATE_COMMANDS=Set.of("/menu","/search","/cancel","/log","/cmd");
     private final AtomicBoolean stopping=new AtomicBoolean(); private final Thread worker;
@@ -47,6 +102,8 @@ final class TelegramBotService implements AutoCloseable {
         if(guardMenu!=null) privateMenu.homeRenderer(guardMenu::mainMenu);
         commands.adminAccess(this::isAdmin);
         worker=Thread.ofVirtual().name("VaultTracker-telegram").unstarted(this::run);
+        if(offset!=null) try {topicModeration=new TelegramTopicModeration(api,config,menuFolder,log);}
+        catch(Exception failure) {api.close();throw new IllegalStateException("Не удалось открыть хранилище модерации Telegram",failure);}
     }
     void start() {worker.start();if(guard!=null) {donationNotifications.scheduleWithFixedDelay(this::notifyDonations,60,60,TimeUnit.SECONDS);donationNotifications.scheduleWithFixedDelay(()->{try {notifyVoteCredits();if(moderation!=null) moderation.syncDonations();}catch(Exception | LinkageError pending){log.fine("Синхронизация премиума или голосов ожидает повторения.");}},5,10,TimeUnit.SECONDS);if(support!=null) {notifications.scheduleWithFixedDelay(support::expirePending,5,15,TimeUnit.SECONDS);notifications.scheduleWithFixedDelay(support::retryDeliveries,5,15,TimeUnit.SECONDS);}} }
     private void notifyDonations() {
@@ -87,6 +144,7 @@ final class TelegramBotService implements AutoCloseable {
     void chatBridge(TelegramChatBridge bridge) {chatBridge=bridge;}
     private boolean isAdmin(long user) {return guard==null ? config.admin(user) : guard.admin(user);}
     private void run() {
+        openWebApps();
         int failures=0; long offset=TelegramApi.loadOffset(config.offsetFile()); boolean initialized=false;
         while(!stopping.get()) {
             try {
@@ -103,6 +161,7 @@ final class TelegramBotService implements AutoCloseable {
                     else if(!config.chats().isEmpty()) log.info("Telegram-бот ограничен чатами и темами из telegram.yml: "+config.chats().size()+".");
                 }
                 List<TelegramApi.Incoming> updates=api.updates(offset);
+                var product=botAnalytics;if(product!=null)product.transport(true);
                 for(var update:updates) {
                     // Persist consumption before effects: a failed reply must never replay a moderation action.
                     long consumedOffset=Math.max(offset,update.updateId()+1);
@@ -113,14 +172,19 @@ final class TelegramBotService implements AutoCloseable {
                 failures=0;
             } catch(Exception e) {
                 if(stopping.get() || Thread.currentThread().isInterrupted()) break;
+                var product=botAnalytics;if(product!=null)product.transport(false);
                 failures++; log.warning("Telegram недоступен: "+api.safe(e)+"; повтор подключения запланирован.");
                 failures=Math.min(failures,31); // Telegram retries forever; game storage has its own workers.
                 try { Thread.sleep(delay(failures)); } catch(InterruptedException interrupted) { Thread.currentThread().interrupt(); break; }
             }
         }
     }
+    private TelegramTopicModeration topicModeration;
     void consume(TelegramApi.Incoming update) {
-        try {if(update.chatId()!=0 && (update.text()!=null || update.callback())) process(update);}
+        try(var context=BotAnalytics.begin(botAnalytics,guard,update)) {
+            try{if(update.chatId()!=0 && (update.text()!=null || update.callback() || update.media())) process(update);}
+            catch(Exception failure){BotAnalytics.failure("navigation","update.process",failure);throw failure;}
+        }
         catch(InterruptedException e) {Thread.currentThread().interrupt();}
         catch(Exception e) {
             if(TelegramApi.benignCallbackError(e)) log.fine("Устаревший ответ Telegram пропущен.");
@@ -132,6 +196,16 @@ final class TelegramBotService implements AutoCloseable {
         return Math.min(config.retry().maxDelay(),config.retry().initialDelay()*multiplier);
     }
     private void process(TelegramApi.Incoming update) throws Exception {
+        if(update.privateChat()&&!update.callback()&&isCommand(update.text())) {
+            BotAnalytics.source("command");
+            String command=TelegramCommands.command(update.text());
+            if(COMMANDS.contains(command)||PRIVATE_COMMANDS.contains(command))BotAnalytics.event("navigation","command."+command.substring(1),"button_click");
+        }
+        if(topicModeration!=null&&topicModeration.consume(update,username)) return;
+        if(!update.privateChat()&&!update.callback()&&config.newsSource(update.chatId(),update.topicId())) {
+            if(moderation!=null&&update.messageId()>0&&update.text()!=null&&!update.text().isBlank()) moderation.announceNews(update.poll(),config.newsLink(update.messageId()));
+            return;
+        }
         if(chatBridge!=null && chatBridge.consume(update)) return;
         if(update.callback() && update.callbackData()!=null &&
                 (update.callbackData().startsWith("vs:") || update.callbackData().startsWith("vc:") || update.callbackData().startsWith("vu:")) && support!=null) {
@@ -333,10 +407,11 @@ final class TelegramBotService implements AutoCloseable {
     boolean awaitIdle(long timeoutMillis) throws InterruptedException {return incoming.awaitIdle(timeoutMillis);}
     @Override public void close() {
         stopping.set(true); worker.interrupt(); deletionScheduler.shutdownNow();
-        incoming.close();api.close();
+        incoming.close();if(topicModeration!=null) topicModeration.close();api.close();
         notifications.shutdownNow();
         donationNotifications.shutdownNow();
         try {notifications.awaitTermination(5,TimeUnit.SECONDS);} catch(InterruptedException e) {Thread.currentThread().interrupt();}
         try { worker.join(5000); } catch(InterruptedException e) { Thread.currentThread().interrupt(); }
+        closeWebApps();
     }
 }

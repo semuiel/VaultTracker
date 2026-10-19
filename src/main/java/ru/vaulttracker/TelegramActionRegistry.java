@@ -21,6 +21,7 @@ final class TelegramActionRegistry {
     private record DirectRoute(String prefix,String owner,boolean exact,Arguments arguments,DirectHandler handler) {}
 
     private final GuardService guard;
+    final BotAnalyticsCatalog analyticsCatalog=new BotAnalyticsCatalog();
     private final LongSupplier clock;
     private final Map<String,Route> routes=new HashMap<>();
     private final Map<String,NoticeHandler> notices=new HashMap<>();
@@ -47,16 +48,20 @@ final class TelegramActionRegistry {
             PrefixRoute route=new PrefixRoute(id,new Route(id,owner,arguments,Requirement.HANDLER,oneShot,handler));
             if(prefixes.stream().anyMatch(existing->existing.prefix().equals(id))) throw new IllegalArgumentException("Duplicate vg: prefix: "+id);
             prefixes.add(route);
+            analyticsCatalog.register(id,owner,"handler",oneShot,arguments.name());
+            if(id.equals("do:")||id.equals("confirm:"))for(String operation:BotAnalyticsCatalog.ADMIN_OPERATIONS)analyticsCatalog.register(id+operation,owner,"handler",oneShot);
         }
         void direct(String callback,DirectHandler handler) {addDirect(callback,true,handler);}
         void directPrefix(String callback,DirectHandler handler) {addDirect(callback,false,handler);}
         private void addDirect(String callback,boolean exact,DirectHandler handler) {
             if(direct.stream().anyMatch(existing->existing.prefix().equals(callback))) throw new IllegalArgumentException("Duplicate direct vg: route: "+callback);
             direct.add(new DirectRoute(callback,owner,exact,exact?Arguments.NONE:Arguments.VALUE,handler));
+            analyticsCatalog.register(callback,owner,"handler",false,exact?"NONE":"VALUE");
         }
     }
     private void add(Route route) {
         if(routes.putIfAbsent(route.id(),route)!=null) throw new IllegalArgumentException("Duplicate vg: action: "+route.id());
+        analyticsCatalog.register(route.id(),route.owner(),route.requirement().name().toLowerCase(Locale.ROOT),route.oneShot(),route.arguments().name());
     }
     Route route(String id) {
         Route route=routes.get(id);
@@ -77,8 +82,11 @@ final class TelegramActionRegistry {
         return new TelegramCommands.Button(label,key,row);
     }
     TelegramCommands.Callback dispatch(long user,String data) throws Exception {
-        if(data!=null) for(DirectRoute route:direct) if(route.exact()?data.equals(route.prefix()):data.startsWith(route.prefix()))
-            return TelegramGuardMenu.answer(route.handler().handle(user,data));
+        if(data!=null) for(DirectRoute route:direct) if(route.exact()?data.equals(route.prefix()):data.startsWith(route.prefix())) {
+            String feature=BotAnalyticsCatalog.feature(route.prefix(),route.owner());BotAnalytics.event(feature,route.prefix(),"button_click");
+            try{var view=route.handler().handle(user,data);if(view!=null)BotAnalytics.event(feature,route.prefix(),"screen_view");return TelegramGuardMenu.answer(view);}
+            catch(Exception failure){BotAnalytics.failure(feature,route.prefix(),failure);throw failure;}
+        }
         Action action;
         Route route;
         synchronized(this) {
@@ -90,10 +98,14 @@ final class TelegramActionRegistry {
             if(route==null) return stale();
             if(route.oneShot()) pending.remove(data);
         }
-        require(route.requirement(),user);
-        NoticeHandler notice=notices.get(action.op());
-        if(notice!=null) return notice.handle(user,action,data);
-        return TelegramGuardMenu.answer(route.handler().handle(user,action,data));
+        String actionId=(route.id().equals("do:")||route.id().equals("confirm:"))?BotAnalyticsCatalog.actionId(route.id(),action.op().substring(route.id().length())):route.id();
+        String feature=BotAnalyticsCatalog.feature(actionId,route.owner());BotAnalytics.event(feature,actionId,"button_click");
+        try {
+            require(route.requirement(),user);
+            NoticeHandler notice=notices.get(action.op());
+            var response=notice!=null?notice.handle(user,action,data):TelegramGuardMenu.answer(route.handler().handle(user,action,data));
+            if(response.view()!=null)BotAnalytics.event(feature,actionId,"screen_view");return response;
+        }catch(Exception failure){BotAnalytics.failure(feature,actionId,failure);throw failure;}
     }
     synchronized void consume(String data) {pending.remove(data);}
     synchronized void cancelOperations(long user) {pending.entrySet().removeIf(entry->entry.getValue().user()==user && entry.getValue().op().startsWith("do:"));}

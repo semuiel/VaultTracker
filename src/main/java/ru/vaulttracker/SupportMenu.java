@@ -53,6 +53,7 @@ final class SupportMenu extends TelegramMenuSection {
         long now=System.currentTimeMillis();drafts.entrySet().removeIf(entry->now-entry.getValue().created>DRAFT_TTL);
         if(drafts.size()>=2048) drafts.remove(drafts.keySet().iterator().next());
         Draft value=new Draft(type);drafts.put(user,value);
+        BotAnalytics.event("support","support."+type.name().toLowerCase(Locale.ROOT),"flow_start");
         if(type==SupportTicket.Type.UNBAN) {
             if(account==null) {
                 value.stage=Stage.SEARCH;
@@ -150,15 +151,17 @@ final class SupportMenu extends TelegramMenuSection {
                 "Тема поддержки ещё не настроена. Обращение не отправлено; текст и материалы пока сохранены в этом меню.",List.of(
                         b(user,"↩ К обращению","supportReview","",0,0),b(user,"❌ Отмена","supportCancel","",0,1)));
         SupportTicket submitted;
+        BotAnalytics.event("support","support.submit","form_submit");
         try {
             if(value.type==SupportTicket.Type.UNBAN) submitted=service.submitUnban(user,guard.account(user).get(),value.target,value.targetName,value.body,List.copyOf(value.media),moderation);
             else submitted=service.submit(value.type,user,linked(user),value.target,value.targetName,value.body,List.copyOf(value.media));
         }
-        catch(Exception failure) {return new TelegramCommands.View((failure instanceof SecurityException?
+        catch(Exception failure) {BotAnalytics.failure("support","support.submit",failure);return new TelegramCommands.View((failure instanceof SecurityException?
                 "Свяжите игровой аккаунт заново. Обращение не отправлено.":
                 failure instanceof IllegalArgumentException?failure.getMessage():
                 "Не удалось отправить обращение. Проверьте доступность бота и попробуйте ещё раз. Текст и материалы сохранены в этом меню."),List.of(
                 b(user,"🔁 Повторить","supportSend","",0,0),b(user,"❌ Отмена","supportCancel","",0,1)));}
+        if(submitted!=null)BotAnalytics.committed("support","support.submit",submitted.id());
         cancel(user);return new TelegramCommands.View(submitted!=null && submitted.status().equals("DELIVERY_PENDING")?"✅ Обращение сохранено. Бот автоматически отправит его администраторам, когда связь восстановится. Повторять отправку не нужно.":"✅ Обращение отправлено администраторам.",List.of(b(user,"↩ Поддержка","supportHome","",0,0),homeButton(1)));
     }
     void registerActions(TelegramActionRegistry registry) {

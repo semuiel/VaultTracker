@@ -73,13 +73,14 @@ final class FriendsMenu extends TelegramMenuSection {
         TelegramActionRegistry.ViewHandler toggleFriend=(user,a,data)-> {
             UUID friend=UUID.fromString(a.value());
             guard.toggleFriend(user,friend,a.op().equals("friendShare")).get();
+            BotAnalytics.success("friends",a.op());
             return friendView(user,friend);
         };
         scope.on("friendMute",TelegramActionRegistry.Arguments.VALUE,TelegramActionRegistry.Requirement.HANDLER,false,toggleFriend);
         scope.on("friendShare",TelegramActionRegistry.Arguments.VALUE,TelegramActionRegistry.Requirement.HANDLER,false,toggleFriend);
         scope.on("friendNotify",TelegramActionRegistry.Arguments.VALUE,TelegramActionRegistry.Requirement.HANDLER,false, (user,a,data)-> {
             TelegramCommands.View view;
-            {guard.toggleFriendNotifications(user,UUID.fromString(a.value())).get();view=friendView(user,UUID.fromString(a.value()));}
+            {guard.toggleFriendNotifications(user,UUID.fromString(a.value())).get();BotAnalytics.success("friends","friendNotify");view=friendView(user,UUID.fromString(a.value()));}
             return view;
         });
         scope.on("friends",TelegramActionRegistry.Arguments.PAGE,TelegramActionRegistry.Requirement.HANDLER,false, (user,a,data)-> {
@@ -100,7 +101,7 @@ final class FriendsMenu extends TelegramMenuSection {
         });
         scope.on("friendRemove",TelegramActionRegistry.Arguments.VALUE_AND_PAGE,TelegramActionRegistry.Requirement.HANDLER,false, (user,a,data)-> {
             TelegramCommands.View view;
-            {guard.removeFriend(user,UUID.fromString(a.value())).get();view=friends(user,a.page());}
+            {guard.removeFriend(user,UUID.fromString(a.value())).get();BotAnalytics.success("friends","friendRemove");view=friends(user,a.page());}
             return view;
         });
     }
@@ -110,7 +111,7 @@ final class FriendsMenu extends TelegramMenuSection {
             if(guard.account(user).get()==null) {waiting.remove(user);return root.home(user);}
             String nickname=text==null?"":text.strip();if(nickname.isEmpty()||nickname.length()>64) return new TelegramCommands.View("Введите игровой ник длиной от 1 до 64 символов. Отмена: /cancel.");
             if(moderation==null) return new TelegramCommands.View("Поиск игроков временно недоступен. Повторите позже.");
-            try {var player=moderation.playerByName(nickname).get();guard.addFriend(user,player.uuid(),player.name()).get();waiting.remove(user);return friends(user,0);}
+            try {var player=moderation.playerByName(nickname).get();guard.addFriend(user,player.uuid(),player.name()).get();BotAnalytics.success("friends","friendAdd");waiting.remove(user);return friends(user,0);}
             catch(java.util.concurrent.ExecutionException failure) {
                 if(failure.getCause() instanceof IllegalArgumentException invalid) return new TelegramCommands.View(invalid.getMessage()+"\nПопробуйте ещё раз. Отмена: /cancel.",List.of(root.b(user,"↩ Друзья","friends","",0,0),homeButton(1)));
                 throw failure;

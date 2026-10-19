@@ -52,7 +52,27 @@ final class DonationClient {
         }
     }
     JsonObject wallet(UUID owner) throws Exception {return call("wallet",owner(owner));}
+    JsonObject playerSummary(UUID owner) throws Exception {return call("player-summary",owner(owner));}
+    JsonArray votingProviders(UUID owner) throws Exception {return call("voting-providers",owner(owner)).getAsJsonArray("providers");}
+    JsonObject voteTop(int page) throws Exception {var body=new JsonObject();body.addProperty("page",page);return call("voting-top",body);}
+    JsonObject monthlySettings() throws Exception {return call("voting-month-settings",new JsonObject());}
+    JsonObject monthlyUpdate(long actor,Long reward,String policy) throws Exception {
+        return monthlyUpdate(actor,reward,policy,1);
+    }
+    JsonObject monthlyUpdate(long actor,Long reward,String policy,int place) throws Exception {
+        var body=new JsonObject();body.addProperty("actor",Long.toString(actor));body.addProperty("place",place);if(reward!=null)body.addProperty("rewardMinor",reward);if(policy!=null)body.addProperty("tiePolicy",policy);return call("voting-month-update",body);
+    }
+    JsonObject donationStatistics() throws Exception {return call("donation-stats",new JsonObject());}
     JsonObject redeem(UUID owner,String code) throws Exception {var data=owner(owner);data.addProperty("code",code);return call("redeem",data);}
+    JsonObject linkRewardSettings() throws Exception {return call("link-reward-settings",new JsonObject());}
+    JsonObject linkRewardUpdate(long actor,long amount) throws Exception {
+        var data=new JsonObject();data.addProperty("actor",Long.toString(actor));data.addProperty("rewardMinor",amount);
+        return call("link-reward-update",data);
+    }
+    JsonObject claimLinkReward(GuardService.Account account,long actor) throws Exception {
+        var data=owner(account.uuid());data.addProperty("actor",Long.toString(actor));data.addProperty("name",account.name());
+        return call("link-reward-claim",data);
+    }
     JsonArray votingProviders(boolean admin) throws Exception {
         return call(admin?"voting-admin":"voting-providers",new JsonObject()).getAsJsonArray("providers");
     }

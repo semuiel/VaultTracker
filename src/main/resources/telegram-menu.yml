@@ -10,7 +10,7 @@
 
 texts:
   voting:
-    user: "🗳 Голосование\n\nГолосуйте за FLEXITY и получайте монеты на общий баланс.{providers}"
+    user: "🗳 Голосования\n\nГолосуйте за FLEXITY и получайте монеты на общий баланс.{providers}"
     admin: "🗳 Управление голосованиями{providers}"
     provider: "🗳 {name}\nСтатус: {status}\nНаграда: {reward} монет / голос"
     statistics: "{title}{statistics}"

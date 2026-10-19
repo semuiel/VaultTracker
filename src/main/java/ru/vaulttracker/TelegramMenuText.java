@@ -68,7 +68,7 @@ final class TelegramMenuText {
                 && source.buttons().stream().anyMatch(button->button.data().equals("vg:home"));
         List<TelegramCommands.Button> buttons=source.buttons().stream()
                 .filter(button->!mainMenu || (!button.text().equals("↩ В кабинет")&&!button.data().equals("vg:menu")))
-                .map(button->new TelegramCommands.Button(text(button.text()),button.data(),button.row(),button.url(),button.copyText())).toList();
+                .map(button->new TelegramCommands.Button(text(button.text()),button.data(),button.row(),button.url(),button.copyText(),button.webAppUrl())).toList();
         String template=source.templateKey()==null?null:templates.get(source.templateKey());
         String body=source.text();
         if(template!=null) {

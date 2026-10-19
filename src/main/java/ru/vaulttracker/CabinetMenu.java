@@ -37,6 +37,10 @@ final class CabinetMenu extends TelegramMenuSection {
         else if(guard.admin(user)) {
             buttons.add(b(user,"🛠 Функции администратора","adminHome","",0,5));
         }
+        if(guard.rootAdmin(user)) {
+            buttons.add(b(user,"🔐 Root","rootHome","",0,6));
+            buttons.add(b(user,account==null?"👤 Мой персонаж":"👤 Мой персонаж · "+account.name(),"selfActions","",0,7));
+        }
         buttons.add(homeButton(9));
         if(!guard.enabled()) text+="\nОхрана отключена в guard.yml.";
         return new TelegramCommands.View(TelegramEmojiMarkup.bold(text),List.copyOf(buttons));
@@ -62,12 +66,12 @@ final class CabinetMenu extends TelegramMenuSection {
         try {
             var wallet=guard.donations.wallet(uuid);long balance=wallet.get("balanceMinor").getAsLong();
             long until=wallet.has("premiumUntil")?wallet.get("premiumUntil").getAsLong():0;boolean active=until<0||until>java.time.Instant.now().getEpochSecond();
-            if(balance!=0||active) {
+            if(balance!=0||active||PremiumProduct.LITE.until(wallet)<0||PremiumProduct.LITE.until(wallet)>java.time.Instant.now().getEpochSecond()) {
                 result.append("\n\nБаланс: ").append(DonationClient.money(balance));
                 if(wallet.has("pendingMinor") && wallet.get("pendingMinor").getAsLong()>0)
                     result.append("\nДоступно: ").append(DonationClient.money(wallet.get("availableMinor").getAsLong()))
                             .append(" · до подтверждения заказа: ").append(DonationClient.money(wallet.get("pendingMinor").getAsLong()));
-                result.append("\nПремиум: ").append(premiumStatus(until));
+                result.append("\nПремиум: ").append(PremiumProduct.summary(wallet));
             }
         } catch(Exception ignored) {}
         return result.toString();
@@ -93,6 +97,7 @@ final class CabinetMenu extends TelegramMenuSection {
     }
     TelegramCommands.View linkView(long user,boolean fromDonations) throws Exception {
         String instruction=guard.generate(user).get();
+        if(guard.account(user).get()==null)BotAnalytics.event("link","link.start","flow_start");
         return new TelegramCommands.View(instruction,List.of(fromDonations
                 ?b(user,"↩ Пожертвования","donations","",0,0)
                 :new TelegramCommands.Button("Обновить кабинет","vg:home")));
@@ -101,7 +106,7 @@ final class CabinetMenu extends TelegramMenuSection {
         if(!guard.donationsVisible().get()) throw new IllegalArgumentException("Раздел пожертвований недоступен.");
         if(guard.account(user).get()==null) return linkView(user,true);
         String balance="временно недоступен",premium="временно недоступен",extra="";
-        try {var wallet=guard.donations.wallet(guard.account(user).get().uuid());balance=DonationClient.money(wallet.get("balanceMinor").getAsLong());premium=wallet.get("premium").getAsBoolean()?"активен":"не активен";
+        try {var wallet=guard.donations.wallet(guard.account(user).get().uuid());balance=DonationClient.money(wallet.get("balanceMinor").getAsLong());premium=PremiumProduct.summary(wallet);
             if(wallet.has("pendingMinor") && wallet.get("pendingMinor").getAsLong()>0)
                 extra="\n⏳ Доступно: "+DonationClient.money(wallet.get("availableMinor").getAsLong())+" · ждёт подтверждения: "+DonationClient.money(wallet.get("pendingMinor").getAsLong());
             if(wallet.get("blocked").getAsBoolean()) extra+="\n⚠️ Покупки приостановлены после возврата. Обратитесь к администратору.";
@@ -109,7 +114,7 @@ final class CabinetMenu extends TelegramMenuSection {
         return new TelegramCommands.View("💝 Пожертвования FLEXITY\n\n💰 Баланс: "+balance+"\n💎 Премиум: "+premium+extra
                 +"\n\nℹ️ Пожертвования добровольны. До подтверждения заказа монеты нельзя тратить; при возврате пополнение и бонус отменяются.",List.of(
                 b(user,"💳 Пополнить","donationPay","",0,0),b(user,"💎 Премиум","donationPremium","",0,1),
-                b(user,"🗳 Голосование","votingUser","",0,2),homeButton(3)));
+                b(user,"🪙 Free-монеты","freeCoins","",0,2),homeButton(3)));
     }
     TelegramCommands.View donationPay(long user) throws Exception {
         requireDonations(user);List<TelegramCommands.Button> buttons=new ArrayList<>();String text;
@@ -128,7 +133,8 @@ final class CabinetMenu extends TelegramMenuSection {
                 b(user,"Добавить премиум","donationPremiumAdd","",0,1),b(user,"Убрать премиум","donationPremiumRemove","",0,2),
                 b(user,"Добавить пожертвования","donationPlayers","add|online|",0,3),b(user,"Отнять пожертвования","donationPlayers","subtract|online|",0,4),
                 b(user,"Разблокировать покупки","donationPlayers","unblock|online|",0,5),
-                b(user,"Журнал","donationJournal","",0,6),b(user,"↩ Root","rootHome","",0,7),homeButton(8)));
+                b(user,"Журнал","donationJournal","",0,6),b(user,"📊 Статистика","donationStats","",0,7),
+                b(user,root.freeCoins.adminLabel(user),"linkRewardAmountPrompt","",0,8),b(user,"↩ Экономика","rootEconomy","",0,9),homeButton(10)));
     }
     static String requestId(String value) {return UUID.nameUUIDFromBytes(value.getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();}
     static int premiumDays(String operation) {
@@ -141,13 +147,23 @@ final class CabinetMenu extends TelegramMenuSection {
         int days=premiumDays(operation);return days<0?"Выдать бессрочный премиум: "+name+"?":"Выдать премиум на "+days+" дней: "+name+"?";
     }
     TelegramCommands.View premiumMenu(long user) throws Exception {
+        requireDonations(user);
+        return new TelegramCommands.View("💎 Премиум\n\nВыберите тариф: личное оформление или все возможности FLEXITY.",List.of(
+            b(user,PremiumProduct.LITE.title,"premiumTariff",PremiumProduct.LITE.group,0,0),
+            b(user,PremiumProduct.PREMIUM.title,"premiumTariff",PremiumProduct.PREMIUM.group,0,1),
+            b(user,"↩ Пожертвования","donations","",0,2),homeButton(3))).template("donations.premium.selector",Map.of());
+    }
+    TelegramCommands.View premiumCard(long user,PremiumProduct product) throws Exception {
         requireDonations(user);var account=guard.account(user).get();var wallet=guard.donations.wallet(account.uuid());
-        long until=moderation.premiumExpiry(account.uuid()),remaining=Math.max(0,until-java.time.Instant.now().getEpochSecond());
-        String status=until<0?"бессрочный":remaining>0?"активен · осталось "+(remaining/86400)+" дн. "+(remaining%86400/3600)+" ч. "+(remaining%3600/60)+" мин.":"не активен";
         String available=wallet.has("availableMinor")?"\nДоступно для покупки: "+DonationClient.money(wallet.get("availableMinor").getAsLong()):"";
-        return new TelegramCommands.View("⭐ Премиум\nБаланс: "+DonationClient.money(wallet.get("balanceMinor").getAsLong())+available+"\nСтатус: "+status+
-            (wallet.has("premiumPending")&&wallet.get("premiumPending").getAsBoolean()?"\nИзменение премиума ожидает применения.":"")+"\nПокупка продлевает оставшийся срок.",List.of(
-            b(user,"Купить · 600 монет · 30 дней","premiumBuy","30",0,0),b(user,"Купить · 1000 монет · 60 дней","premiumBuy","60",0,1),b(user,"↩ Назад","donations","",0,2)));
+        var buttons=new ArrayList<TelegramCommands.Button>();int row=0;
+        for(int months:PremiumProduct.MONTHS)buttons.add(b(user,months+" мес. · "+java.math.BigDecimal.valueOf(product.price(months),2).stripTrailingZeros().toPlainString()+" 🪙",
+                "premiumBuy",product.group+"|"+months*30,0,row++));
+        buttons.add(b(user,"↩ К тарифам","donationPremium","",0,row++));buttons.add(homeButton(row));
+        String pending=wallet.has(product.pendingKey)&&wallet.get(product.pendingKey).getAsBoolean()?"\nИзменение тарифа ожидает применения.":"";
+        String text=product.title+"\n\n"+product.description()+"\n\nБаланс: "+DonationClient.money(wallet.get("balanceMinor").getAsLong())+available
+                +"\nСтатус: "+product.status(wallet)+pending+"\n\n1 месяц — 30 дней. Покупка продлевает выбранный тариф; сроки тарифов независимы.";
+        return new TelegramCommands.View(text,List.copyOf(buttons)).template("donations.premium.card",Map.of("content",text));
     }
     TelegramCommands.View donationResult(long user,com.google.gson.JsonObject result,boolean admin) {
         return new TelegramCommands.View("Операция сохранена. Баланс: "+DonationClient.money(result.get("balanceMinor").getAsLong())+
@@ -201,10 +217,16 @@ final class CabinetMenu extends TelegramMenuSection {
             return view;
         });
         scope.on("premiumBuy",TelegramActionRegistry.Arguments.VALUE,TelegramActionRegistry.Requirement.HANDLER,false, (user,a,data)-> {
+            BotAnalytics.event("premium","premium.buy","form_submit");
             TelegramCommands.View view;
-            {requireDonations(user);var account=guard.account(user).get();view=donationResult(user,moderation.donationChange(user,account.uuid(),account.name(),requestId(data),"buy",Integer.parseInt(a.value()),0),false);}
+            {requireDonations(user);var account=guard.account(user).get();String[] parts=a.value().split("\\|",2);
+                if(parts.length==1) view=donationResult(user,moderation.donationChange(user,account.uuid(),account.name(),requestId(data),"buy",Integer.parseInt(parts[0]),0),false);
+                else {var product=PremiumProduct.parse(parts[0]);int days=Integer.parseInt(parts[1]);product.price(days/30);
+                    view=donationResult(user,moderation.donationChange(user,account.uuid(),account.name(),requestId(data),"buy",days,0,product),false);}}
+            BotAnalytics.committed("premium","premium.buy",requestId(data));
             return view;
         });
+        scope.on("premiumTariff",TelegramActionRegistry.Arguments.VALUE,TelegramActionRegistry.Requirement.HANDLER,false,(u,a,d)->{BotAnalytics.event("premium","premium.start","flow_start");return premiumCard(u,PremiumProduct.parse(a.value()));});
         scope.on("donationAdmin",TelegramActionRegistry.Arguments.NONE,TelegramActionRegistry.Requirement.ROOT,false, (user,a,data)-> {
             TelegramCommands.View view;
             view=donationAdmin(user);
@@ -256,6 +278,29 @@ final class CabinetMenu extends TelegramMenuSection {
             view=donationJournal(user,a.page());
             return view;
         });
+        scope.on("donationStats",TelegramActionRegistry.Arguments.NONE,TelegramActionRegistry.Requirement.ROOT,false,(u,a,d)->donationStats(u,null));
+        scope.on("donationStatsPeriod",TelegramActionRegistry.Arguments.VALUE,TelegramActionRegistry.Requirement.ROOT,false,(u,a,d)->donationStats(u,a.value()));
+    }
+
+    TelegramCommands.View donationStats(long user,String period) throws Exception {
+        guard.requireRoot(user);var stats=guard.donations.donationStatistics().getAsJsonObject("periods");
+        List<TelegramCommands.Button> buttons=new ArrayList<>();StringBuilder text=new StringBuilder("📊 Статистика пожертвований");
+        String[] keys={"today","week","month","all"},names={"Сегодня","7 дней","30 дней","Всё время"};
+        if(period==null){for(int i=0;i<keys.length;i++)buttons.add(b(user,names[i],"donationStatsPeriod",keys[i],0,i));}
+        else {
+            if(!Set.of(keys).contains(period))throw new IllegalArgumentException("Неизвестный период");
+            var s=stats.getAsJsonObject(period);text.append("\n").append(names[Arrays.asList(keys).indexOf(period)]);
+            text.append("\nПополнения: ").append(s.get("paymentCount").getAsLong()).append(" · ").append(DonationClient.money(s.get("paymentMinor").getAsLong()));
+            text.append("\nПодтверждено: ").append(DonationClient.money(s.get("confirmedMinor").getAsLong()));
+            text.append("\nВозвраты: ").append(s.get("refundCount").getAsLong()).append(" · ").append(DonationClient.money(s.get("refundMinor").getAsLong()));
+            text.append("\nБонусы отзывов: ").append(s.get("reviewCount").getAsLong()).append(" · ").append(DonationClient.money(s.get("reviewMinor").getAsLong()));
+            text.append("\nПокупки премиума: ").append(s.get("premiumPurchases").getAsLong()).append(" · ").append(DonationClient.money(s.get("premiumPurchaseMinor").getAsLong()));
+            text.append("\nРучные активации премиума: ").append(s.get("premiumGrants").getAsLong());
+            text.append("\nДонатеров: ").append(s.get("donors").getAsLong());
+            text.append("\nРучные изменения: ").append(s.get("manualCount").getAsLong()).append(" · ").append(DonationClient.money(s.get("manualMinor").getAsLong()));
+            buttons.add(b(user,"↩ Периоды","donationStats","",0,0));
+        }
+        buttons.add(b(user,"↩ Пожертвования","donationAdmin","",0,5));buttons.add(homeButton(6));return new TelegramCommands.View(text.toString(),List.copyOf(buttons));
     }
 
     TelegramCommands.View onInputEarly(long user,String text,TelegramGuardMenu.Input pending) throws Exception {
@@ -272,6 +317,7 @@ final class CabinetMenu extends TelegramMenuSection {
             if(!code.matches("[A-F0-9]{32}")) return new TelegramCommands.View("Проверьте код: нужны 32 символа из сообщения FunPay. Отмена: /cancel.",List.of(root.b(user,"↩ Назад","donations","",0,0)));
             try {
                 var result=guard.donations.redeem(guard.account(user).get().uuid(),code);waiting.remove(user);
+                if(!result.get("alreadyClaimed").getAsBoolean()){BotAnalytics.success("donations","donation.redeem");BotAnalytics.complete("donations","donation.redeem");}
                 String message=result.get("alreadyClaimed").getAsBoolean()?"Этот заказ уже зачислен ранее.":"Оплата проверена. Зачислено: "+DonationClient.money(result.get("amountMinor").getAsLong())+" монет.";
                 return new TelegramCommands.View(message+"\nБаланс: "+DonationClient.money(result.get("balanceMinor").getAsLong())+"\nПроверьте баланс и подтвердите получение заказа на FunPay.",List.of(root.b(user,"↩ Пожертвования","donations","",0,0)));
             } catch(Exception unavailable) {return new TelegramCommands.View("Не удалось зачислить код: он недоступен, уже использован другим аккаунтом или проверка временно не работает. Повторите через минуту: повторного списания или зачисления не будет.",List.of(root.b(user,"↩ Назад","donations","",0,0)));}

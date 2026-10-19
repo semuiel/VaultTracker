@@ -270,8 +270,11 @@ class TelegramGuardMenuTest {
         assertNotNull(button(sender,"FLEXITY"));assertNotNull(button(sender,"Мой игровой ник"));
         var preview=click(99,sender,"FLEXITY");assertTrue(preview.text().contains("FLEXITY"));
         click(99,preview,"Отправить");verify(moderation).privateMessage(99,target,"Проверка",TelegramModeration.MessageSender.FLEXITY);
-        var superHome=click(99,click(99,menu.home(99),"🛠 Админ"),"Суперадминистратор");assertTrue(superHome.buttons().stream().anyMatch(b->b.text().equals("👤 SuperNick")));
-        var ownCard=click(99,superHome,"SuperNick");
+        var superHome=click(99,click(99,menu.home(99),"🛠 Админ"),"Суперадминистратор");
+        assertFalse(superHome.buttons().stream().anyMatch(b->b.text().contains("Root")));
+        var cabinet=menu.home(99);assertTrue(cabinet.buttons().stream().anyMatch(b->b.text().equals("👤 Мой персонаж · SuperNick")));
+        var ownCard=click(99,cabinet,"Мой персонаж");
+        assertEquals(cabinet.text(),click(99,ownCard,"Личный кабинет").text());
         assertTrue(ownCard.text().contains("SuperNick"));var result=click(99,ownCard,"Бан 5 мин");
         assertEquals("Бан применён",result.text());verify(moderation).act(99,"ban",own);
     }
@@ -334,7 +337,7 @@ class TelegramGuardMenuTest {
         when(moderation.players(99,"online")).thenReturn(java.util.concurrent.CompletableFuture.completedFuture(people.stream().filter(TelegramModeration.Person::online).toList()));
         when(moderation.players(99,"all")).thenReturn(java.util.concurrent.CompletableFuture.completedFuture(people));
         menu=new TelegramGuardMenu(guard,new TelegramCommands(catalogue,storage,20,v->true),moderation);
-        var admin=click(99,click(99,click(99,click(99,menu.home(99),"🛠 Админ"),"Суперадминистратор"),"Root"),"Управление пожертвованиями");var picker=click(99,admin,"Добавить пожертвования");
+        var economy=click(99,menu.rootHome(99),"Экономика");var admin=click(99,economy,"Пожертвования и премиум");var picker=click(99,admin,"Добавить пожертвования");
         assertEquals(10,picker.buttons().stream().filter(b->b.text().startsWith("Player")).count());
         assertTrue(click(99,picker,"Вперёд").text().contains("2/3"));var offline=click(99,picker,"офлайн");assertTrue(offline.buttons().stream().anyMatch(b->b.text().equals("OfflineAlex")));
         click(99,offline,"Поиск");assertTrue(menu.input(99,"alex").buttons().stream().anyMatch(b->b.text().equals("OfflineAlex")));
@@ -346,7 +349,7 @@ class TelegramGuardMenuTest {
         when(moderation.players(99,"online")).thenReturn(java.util.concurrent.CompletableFuture.completedFuture(List.of(person)));
         when(moderation.info(99,player)).thenReturn(java.util.concurrent.CompletableFuture.completedFuture(person));
         menu=new TelegramGuardMenu(guard,new TelegramCommands(catalogue,storage,20,v->true),moderation);
-        var admin=click(99,click(99,click(99,click(99,menu.home(99),"🛠 Админ"),"Суперадминистратор"),"Root"),"Управление пожертвованиями");var durations=click(99,admin,"Добавить премиум");
+        var economy=click(99,menu.rootHome(99),"Экономика");var admin=click(99,economy,"Пожертвования и премиум");var durations=click(99,admin,"Добавить премиум");
         assertTrue(durations.buttons().stream().anyMatch(b->b.text().equals("Навсегда")));assertTrue(durations.buttons().stream().anyMatch(b->b.text().equals("Свой срок")));
         var permanent=click(99,click(99,durations,"Навсегда"),"Player");assertTrue(permanent.text().contains("бессрочный премиум"));
         var customPlayer=click(99,click(99,durations,"Свой срок"),"Player");assertTrue(customPlayer.text().contains("от 1 до 36500"));
@@ -357,7 +360,7 @@ class TelegramGuardMenuTest {
         guard.link(id,"Alex",guard.generate(42).get().split("/vtrack link ")[1].substring(0,GuardService.LINK_CODE_LENGTH)).get();
         assertFalse(menu.home(42).buttons().stream().anyMatch(b->b.text().contains("Пожертвования")));
         assertThrows(Exception.class,()->guard.donationsVisible(42,true).get());
-        var admin=click(99,click(99,click(99,click(99,menu.home(99),"🛠 Админ"),"Суперадминистратор"),"Root"),"Управление пожертвованиями");
+        var economy=click(99,menu.rootHome(99),"Экономика");var admin=click(99,economy,"Пожертвования и премиум");
         click(99,admin,"Включить");
         assertFalse(menu.home(43).buttons().stream().anyMatch(b->b.text().contains("Пожертвования")));
         var donations=click(42,menu.mainMenu(42),"Пожертвования");
@@ -376,8 +379,8 @@ class TelegramGuardMenuTest {
         var moderation=new TelegramModeration(mock(org.bukkit.plugin.java.JavaPlugin.class),guard);
         menu=new TelegramGuardMenu(guard,new TelegramCommands(catalogue,storage,20,v->true),moderation);
         assertFalse(menu.home(42).buttons().stream().anyMatch(b->b.text().contains("Размер")));
-        var root=click(99,click(99,click(99,menu.home(99),"🛠 Админ"),"Суперадминистратор"),"Root");var kids=click(99,root,"Дети");assertTrue(kids.buttons().stream().anyMatch(b->b.text().contains("Добавить ребёнка")));
-        assertTrue(menu.callback(42,button(root,"Дети")).alert());
+        var root=click(99,menu.rootHome(99),"Команда и роли");var kids=click(99,root,"Детские аккаунты");assertTrue(kids.buttons().stream().anyMatch(b->b.text().contains("Добавить ребёнка")));
+        assertTrue(menu.callback(42,button(root,"Детские аккаунты")).alert());
         guard.child(99,id,"Alex",true).get();var sizes=click(42,menu.home(42),"Размер");assertEquals(3,sizes.buttons().stream().filter(b->b.text().contains("Гном")||b.text().contains("Карлик")||b.text().contains("нормальный")).count());
         assertTrue(menu.callback(43,button(sizes,"Гном")).alert());click(42,sizes,"Гном");assertEquals(0.6,guard.child(id).size());
         guard.child(99,id,"Alex",false).get();assertThrows(Exception.class,()->click(42,sizes,"Карлик"));
@@ -443,7 +446,8 @@ class TelegramGuardMenuTest {
             var actual=(TelegramGuardMenu)field.get(service);var api=apis.constructed().getFirst();
             guard.configure(new GuardConfig(true,0,42),Set.of(99L));
             var root=actual.callback(42,button(actual.callback(42,button(actual.home(42),"🛠 Админ")).view(),"Суперадминистратор")).view();
-            var settings=actual.callback(42,button(root,"Личный срок")).view();
+            var preferences=actual.callback(42,button(root,"Личные настройки")).view();
+            var settings=actual.callback(42,button(preferences,"Срок уведомлений")).view();
             String custom=button(settings,"Своё время");
             process.invoke(service,new TelegramApi.Incoming(1,42,0,42,1,null,"cb",custom,true));
             clearInvocations(api);

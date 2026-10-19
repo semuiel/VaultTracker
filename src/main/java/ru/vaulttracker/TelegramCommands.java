@@ -6,12 +6,14 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Predicate;
 
 final class TelegramCommands {
-    record Button(String text,String data,int row,String url,String copyText) {
+    record Button(String text,String data,int row,String url,String copyText,String webAppUrl) {
+        Button(String text,String data,int row,String url,String copyText) {this(text,data,row,url,copyText,null);}
         Button(String text,String data,int row,String url) {this(text,data,row,url,null);}
         Button(String text,String data,int row) {this(text,data,row,null,null);}
         Button(String text,String data) { this(text,data,0); }
         static Button link(String text,String url,int row) {return new Button(text,"",row,url);}
         static Button copy(String text,String value,int row) {return new Button(text,"",row,null,value);}
+        static Button webApp(String text,String url,int row) {return new Button(text,"",row,null,null,url);}
     }
     record Contact(UUID uuid,String name) {}
     record View(String text,List<Button> buttons,List<Contact> contacts,String templateKey,Map<String,String> parameters) {
@@ -81,10 +83,11 @@ final class TelegramCommands {
         int page;
         try { page=Integer.parseInt(parts[2]); }
         catch(NumberFormatException e) { return new Callback(null,"Некорректная страница.",true); }
-        return new Callback(render(parts[1],session,page),"",false);
+        BotAnalytics.source("pagination");return new Callback(render(parts[1],session,page),"",false);
     }
 
     private View topitem(long userId,String query) {
+        if(!BotAnalytics.inputLanguage().equals("ru"))BotAnalytics.inputLanguage(query);
         if(query.isBlank()) return new View(topHelp());
         boolean explicit=query.regionMatches(true,0,"player ",0,7);
         if(explicit) query=query.substring(7).trim();
@@ -96,7 +99,7 @@ final class TelegramCommands {
         String first=parts[0]; String tail=parts.length==2 ? parts[1].trim() : "";
         if(!first.matches("[A-Za-z0-9_.-]{1,32}")) return new View("Некорректный ник или название предмета.");
         List<Catalogue.OwnerItems> owners=catalogue.ownerItems(first);
-        if(owners.isEmpty()) return new View("Игрок «"+first+"» не найден в каталоге зарегистрированных хранилищ.");
+        if(owners.isEmpty()){BotAnalytics.search("search.result","player","",0,BotAnalytics.inputLanguage());return new View("Игрок «"+first+"» не найден в каталоге зарегистрированных хранилищ.");}
         if(owners.size()>1) return new View("В каталоге несколько UUID с этим ником. Администратору сервера нужно проверить записи владельцев.");
         if(!tail.isEmpty() && !tail.matches("[+-]?[0-9]+")) {
             group=ResourceGroups.resolve(tail);
@@ -179,6 +182,7 @@ final class TelegramCommands {
         List<Catalogue.OwnerItems> owners=catalogue.ownerItems(nickname);
         if(owners.size()!=1) return new View("Данные игрока изменились. Выполните /topitem "+nickname+" ещё раз.");
         var owner=owners.getFirst();
+        BotAnalytics.search("search.result","player",owner.name(),owner.items().size(),BotAnalytics.inputLanguage());
         return ownerPage(token,user,owner,requested);
     }
     private View ownerPage(String token,long user,Catalogue.OwnerItems owner,int requested) {
@@ -201,6 +205,7 @@ final class TelegramCommands {
     private View topPage(String token,String material,int requested) {
         ResourceGroups.Group group=ResourceGroups.fromQuery(material);
         var rows=group==null ? catalogue.findTotals(material,Integer.MAX_VALUE) : catalogue.findTotals(group.materials(),Integer.MAX_VALUE);
+        BotAnalytics.search("search.result","item",group==null?material:group.code(),rows.size(),BotAnalytics.inputLanguage());
         if(rows.isEmpty()) return new View((group==null ? TelegramItemIcons.label(material) : TelegramItemIcons.groupLabel(group))+" — не найдено в зарегистрированных хранилищах.");
         int pages=pages(rows.size()); int page=clamp(requested,pages);
         String title=group==null ? TelegramItemIcons.label(material) : TelegramItemIcons.groupLabel(group);

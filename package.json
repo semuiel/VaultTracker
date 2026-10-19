@@ -1,0 +1,15 @@
+{
+  "name": "vaulttracker-web-fixtures",
+  "private": true,
+  "version": "0.17.77",
+  "description": "Local synthetic UI checks for the three bundled Telegram Mini Apps",
+  "scripts": {
+    "test:web": "node tools/run-web-tests.cjs"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

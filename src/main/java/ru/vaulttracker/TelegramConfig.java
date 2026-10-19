@@ -7,7 +7,7 @@ import java.nio.file.*;
 import java.util.*;
 
 record TelegramConfig(boolean enabled, String token, Set<Long> allowedChatIds, Set<Long> adminUserIds, List<Chat> chats, int pageSize,
-                      int pollTimeoutSeconds, int messageLifetimeSeconds, String botApiUrl, Proxy proxy, Retry retry, Path offsetFile) {
+                      int pollTimeoutSeconds, int messageLifetimeSeconds, String botApiUrl, Proxy proxy, Retry retry, Path offsetFile, Topic news, Topic moderation) {
     static final int LIST_PAGE_SIZE=20;
     static final int BUTTON_PAGE_SIZE=10;
     enum ProxyType { NONE, SOCKS5, HTTP }
@@ -17,6 +17,15 @@ record TelegramConfig(boolean enabled, String token, Set<Long> allowedChatIds, S
     }
     record Retry(int maxAttempts,long initialDelay,long maxDelay) {}
     record Chat(boolean isDefault,long chatId,int topicId) {}
+    record Topic(long chatId,int topicId) {}
+    TelegramConfig(boolean enabled,String token,Set<Long> allowedChatIds,Set<Long> adminUserIds,List<Chat> chats,int pageSize,
+                   int pollTimeoutSeconds,int messageLifetimeSeconds,String botApiUrl,Proxy proxy,Retry retry,Path offsetFile,Topic news) {
+        this(enabled,token,allowedChatIds,adminUserIds,chats,pageSize,pollTimeoutSeconds,messageLifetimeSeconds,botApiUrl,proxy,retry,offsetFile,news,new Topic(0,0));
+    }
+    TelegramConfig(boolean enabled,String token,Set<Long> allowedChatIds,Set<Long> adminUserIds,List<Chat> chats,int pageSize,
+                   int pollTimeoutSeconds,int messageLifetimeSeconds,String botApiUrl,Proxy proxy,Retry retry,Path offsetFile) {
+        this(enabled,token,allowedChatIds,adminUserIds,chats,pageSize,pollTimeoutSeconds,messageLifetimeSeconds,botApiUrl,proxy,retry,offsetFile,new Topic(0,0));
+    }
 
     static TelegramConfig load(Path dataFolder) throws IOException {
         return load(dataFolder,true);
@@ -78,8 +87,18 @@ record TelegramConfig(boolean enabled, String token, Set<Long> allowedChatIds, S
         int attempts=integer(y,"advanced.connectionRetry.maxAttempts","advanced.connection-retry.max-attempts",10);
         long initial=boundedLong(longValue(y,"advanced.connectionRetry.initialDelay","advanced.connection-retry.initial-delay",1000),100,300000,"initialDelay");
         long maximum=boundedLong(longValue(y,"advanced.connectionRetry.maxDelay","advanced.connection-retry.max-delay",300000),initial,1800000,"maxDelay");
+        long newsChat=y.getLong("news.chatId",0);long rawNewsTopic=y.getLong("news.topicId",0);
+        if((newsChat==0)!=(rawNewsTopic==0) || (newsChat!=0&&!Long.toString(newsChat).startsWith("-100")) || rawNewsTopic<0 || rawNewsTopic>Integer.MAX_VALUE)
+            throw new IllegalArgumentException("Для news одновременно укажите chatId супергруппы вида -100… и положительный topicId");
         return new TelegramConfig(enabled,token,Set.copyOf(allowed),Set.copyOf(admins),List.copyOf(chats),pageSize,poll,lifetime,api,
-                new Proxy(type,host,port,username,password),new Retry(attempts,initial,maximum),dataFolder.resolve("telegram.offset"));
+                new Proxy(type,host,port,username,password),new Retry(attempts,initial,maximum),dataFolder.resolve("telegram.offset"),
+                new Topic(newsChat,(int)rawNewsTopic),floodTopic(y));
+    }
+    private static Topic floodTopic(YamlConfiguration y) {
+        long chat=y.getLong("moderation.offtopicChatId",0),topic=y.getLong("moderation.floodTopicId",0);
+        if((chat==0)!=(topic==0)||(chat!=0&&!Long.toString(chat).startsWith("-100"))||topic<0||topic>Integer.MAX_VALUE)
+            throw new IllegalArgumentException("moderation: укажите chatId супергруппы и положительный floodTopicId вместе, либо оба 0");
+        return new Topic(chat,(int)topic);
     }
     private static String secret(String configured,String environment) {
         String value=System.getenv(environment); return value!=null && !value.isBlank() ? value.trim() : configured.trim();
@@ -112,4 +131,10 @@ record TelegramConfig(boolean enabled, String token, Set<Long> allowedChatIds, S
         return allowedChatIds.isEmpty() || allowedChatIds.contains(chatId);
     }
     boolean admin(long userId) { return adminUserIds.contains(userId); }
+    boolean newsSource(long chatId,int topicId) {return news!=null&&news.chatId()==chatId&&news.topicId()>0&&news.topicId()==topicId;}
+    String newsLink(int messageId) {
+        if(news==null||news.chatId()>=-1000000000000L||news.topicId()<=0||messageId<=0) throw new IllegalStateException("Новостной топик не настроен");
+        String channel=Long.toString(-news.chatId()).substring(3);
+        return "https://t.me/c/"+channel+"/"+news.topicId()+"/"+messageId;
+    }
 }

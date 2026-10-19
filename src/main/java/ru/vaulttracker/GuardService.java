@@ -552,6 +552,7 @@ final class GuardService implements AutoCloseable {
         personalAbsence.remove(uuid);
         return "Персонаж отвязан от Telegram. Для повторной привязки получите новый код в боте.";
     });}
+    volatile BotAnalyticsService botAnalytics;
     CompletableFuture<LinkResult> linkOutcome(UUID uuid,String name,String token) {return submit(()-> {
         String normalized=token==null?"":token.strip().toUpperCase(Locale.ROOT);Code code=codes.get(normalized);
         if(code==null || code.expires()<=clock.getAsLong()) return new LinkResult("Код неверный или истёк. Получите новый в личном чате бота.",false);
@@ -565,6 +566,7 @@ final class GuardService implements AutoCloseable {
         rememberKnownName(uuid,name);
         execute("MERGE INTO known_player_names(nickname,uuid) KEY(nickname,uuid) VALUES(?,?)",name.toLowerCase(Locale.ROOT),uuid.toString());
         codes.remove(normalized);
+        var capture=botAnalytics;if(capture!=null)capture.committed(code.user(),BotAnalytics.role(this,code.user()),"link:"+uuid+":"+clock.getAsLong(),"link","link.complete");
         return new LinkResult("Персонаж "+name+" привязан к Telegram. В боте нажмите «Обновить кабинет» или /menu. Уведомления о ваших хранилищах включены.",true);
     });}
     CompletableFuture<Boolean> bastionPending(UUID uuid) {return submit(()->{
@@ -589,6 +591,10 @@ final class GuardService implements AutoCloseable {
     CompletableFuture<Void> supportActor(String id,long actor) {return submit(()->supportRepository.supportActor(id,actor));}
     CompletableFuture<Boolean> supportStatus(String id,String expected,String status) {return submit(()->supportRepository.supportStatus(id,expected,status));}
     CompletableFuture<Boolean> supportChange(SupportTicket ticket,String expected) {return submit(()->supportRepository.supportChange(ticket,expected));}
+    CompletableFuture<Boolean> supportChange(SupportTicket ticket,String expected,String notification) {return submit(()->supportRepository.supportChange(ticket,expected,notification));}
+    CompletableFuture<List<SupportRepository.Notification>> pendingComplaintNotifications() {return submit(()->supportRepository.pendingNotifications());}
+    CompletableFuture<Void> complaintNotificationDelivered(long id) {return submit(()->supportRepository.notificationDelivered(id));}
+    CompletableFuture<Void> complaintNotificationRetry(long id) {return submit(()->supportRepository.notificationRetry(id));}
     CompletableFuture<Integer> unbanAttempt(long telegram,UUID uuid,boolean linked) {return submit(()->supportRepository.unbanAttempt(telegram,uuid,linked));}
     CompletableFuture<SupportTicket> support(String id) {return submit(()->supportRepository.support(id));}
     ItemSorting.Mode itemSortMode(long user) {return itemSortModes.getOrDefault(user,ItemSorting.Mode.MINECRAFT);}

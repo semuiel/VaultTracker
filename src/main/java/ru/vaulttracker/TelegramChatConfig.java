@@ -70,6 +70,6 @@ final class TelegramChatConfig {
     TelegramConfig transport(TelegramConfig catalogue) {
         // Token-specific offsets prevent accidentally skipping updates after changing bots.
         String botId=token.split(":",2)[0];
-        return new TelegramConfig(enabled,token,Set.of(chat.chatId()),Set.of(),List.of(),20,yaml.getInt("advanced.pollTimeoutSeconds",30),300,text("advanced.botApiUrl","https://api.telegram.org").replaceAll("/+$",""),catalogue.proxy(),new TelegramConfig.Retry(0,yaml.getLong("advanced.connectionRetry.initialDelay",1000),yaml.getLong("advanced.connectionRetry.maxDelay",300000)),catalogue.offsetFile().resolveSibling("telegramchat-"+botId+".offset"));
+        return new TelegramConfig(enabled,token,Set.of(chat.chatId()),Set.of(),List.of(),20,yaml.getInt("advanced.pollTimeoutSeconds",30),300,text("advanced.botApiUrl","https://api.telegram.org").replaceAll("/+$",""),catalogue.proxy(),new TelegramConfig.Retry(0,yaml.getLong("advanced.connectionRetry.initialDelay",1000),yaml.getLong("advanced.connectionRetry.maxDelay",300000)),catalogue.offsetFile().resolveSibling("telegramchat-"+botId+".offset"),catalogue.news(),catalogue.moderation());
     }
 }

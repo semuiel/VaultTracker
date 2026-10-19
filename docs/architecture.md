@@ -1,68 +1,132 @@
-# VaultTracker: карта для небольших правок
+# VaultTracker: актуальная карта кода
 
-Это карта **текущего кода**, а не план новой архитектуры. Корневой Java package — `ru.vaulttracker`; отдельный сервис пожертвований находится в `donations/`. Перед правкой ищите соответствующий вход ниже, затем читайте его обработчик, сервис и ближайший тест. Не нужно начинать с полного просмотра `VaultTrackerPlugin`, `TelegramGuardMenu` и `GuardService` одновременно.
+Версия 0.17.77, сверено при передаче 19.10.2026. Все Java-классы ниже находятся в `src/main/java/ru/vaulttracker/`, если путь не указан отдельно. Эта карта — вход для небольших задач: читать нужный модуль, его контракт и ближайшие тесты, а не весь проект. [Полный индекс файлов](code-index.md), [настройка и передача](handoff.md), [границы FLEXITY](flexity-integration.md).
 
-## Основные области и входы
+## 1. Состав и жизненный цикл
 
-| Область | Текущий путь |
+| Вход | Ответственность |
 | --- | --- |
-| Minecraft | `VaultTrackerPlugin` запускает сервисы, слушает блоки/инвентари и обрабатывает `/vtrack`, `/find`, `/tg`, `/unlink`; отдельно различает вставку/поворот предмета в рамке и удаление зарегистрированной рамки. `TopItemCommand` — `/topitem` и `/itemtop` через общий `RussianItems`/`ResourceGroups`; `FindTabCompletion` — TAB для `/find`, его список предметов переиспользует `TopItemTabCompletion` для `/itemtop`. `SearchCompass` — цель компаса и контур обеих половин двойного сундука. `PlayerStatistics` снимает редкие snapshots vanilla/Bukkit-счётчиков при входе, выходе и периодически. Команды и права объявлены в `src/main/resources/plugin.yml`. |
-| Telegram | `TelegramBotService` принимает обновления; ограниченная `TelegramWorkQueue` выполняет их последовательно для каждого Telegram ID и независимо для разных пользователей. `TelegramGuardMenu` — общий вход и состояние текстового ввода; `TelegramActionRegistry` — каталог/маршрутизатор `vg:`. Экраны и их действия находятся в `CabinetMenu`, `ResourceMenu`, `StatisticsMenu`, `FriendsMenu`, `MessagesMenu`, `SettingsMenu`, `AdminMenu`, `SuperAdminMenu`, `SupportMenu`. `TelegramMenuSection` даёт им доступ к общей сессии. `TelegramPrivateMenu` — интерактивный поиск и использует `CabinetMenu.mainMenu` при возврате на главный экран; `TelegramCommands` — результаты `/item`, `/topitem`, `/itemtop` и их страницы. `TelegramApi` отправляет/редактирует сообщения и копирует медиа серверным методом Telegram. |
-| Resources / Search / Top | `Catalogue` хранит снимки хранилищ, claims и индексы сумм по предмету/UUID и владельцу; `OwnResourceSearch` ищет конкретные сундуки; `TopItemCommand` и `TelegramCommands` показывают рейтинги. `ItemCounter` считает содержимое. |
-| Accounts / Friends / Settings | `GuardService` хранит привязку UUID ↔ Telegram ID, историю известных ников для безопасного разрешения legacy-хранилищ, друзей, права доступа, переключатели и сортировку. Отдельная UUID-настройка `telegram_game_chat` по умолчанию включена и фильтрует только получателя общего чата Telegram → Minecraft. Их Telegram UI находится в `CabinetMenu`, `FriendsMenu`, `SettingsMenu`; `GuardConfig` читает `guard.yml`. |
-| Messaging / Notifications | `PlayerDirectMessages` доставляет `/tg` и сообщения из бота; история, unread и очередь уведомлений — в `GuardService`; экраны диалогов — в `MessagesMenu`, общая карточка уведомления — в `TelegramGuardMenu`; доставка уведомлений — в `TelegramBotService`. Обращения игроков: `SupportMenu` (пошаговый UI, включая анкету на разбан) → `SupportService` (отправка, права, действия и подтверждения `vs:`/`vc:`/`vu:`) → `GuardService` → `SupportRepository` (таблицы `support_requests`, `support_unban`, `support_delivery`; очередь выполняется на дисковом worker GuardService). Перед первым HTTP-запросом заявка и исходные ID вложений сохраняются; прогресс отправки сохраняется после каждого материала, очередь повторяется после перезапуска. `TelegramBotService` периодически закрывает просроченные приглашения и восстанавливает бан. Закрытие сохраняет карточку и медиа, старый `vs:*:ignore` удаляет их. `TelegramChatBridge` отдельно пересылает общий чат Telegram ↔ Minecraft; `TelegramReports` обрабатывает репорты группы. |
-| Storage | `StorageEngine` пишет локально через `LocalStore` (H2) и отдельно синхронизирует с `RemoteStore` (MariaDB). `LocalStore.dirty(limit)` читает SQL-пакет только `resolved` строк; `loadAndResolve` отдельно проверяет старые записи и лениво дополняет UUID у старых записей только при однозначном соответствии ника; неразрешённые строки остаются на диске до следующей попытки при входе игрока. `GuardService` владеет отдельной H2-базой `guard-data`: `known_player_names`, `telegram_game_chat`, а также разреженные агрегаты `player_stat_counters` (UUID + ключ счётчика, суммарное значение и последний vanilla snapshot). Не путать эти два хранилища. |
-| Integrations / FLEXITY | `GameMessages` использует read-only `flexity.ui.Ui` для игровых сообщений; `LinkedChatIdentity` и `FlexityPremiumStyle` — стиль связанного игрока в чат-мосте; `FlexityFreeze`, `FlexityPlaytime`, `FlexityVanish` — отдельные адаптеры. `BastionTrust` и `DonationClient` — другие интеграции. Голос конкретного сервера приходит через VotifierPlus, сохраняется в `GuardService.server_vote_outbox` до подтверждения локальным API и идемпотентно начисляется в Python-сервисе. `voting.py` хранит события и очередь Telegram-уведомлений; `TelegramBotService` подтверждает уведомление только после отправки игроку. |
-| Admin / Superadmin | Экраны, callback-ветки и ввод — `AdminMenu`/`SuperAdminMenu`; список Root, выдача и отзыв доступны только основному ID из `guard.yml`. Проверка ролей и capability — `GuardService`; игровые действия с игроком и команды Root от консоли — `TelegramModeration`. Дополнительные Root ID хранятся в `GuardService.guard_roots`; обычные Telegram admin ID — в `telegram.yml`. История Root-команд (до 20 на ID) — в `GuardService.root_commands`. `TelegramBotService` направляет личные `/cmd` и `/log` в `TelegramGuardMenu`/`SuperAdminMenu`; `RootLogDocument` читает `logs/latest.log`, `TelegramApi.sendDocument` отправляет документ. Права проверяются при действии. |
+| `VaultTrackerPlugin.onEnable/onDisable` | Конфиги, Guard, каталог, storage, listeners/команды, голосовая outbox, Telegram/мост, завершение worker-ов |
+| `VaultTrackerPlugin.replaceTelegram` | Один владелец Telegram lifecycle под `telegramLock`; объединённый или отдельный transport чат-моста |
+| `TelegramBotService` | Polling, маршрутизация update, доставка уведомлений и pending-голосов; создание/закрытие всех Mini Apps |
+| `TelegramChatBridge` | Telegram ↔ игровой чат и объявления событий; при общем токене не создаёт второй polling |
+| `donations/service.py:main/Service` | Самостоятельный процесс: HTTP API, FunPay polling, reconcile голосов, месячный scheduler |
+| `src/main/resources/plugin.yml` | JavaPlugin entrypoint, Folia support, команды, permissions и softdepend. Версию/API при сборке задаёт `build.gradle.kts` |
 
-## Карта Telegram-экранов и состояний
+`config.yml` задаёт `server-id`, внешнюю MariaDB и debounce. `guard.yml` — основной Root и настройки Guard. `telegram.yml` — основной бот, новости, moderation и три Mini App. `telegramchat.yml` — мост, топики и поддержка. `telegram-menu.yml` — тексты/замены. `donations.yml` — Java-клиент локального сервиса. `item-emojis.yml` — словарь значков. Секреты не являются исходниками.
 
-Из `CabinetMenu.donations` игрок открывает `VotingMenu`, где видны только включённые providers. `SuperAdminMenu.rootHome` ведёт в Root-управление enabled/reward и SQL-статистикой; каждый callback повторно требует Root. `TelegramBotService` периодически сопоставляет pending nickname с единственным известным UUID через `GuardService`, не создавая Telegram-привязку.
+## 2. Хранилища и игровой каталог
 
-`/start` или `/menu` → `TelegramBotService` → `TelegramGuardMenu` → `CabinetMenu.mainMenu` (**Поиск**, **Личный кабинет**, **Поддержка**, **Пожертвования**, если включены Root). К этому же renderer возвращает поиск через `TelegramPrivateMenu`. Донаты ведут в `CabinetMenu.donations`, несвязанного пользователя — в существующую привязку; административный вход находится в `SuperAdminMenu.rootHome`, а все его callbacks требуют Root. `SupportMenu` показывает всем жалобу, предложение, баг и разбан; первые три у несвязанного пользователя предлагают существующую привязку через `link`. Разбан доступен без привязки. Жалоба: поиск по нику среди онлайн/офлайн → описание → проверка и отправка; необязательные фото/видео принимаются прямо на экране проверки. Кнопка `vg:` → `TelegramGuardMenu.callback()` → `TelegramActionRegistry` → обработчик, зарегистрированный своим `*Menu.registerActions()` → сервис. `ResourceMenu` показывает **Ресурсы**, поиск, личный топ и события; `StatisticsMenu` — компактные разделы и страницы vanilla-статистики; `FriendsMenu` — **Друзья** и ресурсы друзей; `MessagesMenu` — **Сообщения**; `SettingsMenu` — **Настройки**; `AdminMenu` и `SuperAdminMenu` — соответствующие админские экраны. Для поддержки `TelegramBotService` отдельно передаёт фото/видео в `SupportMenu`, `vs:`/`vc:`/`vu:` callback в `SupportService`; topic IDs читает `telegramchat.yml`, admin chat ID — из `reports.chatId`. При новой кнопке добавляйте её рендер и регистрацию действия **в соответствующем меню**; общий router менять не требуется. Имена действий и параметры старых `vg:` сохранены. Прямые старые маршруты (`vg:home`, `vg:menu` и др.) также регистрируют их владельцы.
+| Путь изменения | Файлы / инварианты | Ближайшие тесты |
+| --- | --- | --- |
+| Регистрация/изменение блока | `VaultTrackerPlugin`, `ChestLayout`, `BlockKey`, `ItemCounter`, `Snapshot`; таблички и рамки, обе половины сундука | `BlockStorageTest`, `ChestTest`, `FrameMarkerTest`, `NestedItemsTest` |
+| Индексы ресурсов | `Catalogue`, `OwnResourceSearch`; UUID владельца, claims, суммы, индекс по предмету | `CatalogueTest`, `OwnResourceSearchTest` |
+| Постоянное хранение | `StorageEngine` → `LocalStore` H2 + необязательный `RemoteStore` MariaDB | `StorageTest` |
+| UUID/старые ники | `GuardService.knownPlayerUuid/knownPlayerName`, `LocalStore.loadAndResolve`; ambiguous name не превращается в чужой UUID | `GuardServiceTest`, `StorageTest` |
+| Поиск/топ | `TopItemCommand`, `TopItemTabCompletion`, `FindTabCompletion`, `RussianItems`, `ResourceGroups`, `ItemSorting`, `ItemAmount` | `TopItemTest`, `TopItemTabCompletionTest`, `ItemSortingTest` |
+| Компас/статистика | `SearchCompass`, `PlayerStatistics`, `OfflineInventory`; живые inventories только на entity scheduler | `PlayerStatisticsTest`, `OfflineInventoryTest` |
 
-Навигация не единая: `TelegramActionRegistry` хранит ограниченное по числу/TTL состояние параметризованных `vg:` кнопок, их владельцев, role metadata, одноразовость и обработку неизвестной/устаревшей кнопки; возврат — обычное действие с сохранёнными параметрами страницы/контекста. `TelegramGuardMenu` хранит ожидаемый текстовый ввод `waiting` и состояния карточек: input-flow оставлен отдельно из-за особого срока действия и обработки свободного текста. `TelegramPrivateMenu` хранит `states` и кнопки `vm:`; `TelegramCommands` хранит сессии страниц `vt:`. `vg:search` перехватывается `TelegramBotService` для `TelegramPrivateMenu` и остаётся вне реестра. `TelegramBotService` помнит активное меню для уведомлений. При правке кнопки проверьте **renderer → зарегистрированное действие → возврат → устаревшую кнопку → проверку прав**. Чат-мост и список `/list` имеют своё состояние в `TelegramChatBridge`.
+`StorageEngine` синхронизирует только dirty/resolved строки; локальный cache не равен Guard. `max-vaults-per-player` сейчас не ограничивает число мест. Массовую сверку не запускать на live ради теста.
 
-## Сквозные пути
+## 3. Telegram: вход, экраны и права
 
-- **Предмет:** Bukkit material ID → `RussianItems` (имя/алиасы) и `ResourceGroups` (АР/ИР) → `ItemSorting` (общие режимы) → `Catalogue`/`OwnResourceSearch` → `/find` + `FindTabCompletion`, Telegram-поиск, топы и ресурсы. `TelegramItemIcons` отвечает за значки, `ItemAmount` — за запись количества. Новый алиас проверяйте во всех входах, а не только в одном меню.
-- **Игровое сообщение:** команда/событие → `GameMessages` (префикс и тон). Общий Telegram ↔ Minecraft чат форматируют `TelegramChatBridge`, `LinkedChatIdentity` и `TelegramChatFormat`; личные `/tg` — `PlayerDirectMessages`.
-- **Личное сообщение:** `/tg` или `MessagesMenu.onCallback(dialogCompose)` → `PlayerDirectMessages` → `GuardService.directMessage` (история в H2) → немедленная доставка онлайн либо unread/уведомление через `TelegramBotService`.
-- **Admin action:** кнопка `AdminMenu`/`SuperAdminMenu` через `TelegramGuardMenu` → `GuardService.requireAdmin/requireSuper/requireRoot/requireCapability` → `TelegramModeration` → подходящий server/entity/region scheduler → журнал/ответ. Рендер кнопки сам по себе права не выдаёт.
+`TelegramApi` — Bot API, HTTP/proxy/retry, parse update и исходящие результаты. `TelegramConfig`/`TelegramChatConfig`, `TelegramProxies`/`Socks5SocketFactory` — загрузка соединения. `TelegramWorkQueue` последовательно обрабатывает работу одного Telegram ID, разные ID могут идти независимо.
 
-## Стиль FLEXITY и потоки
+`/start` или `/menu` → `TelegramBotService` → `TelegramGuardMenu` → `CabinetMenu.mainMenu`. Callback `vg:` → `TelegramActionRegistry` → `*Menu.registerActions()` → сервис. Состояние ввода принадлежит общей сессии; `TelegramMenuSection` передаёт меню необходимый контекст. `TelegramPrivateMenu` и `TelegramCommands` обслуживают поиск и страницы.
 
-VaultTracker должен выглядеть частью FLEXITY. В игре сначала используйте `GameMessages` и доступный `flexity.ui.Ui`; его запасная палитра и `FLEXITY ›` находятся там же. Стиль связанного игрока для чат-моста — в `LinkedChatIdentity`/`FlexityPremiumStyle`. Не копируйте префикс, цвета или формат ЛС в очередной command handler. Для Telegram текст/эмодзи частично задаются в `telegram-menu.yml` через `TelegramMenuText`, чат — в `telegramchat.yml`; новые экраны используют `View.template(key, parameters)` и стабильные ключи `texts` (приоритет над `replacements`). Пока ключ отсутствует, сохраняются старые замены. Переход начат с главного меню и поддержки; остальные строки пока в renderers. Цвет фона и самих кнопок выбирает клиент Telegram.
-
-Из Telegram/background thread допустимы SQL, HTTP, обработка строк и снимков `Catalogue`, если метод потоко-безопасен. **Не читать и не менять живые `Player`, `World`, блоки и инвентари напрямую**: игровые операции выполняются через global/entity/region scheduler (примеры — `TelegramModeration`, `PlayerDirectMessages`, `VaultTrackerPlugin`). Для блока проверяйте владение регионом Folia; доступ к соседнему сундуку или рамке может пересечь границу региона. Новую интеграцию FLEXITY проверяйте на её потоковых требованиях.
-
-## Where to edit
-
-| Задача | Сначала смотреть |
+| Экран | Где менять |
 | --- | --- |
-| Кнопка/возврат Telegram | Рендер и `registerActions()` соответствующего `CabinetMenu`/`ResourceMenu`/`FriendsMenu`/`MessagesMenu`/`SettingsMenu`/`AdminMenu`/`SuperAdminMenu`; `TelegramActionRegistry` только для общих правил. `TelegramPrivateMenu` для поиска; `TelegramCommands` для страниц результатов. |
-| Текст или стиль | `GameMessages` для игры; `LinkedChatIdentity`/`FlexityPremiumStyle` для чата FLEXITY; `TelegramMenuText` + `telegram-menu.yml` для общего Telegram-оформления; renderer, если строка зашита в коде. |
-| `/find`, `/itemtop` и TAB | `VaultTrackerPlugin.findOwn`, `OwnResourceSearch`, `FindTabCompletion`, `TopItemTabCompletion`, `RussianItems`; компас — `SearchCompass`. |
-| Сортировка предметов | `ItemSorting`, настройка в `GuardService`, применение в `TelegramCommands` и `ResourceMenu`; экран переключения — `SettingsMenu`; суммы — `Catalogue`. |
-| Сообщения игроков | `PlayerDirectMessages`, `GuardService` (history/unread), `MessagesMenu` (диалоги), `TelegramBotService` (уведомления). |
-| Обращения в поддержку | `SupportMenu` (flow), `SupportService` (доставка/status/actions), `GuardService` (таблицы `support_requests`, `support_unban`), `SupportRepository` (SQL и очередь), `SupportTopics` + `telegramchat.yml` (темы), `TelegramApi.copyMessage` (медиа); временный бан/заморозка — `TelegramModeration` и `FlexityFreeze`. |
-| Голосования | `VotingMenu` → `DonationClient` → `donations/service.py` → `vote_providers.py` (проверка/нормализация) → `voting.py` (SQLite, кошелёк, статистика). Новый сайт добавляется новым `VoteProvider`, config-секцией и регистрацией без изменения общей таблицы событий. |
-| Admin/superadmin | `AdminMenu`, `SuperAdminMenu`, `GuardService` (роли/capabilities/история Root-команд), `TelegramModeration` (Folia-dispatch консоли), `RootLogDocument` (логи); основной Root — `GuardConfig`, дополнительные — `guard_roots`. |
-| Storage/schema | `StorageEngine`, `LocalStore`, `RemoteStore` для ресурсов; отдельно `GuardService` для accounts/messages/events. Сверить `src/test` по соответствующему классу. |
+| Главное меню, кабинет, привязка, донаты, Premium | `CabinetMenu` |
+| Ресурсы/топ/друзья/статистика/ЛС/настройки | `ResourceMenu`, `FriendsMenu`, `StatisticsMenu`, `MessagesMenu`, `SettingsMenu` |
+| Обычный администратор | `AdminMenu`, capability-проверки `GuardService`, действия `TelegramModeration` |
+| Super и Root | `SuperAdminMenu`; Root → команда/роли, аналитика, экономика, техническое управление |
+| Root-кнопки кабинета | `CabinetMenu.home`: «Root» и «Мой персонаж» только Root; `selfActions` тоже проверяет Root |
+| Голоса/Free-монеты | `VotingMenu`, `FreeCoinsMenu` |
+| Тексты/значки/чат-формат | `TelegramMenuText`, `TelegramItemIcons`, `TelegramEmojiMarkup`, `TelegramChatText`, `TelegramChatFormat` |
 
-## Safe development rules
+Авторизация находится в `GuardService.requireAdmin/requireSuper/requireRoot/requireCapability` и handlers, а не только в видимости кнопок. Основной Root — `guard.yml:superAdminUserId`; дополнительные Root — `guard_roots`; обычные администраторы — `telegram.yml:adminUserIds`. Список Root изменяет только основной Root. Minecraft OP и Telegram role не взаимозаменяемы. `/unlink` требует непосредственно `Player.isOp()`.
 
-- Основной сервер сначала проверять, затем изучать production **только read-only**, пока пользователь явно не поручил применение.
-- Не выполнять stop/restart/reload основного сервера и не запускать второй VaultTracker с live Telegram, БД, портами или интеграциями.
-- Сборку и проверки проводить локально/изолированно. Если изменение требует перезапуска production — подготовить файлы и сообщить об этом; сам перезапуск не выполнять.
-- Не считать `VaultTracker/` в корне текущим проектом: это старая вложенная копия. Актуальный Gradle-проект и `src/main` находятся в корне workspace; множество старых JAR лежит в `outputs/`.
+Root → Аналитика содержит **CoreProtect, Telegram-статистику и Аналитику бота**; каждый viewer имеет дополнительную проверку текущего Telegram administrator/creator в `accessChatId`. [Тесты навигации и ACL](../src/test/java/ru/vaulttracker/AdminNavigationTest.java), `CabinetRolesTest`, `RootConsoleMenuTest`.
 
-## Проверки и следующие задачи
+## 4. Сообщения, поддержка и модерация
 
-- Локальная проверка Java: `./gradlew.bat --offline --gradle-user-home .gradle-user test`; JDK 25 (в текущем workspace есть `work/jdk25/jdk-25.0.4.1+1`). Сборка: `shadowJar`.
-- Python: `python -m unittest discover -s donations -p 'test_*.py'`; тесты используют временные базы и подставные API.
-- Очередь/перезапуск заявок: `SupportDeliveryTest`, `UnbanSupportTest`, `SupportMenuTest`.
-- Пользовательские очереди: `TelegramWorkQueueTest`, `TelegramResilienceTest`, `TelegramGuardMenuTest`.
-- Оплата: `donations/test_alert_delivery.py`, `test_premium.py`, `test_service_http.py`; Root-разблокировка — `CabinetRolesTest`.
-- Ограничение SQL-пакетов и совместимость схемы: `StorageTest`; агрегаты — `CatalogueTest`; ключи YAML — `TelegramMenuTextTest`.
-- Особенности релиза и перехода: [reliability.md](reliability.md). Для задачи читать этот раздел карты, нужный обработчик и его тест, а не весь проект.
+| Поток | Владелец / данные |
+| --- | --- |
+| `/tg` / диалог бота | `PlayerDirectMessages` → `GuardService.directMessage`; UUID, история и unread в guard-data; `MessagesMenu`, доставка через `TelegramBotService` |
+| Игровой чат ↔ Telegram | `TelegramChatBridge`, `LinkedChatIdentity`, `FlexityPremiumStyle`; получатель может отключить `telegram_game_chat` |
+| Жалоба/предложение/баг/разбан | `SupportMenu` → `SupportService` → `GuardService` → `SupportRepository`; `SupportTicket`, `SupportTopics` |
+| Durable отправка поддержки | `support_requests`, `support_unban`, `support_delivery`; сохранять до HTTP, прогресс вложений после каждого результата; callbacks `vs:`/`vc:`/`vu:` |
+| Уведомления автору жалобы | `SupportService` + `SupportRepository`; взятие/закрытие/повторное открытие только жалоб на игроков, retry при сбое |
+| Новости и `/nr` | `NewsAnnouncements`, `TelegramApi.Incoming.poll`, `TelegramModerationRepository`; последняя исходная ссылка сохраняется |
+| `/offtop`, `/unofftop` | `TelegramTopicModeration` раньше моста; текущие Telegram-права, ограничения только `(chat,topic,target)` до срока |
+| Временные Telegram-ответы | `TelegramListExpiry`; durable удаление команды/первого подтверждения, обычный enforcement молча |
+| Чат-репорты/теги/дети | `TelegramReports`, `TelegramTagManager`, `ChildPlayers` |
+| Root логи/консоль | `RootLogDocument`, `SuperAdminMenu`, `TelegramModeration`; история Root-команд в Guard |
+
+Тесты: `SupportDeliveryTest`, `UnbanSupportTest`, `SupportMenuTest`, `ComplaintNotificationsTest`, `NewsAnnouncementsTest`, `TelegramTopicModerationTest`, `TelegramApiTest`, `TelegramResilienceTest`. Не считать строку ответа игрового API доказательством подтверждённого наказания — см. ограничения аналитики.
+
+## 5. Деньги, Premium и голосования
+
+Java: `DonationClient` — единственный HTTP-клиент финансового сервиса; `DonationPremium` — синхронизация абсолютных сроков с LuckPerms и ack после save. `PremiumProduct` — UI-контракт; authoritative цены — Python `premium_products.py`. `FreeCoinsMenu` использует уже существующий связанный UUID, не создаёт новую привязку.
+
+| Python-модуль | Ответственность |
+| --- | --- |
+| `service.py` | HTTP handlers, auth/localhost, polling/reconcile, единственный месячный scheduler |
+| `funpay_provider.py` | Проверка заказа/продавца/количества/оценки через FunPayAPI; неизвестные ответы отклонять |
+| `ledger.py` | Кошельки, entries, операции/идемпотентность, заказы/возвраты/бонусы, Premium outbox, аудит |
+| `premium_products.py` | Цены и продукты `premium` / `premiumlite`; разные сроки/таблицы |
+| `link_rewards.py` | Однократная награда на UUID (`link_reward_claims`), настройки суммы и аудит |
+| `vote_providers.py` | Точные Votifier serviceName/проверка HTTP callback, без баланса |
+| `voting.py` | Providers, vote_events, pending UUID, credited/cooldown, reward и notifications в одной транзакции |
+| `vote_schema.py` | Versioned миграции голосований |
+| `vote_monthly.py` | ТОП-3, immutable закрытый месяц, competition rank 1,1,3 / 1,2,2; full/split |
+| `vote_reconcile.py` | Только поддержанная история MinecraftRating; не универсальная история всех Votifier-сайтов |
+| `configure.py`, `check_local.py` | Подготовка/диагностика сервиса; не выполнять configure поверх live ради обновления |
+
+Деньги — целые сотые монеты. Общий wallet в **donations.sqlite**, в его SQLite BEGIN IMMEDIATE фиксируются начисление, idempotency и уведомление. Другие процессы не пишут эту базу напрямую. Идентичность игрока — UUID. `api_key` и отдельный ограниченный `website_api_key` не являются Telegram/FunPay ключами.
+
+Голос конкретного сервера: VotifierPlus `VotifierEvent` → `VaultTrackerPlugin.registerVotifier` → `GuardService.server_vote_outbox` → `deliverServerVotes` → `/voting-record`. Ack только после результата; Python определяет provider по точному serviceName. Порядок меню: MinecraftRating → Top-Minecrafter → HotMC. Для начисления нужен однозначно известный UUID. `vote_eligibility` ограничивает credited минимум 24 ч на UUID/provider; старое последнее credited лениво восстанавливает таймер. Более длинный настроенный интервал сохраняется. Cooldown не меняет баланс, рейтинг и уведомление об успехе.
+
+`vote_notifications` доставляет Java `TelegramBotService`, ack после отправки. Root-переключатели/награды и месячные призы хранятся в SQLite; `config.example.json` лишь начальные значения. Старые закрытые месяцы не доплачивать, прежние credited не переписывать. Награда за привязку — также UUID/транзакция, не Telegram ID. [Контракт голосов](voting-eligibility.md), [сервис](../donations/README.md), [API сайта](../donations/BALANCE-API.md).
+
+Тесты Java: `DonationPremiumTest`, `DonationMenusTest`, `VotingMenuTest`. Python: все `donations/test_*.py`, особенно eligibility/monthly/link_rewards/ledger/service_http.
+
+## 6. Три Mini App
+
+`TelegramBotService.openWebApps/closeWebApps` владеет общим `TelegramWebRuntime` на localhost (`coreprotectWeb.bindHost/bindPort`, по умолчанию 127.0.0.1:8194). Одно bounded HTTP pool, отдельные backend/базы/session/cache каждого viewer. Reverse proxy сохраняет префикс пути и публикует HTTPS; новый внешний backend-порт не нужен.
+
+`TelegramMiniAppAuth` проверяет Telegram initData HMAC, `CoreProtectWebAccess` — короткие sessions и текущий Root/Admin + Telegram admin ACL. Auth передаётся header, не URL; content/logging не должны утекать в access log. Отозванные права действуют с ограниченным ACL cache TTL.
+
+| Viewer | Backend / frontend / данные | Документ |
+| --- | --- | --- |
+| CoreProtect | `CoreProtectViewer`, `CoreProtectWebConfig`, `CoreProtectWebServer`, `CoreProtectQuery`, `CoreProtectLookupSource`, `CoreProtectMariaDbSource`; `coreprotect-web/` | [CoreProtect](coreprotect-viewer.md) |
+| Сообщения Telegram | `TelegramAnalyticsConfig/Event/Service/Repository/Query/Queries/Web`; `telegram-stats/`; отдельная H2 | [Telegram-статистика](telegram-analytics.md) |
+| Использование бота | `BotAnalytics`, `BotAnalyticsCatalog/Config/Service/Repository/Query/Queries/Web`; `bot-analytics/`; отдельная H2 | [Аналитика бота](bot-analytics.md), [каталог](bot-analytics-catalog.md) |
+
+CoreProtect: GET session/capabilities/materials/players/lookup, prepared SELECT, отдельный SELECT-only пользователь MariaDB, проверка grants/таймауты/LIMIT. `players.js` читает online/offline имя/историю из co_user/co_username_log; `materials.js` переводит выбор/русский поиск в Material ID. Галочки отправляют только включённые фильтры, координаты необязательны. `rollback.js` строит только копируемый текст native-команды после успешного поиска; приложение ничего не откатывает.
+
+TelegramAnalytics: allowlist чатов, метаданные без текста, входящие updates и собственные успешные исходящие сообщения (включая игровой мост), edited/duplicate не прибавляют сообщений; боты не увеличивают число человеческих авторов. Названия тем сохраняются из доступных событий/настроек, полной прошлой истории Bot API не даёт.
+
+BotAnalytics: контекст update/стабильные action IDs из `TelegramActionRegistry`, явные outcome hooks, bounded queue и отдельный worker. HMAC identities, события/агрегаты/coverage сохраняются бессрочно; нет сырых сообщений, кодов оплаты или текста консольных команд. Наблюдаемые подтверждения отделены от попыток. До включения статистики нет. Обе аналитики не заменяют друг друга.
+
+Тесты: `CoreProtectWebTest`, `CoreProtectMariaDbSourceTest`, `TelegramAnalyticsTest`, `TelegramAnalyticsOutgoingTest`, `TelegramAnalyticsWebTest`, `BotAnalyticsTest`, `BotAnalyticsWebTest`; `src/test/web/*.cjs`.
+
+## 7. Данные и потоки при изменениях
+
+| Хранилище | Владелец и содержимое |
+| --- | --- |
+| `cache-<server-id>.mv.db` | `StorageEngine/LocalStore`: локальные snapshots и dirty; server-id не менять при переносе |
+| Внешняя MariaDB ресурсов | `RemoteStore`: необязательный общий каталог, отдельна от CoreProtect |
+| `guard-data.mv.db` | `GuardService`: аккаунты/UUID, роли, друзья, настройки, ЛС, статистика, обращения и delivery/outbox |
+| `telegram-moderation.mv.db`, `telegramchat-moderation-*.mv.db` | Новости и topic-модерация соответствующего transport |
+| `telegram-analytics.mv.db` | Метаданные чатов, агрегаты и собственный HMAC key |
+| `bot-analytics.mv.db` | Продуктовая аналитика и собственный HMAC key |
+| `donations.sqlite` + WAL/SHM | Только Python-сервис: деньги, заказы, голоса, настройки, idempotency, outbox |
+| `telegram.offset`, `telegramchat-*.offset`, expiry properties | Состояние transport, update offsets и durable удаление |
+| База CoreProtect | Сторонняя: viewer имеет только SELECT; rollback — ручная отдельная операция |
+
+Снимок SQL/HTTP/строки допустимы на worker. `Player`, inventories, блоки и мир — через entity/region scheduler; общие команды — global scheduler, соседний сундук может относиться к другому Folia-региону. Не блокировать игровой поток ожиданием Telegram/FunPay/SQL. Закрывать executors/pollers/listeners один раз.
+
+## 8. Работа нейросети
+
+Начать с `AGENTS.md`, этой карты и ближайших тестов. При задаче на интерфейс не перечитывать storage/все меню. При добавлении маршрута или владельца данных обновить соответствующий раздел карты. Для объединения FLEXITY читать [контракты адаптеров](flexity-integration.md), не угадывать чужую реализацию. Не запускать второй экземпляр с production Telegram/БД и не выполнять Minecraft stop/restart/reload без отдельного поручения владельца.

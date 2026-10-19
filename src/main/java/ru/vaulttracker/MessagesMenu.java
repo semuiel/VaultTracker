@@ -91,6 +91,7 @@ final class MessagesMenu extends TelegramMenuSection {
             if(text==null||text.isBlank()||text.length()>500||text.contains("\n")||text.contains("\r")) return new TelegramCommands.View("Введите одну строку до 500 символов. Отмена: /cancel.");
             UUID peer=UUID.fromString(pending.kind().substring("dialogSend:".length()));
             moderation.directMessages().fromTelegram(user,peer,text).get();waiting.remove(user);
+            BotAnalytics.success("messages","message.send");
             Integer card=dialogCards.get(user);if(card!=null) editedDialogs.put(user,card);
             return dialog(user,peer,0);
         }

@@ -11,6 +11,35 @@ from service import Service, handler
 
 
 class HttpTests(unittest.TestCase):
+    def test_tariff_http_contract_and_legacy_task_clients_are_isolated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ledger=Ledger(Path(directory)/'ledger.sqlite');config={'api_key':'a'*48}
+            owner=str(uuid.uuid4());ledger.change(owner,'seed','add','root','Player',amount=1_000_000)
+            server=HTTPServer(('127.0.0.1',0),handler(Service(config,ledger,None)))
+            thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+            def request(path,body):
+                conn=http.client.HTTPConnection('127.0.0.1',server.server_port,timeout=5)
+                try:
+                    conn.request('POST',path,json.dumps(body),{'Authorization':'Bearer '+config['api_key']})
+                    response=conn.getresponse();return response.status,json.loads(response.read())
+                finally:conn.close()
+            try:
+                body=dict(owner=owner,requestId=str(uuid.uuid4()),action='buy',actor='42',name='Player',days=360,product='premiumlite')
+                status,result=request('/donation-change',body);self.assertEqual(200,status);self.assertEqual(731000,result['balanceMinor'])
+                self.assertEqual(731000,request('/donation-change',body)[1]['balanceMinor'])
+                self.assertEqual([],request('/premium-tasks',{})[1]['tasks'])
+                tasks=request('/premium-tasks',{'includeLite':True})[1]['tasks'];self.assertEqual('premiumlite',tasks[0]['product'])
+                request('/premium-ack',dict(owner=owner,version=tasks[0]['version']))  # Old ack cannot consume a Lite task.
+                self.assertTrue(request('/wallet',dict(owner=owner))[1]['premiumLitePending'])
+                self.assertEqual(200,request('/premium-ack',dict(owner=owner,version=tasks[0]['version'],product='premiumlite'))[0])
+                self.assertFalse(request('/wallet',dict(owner=owner))[1]['premiumLitePending'])
+                body.update(requestId=str(uuid.uuid4()),product='fake')
+                self.assertEqual(400,request('/donation-change',body)[0])
+                body.update(requestId=str(uuid.uuid4()),product='premium',days=180)
+                self.assertEqual(461000,request('/donation-change',body)[1]['balanceMinor'])
+                self.assertEqual('premium',request('/premium-tasks',{})[1]['tasks'][0]['product'])
+            finally:server.shutdown();server.server_close();thread.join(5)
+
     def test_website_key_has_only_balance_access_and_retries_are_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:
             ledger=Ledger(Path(directory)/'ledger.sqlite')
@@ -36,6 +65,8 @@ class HttpTests(unittest.TestCase):
                 body.update(requestId=str(uuid.uuid4()),action='grant',days=30)
                 self.assertEqual(403,request('/donation-change',body)[0])
                 self.assertEqual(403,request('/donation-audit',{})[0]);self.assertEqual(403,request('/premium-tasks',{})[0])
+                for path in ('/donation-stats','/voting-top','/voting-month-settings','/voting-month-update'):
+                    self.assertEqual(403,request(path,{'actor':'root','rewardMinor':100})[0])
             finally:server.shutdown();server.server_close();thread.join(5)
 
     def test_auth_redeem_review_refund_through_http(self):

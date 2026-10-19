@@ -1,0 +1,37 @@
+# Фрагмент для существующего HTTPS-сайта Caddy.
+# Замените admin.example.org и объедините с действующей конфигурацией.
+# Не заменяйте им рабочий Caddyfile целиком.
+admin.example.org {
+    @viewerRead {
+        path /coreprotect/* /telegram-stats/* /bot-analytics/*
+        method GET
+    }
+    handle @viewerRead {
+        # Сессии/инициализация не должны попадать в access log.
+        log_skip
+        # Сохраняем весь префикс. handle_path здесь не применять.
+        reverse_proxy 127.0.0.1:8194 {
+            transport http {
+                dial_timeout 2s
+                response_header_timeout 12s
+            }
+        }
+    }
+    @viewerWrite {
+        path /coreprotect/* /telegram-stats/* /bot-analytics/*
+        not method GET
+    }
+    handle @viewerWrite {
+        log_skip
+        respond 405
+    }
+    handle /coreprotect {
+        redir * /coreprotect/ 308
+    }
+    handle /telegram-stats {
+        redir * /telegram-stats/ 308
+    }
+    handle /bot-analytics {
+        redir * /bot-analytics/ 308
+    }
+}

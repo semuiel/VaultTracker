@@ -6,6 +6,12 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
 class TelegramApiTest {
+    @Test void poll_flag_comes_from_telegram_object_not_text_label() {
+        var json=JsonParser.parseString("{\"update_id\":1,\"message\":{\"message_id\":2,\"chat\":{\"id\":-1001},\"from\":{\"id\":42},\"poll\":{\"question\":\"Test\"}}}").getAsJsonObject();
+        assertTrue(TelegramApi.parseUpdate(json).poll());
+        var message=json.getAsJsonObject("message");message.remove("poll");message.addProperty("text","[Опрос] обычный текст");
+        assertFalse(TelegramApi.parseUpdate(json).poll());
+    }
     @Test void distinguishesPrivateMessagesAndCallbacksFromGroupMessages() {
         var message=JsonParser.parseString("""
                 {"update_id":1,"message":{"message_id":2,"from":{"id":42},"chat":{"id":42,"type":"private"},"text":"Alex"}}

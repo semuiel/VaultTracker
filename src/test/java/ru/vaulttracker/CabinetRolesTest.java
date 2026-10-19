@@ -1,6 +1,10 @@
 package ru.vaulttracker;
 
+import com.sun.net.httpserver.HttpServer;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.nio.file.Files;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
@@ -103,14 +107,16 @@ class CabinetRolesTest {
         guard.changeSuper(500,501,true).get();
         var main=click(500,click(500,menu.home(500),"🛠 Админ"),"Суперадминистратор");
         var extra=click(501,click(501,menu.home(501),"🛠 Админ"),"Суперадминистратор");
-        String rootButton=button(main,"Root");
+        String rootButton=button(menu.home(500),"Root");
+        assertFalse(main.buttons().stream().anyMatch(b->b.text().contains("Root")));
         assertFalse(extra.buttons().stream().anyMatch(b->b.text().contains("Root")));
         assertTrue(menu.callback(501,rootButton).alert());
         var root=menu.callback(500,rootButton).view();
-        var supers=click(500,root,"Суперадминистраторы");
+        var team=click(500,root,"Команда и роли");
+        var supers=click(500,team,"Суперадминистраторы");
         assertTrue(supers.buttons().stream().anyMatch(b->b.text().contains("ID 501")));
         assertFalse(supers.buttons().stream().anyMatch(b->b.text().contains("ID 99")));
-        String reload=button(root,"Перезагрузить"),children=button(root,"Дети");
+        String reload=button(click(500,root,"Техническое управление"),"Перезагрузить"),children=button(team,"Детские аккаунты");
         click(500,supers,"Добавить суперадминистратора");
         var confirmation=menu.input(500,"502");
         String grant=button(confirmation,"Подтвердить");
@@ -210,7 +216,8 @@ class CabinetRolesTest {
         assertTrue(superList.buttons().stream().anyMatch(button->button.text().equals("🕶 HiddenAdmin")));
     }
     @Test void onlySuperAdminCanScheduleVaultTrackerReload() throws Exception {
-        var root=click(500,click(500,click(500,menu.home(500),"🛠 Админ"),"Суперадминистратор"),"Root");
+        var root=click(500,menu.home(500),"Root");
+        root=click(500,root,"Техническое управление");
         assertTrue(root.buttons().stream().anyMatch(b->b.text().contains("Перезагрузить VaultTracker")));
         var result=click(500,root,"Перезагрузить VaultTracker");
         assertTrue(result.text().contains("запланирована"));
@@ -248,18 +255,33 @@ class CabinetRolesTest {
         click(500,confirm,"Подтвердить");verify(moderation).speed(500,other,"fly",20);
     }
     @Test void adminPlayerCardUsesRussianFlagsMoscowDatesStatusBarsAndCopyableCoordinates() throws Exception {
+        var server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
+        server.createContext("/player-summary",exchange->{
+            byte[] bytes=("{\"balanceMinor\":105,\"premium\":true,\"premiumUntil\":1792067400,\"votes\":["+
+                    "{\"provider\":\"minecraft_rating\",\"name\":\"MinecraftRating\",\"votes\":1},"+
+                    "{\"provider\":\"top_minecrafter\",\"name\":\"Top-Minecrafter\",\"votes\":2},"+
+                    "{\"provider\":\"hotmc\",\"name\":\"HotMC\",\"votes\":5}]}").getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200,bytes.length);exchange.getResponseBody().write(bytes);exchange.close();
+        });server.start();
+        Files.writeString(path.resolve("donations.yml"),"enabled: true\napi-key: '"+"x".repeat(48)+"'\nport: "+server.getAddress().getPort()+"\n");
         long first=java.time.Instant.parse("2026-02-09T13:57:00Z").toEpochMilli(),last=java.time.Instant.parse("2026-09-20T12:54:00Z").toEpochMilli();
         var person=new TelegramModeration.Person(other,"Target",true,"",false,true,false,first,last,last+3600_000);
         when(moderation.players(500,"online")).thenReturn(CompletableFuture.completedFuture(List.of(person)));
         when(moderation.info(500,other)).thenReturn(CompletableFuture.completedFuture(person));
         when(moderation.playerProfile(500,other)).thenReturn(CompletableFuture.completedFuture(new TelegramModeration.CabinetProfile(true,18.0,20.0,15,"world",10,64,-20,first,93784L)));
         when(moderation.adminGroup(500,other)).thenReturn(CompletableFuture.completedFuture(false));
-        var card=click(500,click(500,click(500,click(500,menu.home(500),"🛠 Админ"),"Суперадминистратор"),"Список игроков"),"Target");String plain=TelegramEmojiMarkup.plain(card.text());
-        assertTrue(plain.contains("Онлайн: да · OP: да · Бан: нет"),plain);assertTrue(plain.contains("09.02.2026 16:57"),plain);
-        assertTrue(plain.contains("♥♥♥♥♥♥♥♥♥♤"),plain);assertTrue(plain.contains("◆◆◆◆◆◆◆◇○○"),plain);
-        assertTrue(plain.contains("⏱ 1 дн. 2 ч. 3 мин."),plain);String html=TelegramEmojiMarkup.html(card.text()).text();assertTrue(html.contains("world · </b><code>10 64 -20</code>"),html);assertFalse(html.contains("<b><code>"),html);
-        while(card.buttons().stream().anyMatch(b->b.text().contains("Вперёд"))) card=click(500,card,"Вперёд");
-        var copy=card.buttons().stream().filter(b->b.copyText()!=null).findFirst().orElseThrow();assertEquals(other.toString(),copy.copyText());
+        try {
+            var card=click(500,click(500,click(500,click(500,menu.home(500),"🛠 Админ"),"Суперадминистратор"),"Список игроков"),"Target");String plain=TelegramEmojiMarkup.plain(card.text());
+            assertTrue(plain.contains("Онлайн: да · OP: да · Бан: нет"),plain);assertTrue(plain.contains("Первый: 09.02.2026 16:57"),plain);
+            assertFalse(plain.contains("Последний:"),plain);assertFalse(plain.contains("Выход:"),plain);
+            assertTrue(plain.contains("Баланс: 1.05"),plain);assertTrue(plain.contains("Премиум: активен"),plain);
+            assertTrue(plain.contains("Окончание премиума: 15.10.2026 15:30 МСК"),plain);
+            assertTrue(plain.contains("MinecraftRating: 1 голос"),plain);assertTrue(plain.contains("Top-Minecrafter: 2 голоса"),plain);assertTrue(plain.contains("HotMC: 5 голосов"),plain);
+            assertTrue(plain.contains("♥♥♥♥♥♥♥♥♥♤"),plain);assertTrue(plain.contains("◆◆◆◆◆◆◆◇○○"),plain);
+            assertTrue(plain.contains("⏱ 1 дн. 2 ч. 3 мин."),plain);String html=TelegramEmojiMarkup.html(card.text()).text();assertTrue(html.contains("world · </b><code>10 64 -20</code>"),html);assertFalse(html.contains("<b><code>"),html);
+            while(card.buttons().stream().anyMatch(b->b.text().contains("Вперёд"))) card=click(500,card,"Вперёд");
+            var copy=card.buttons().stream().filter(b->b.copyText()!=null).findFirst().orElseThrow();assertEquals(other.toString(),copy.copyText());
+        } finally {server.stop(0);}
     }
     TelegramCommands.View rootActions() throws Exception {
         var target=new TelegramModeration.Person(other,"Target",true,"");
@@ -331,7 +353,7 @@ class CabinetRolesTest {
     }
     @Test void removesSuperByTypedIdOnlyAfterConfirmation() throws Exception {
         long target=123456789L;guard.changeSuper(500,target,true).get();
-        var admins=click(500,click(500,click(500,click(500,menu.home(500),"🛠 Админ"),"Суперадминистратор"),"Root"),"Суперадминистраторы");
+        var team=click(500,menu.rootHome(500),"Команда и роли");var admins=click(500,team,"Суперадминистраторы");
         String remove=button(admins,"Удалить суперадминистратора");
         assertTrue(menu.callback(99,remove).alert());menu.callback(500,remove);
         assertTrue(menu.input(500,"abc").text().contains("Telegram ID"));

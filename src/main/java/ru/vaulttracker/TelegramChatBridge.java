@@ -33,10 +33,12 @@ final class TelegramChatBridge implements Listener,AutoCloseable {
     private final TelegramChatConfig config;
     private final TelegramConfig transport;
     private final TelegramApi api;
+    void analytics(TelegramAnalyticsService analytics){analytics.attach(api);}
     private final TelegramChatText translations;
     private final LinkedBlockingDeque<Job> outgoing=new LinkedBlockingDeque<>(1000);
     private final Map<String,ListSession> lists=new ConcurrentHashMap<>();
     private final TelegramListExpiry expiry;
+    private final TelegramTopicModeration topicModeration;
     private final TelegramReports reports;
     private final ExecutorService commandDeletion=new ThreadPoolExecutor(1,1,0,TimeUnit.SECONDS,
             new ArrayBlockingQueue<>(1000),Thread.ofVirtual().name("VaultTracker-chat-command-delete").factory());
@@ -57,6 +59,7 @@ final class TelegramChatBridge implements Listener,AutoCloseable {
         this.plugin=plugin;this.config=config;transport=config.transport(catalogue);api=new TelegramApi(transport);
         translations=new TelegramChatText(plugin.getDataFolder().toPath());
         expiry=new TelegramListExpiry(transport.offsetFile().resolveSibling("telegramchat-"+config.token.split(":",2)[0]+"-lists.properties"),api,plugin.getLogger());
+        topicModeration=new TelegramTopicModeration(api,transport,plugin.getDataFolder().toPath(),plugin.getLogger());
         reports=config.flag("reports.enabled",false)?new TelegramReports(plugin.getDataFolder().toPath(),config,api,expiry,plugin.getLogger()):null;
         sender=Thread.ofVirtual().name("VaultTracker-chat-send").unstarted(this::sendLoop);
         receiver=Thread.ofVirtual().name("VaultTracker-chat-poll").unstarted(this::pollLoop);
@@ -166,6 +169,8 @@ final class TelegramChatBridge implements Listener,AutoCloseable {
     /** true only when this bridge owns the message; catalogue commands can pass through. */
     boolean consume(TelegramApi.Incoming update) {
         if(stopping.get() || update.privateChat() || update.senderBot()) return false;
+        try {if(topicModeration.consume(update,username)) return true;}
+        catch(Exception failure) {plugin.getLogger().warning("Не удалось обработать ограничение темы Telegram: "+api.safe(failure));return true;}
         if(update.callback()) {if(reports!=null&&reports.consume(update,username)) return true;return consumeListCallback(update);}
         if(update.text()==null) return false;
         String text=update.text().trim();String first=text.split("\\s+",2)[0];
@@ -342,7 +347,7 @@ final class TelegramChatBridge implements Listener,AutoCloseable {
     }
     @Override public void close() {
         if(!stopping.compareAndSet(false,true)) return;
-        HandlerList.unregisterAll(this);receiver.interrupt();sender.interrupt();commandDeletion.shutdownNow();if(reports!=null) reports.close();expiry.close();api.close();lists.clear();outgoing.clear();
+        HandlerList.unregisterAll(this);receiver.interrupt();sender.interrupt();commandDeletion.shutdownNow();if(reports!=null) reports.close();topicModeration.close();expiry.close();api.close();lists.clear();outgoing.clear();
         try {receiver.join(2000);sender.join(2000);} catch(InterruptedException stop) {Thread.currentThread().interrupt();}
     }
 }

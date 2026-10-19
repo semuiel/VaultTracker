@@ -14,6 +14,27 @@ donations/config.local.json.tmp
 donations/*.sqlite*
 donations/.venv/
 **/__pycache__/
+**/.venv/
+node_modules/
+*.pyc
+*.log
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
+*.key
+*.pem
+*.pfx
+*.p12
+config.local.json
+*.local.json
+.env.*
+donations/runtime/
+donations/lib/
+test-results/
+playwright-report/
 
 # Local runtimes, historical artifacts and the obsolete nested checkout.
 /work/

@@ -110,6 +110,24 @@ class TelegramCommandsTest {
         }
     }
 
+    @Test void newsTopicAnnouncesPostsAndPollsWithExactTelegramLinks() throws Exception {
+        TelegramConfig config=mock(TelegramConfig.class);var moderation=mock(TelegramModeration.class);
+        when(config.newsSource(-1002669159447L,206056)).thenReturn(true);
+        when(config.newsLink(300)).thenReturn("https://t.me/c/2669159447/206056/300");
+        when(config.newsLink(301)).thenReturn("https://t.me/c/2669159447/206056/301");
+        var process=TelegramBotService.class.getDeclaredMethod("process",TelegramApi.Incoming.class);process.setAccessible(true);
+        try(var apis=mockConstruction(TelegramApi.class);
+            var service=new TelegramBotService(config,catalogue,storage,java.util.logging.Logger.getAnonymousLogger(),null,moderation)) {
+            process.invoke(service,new TelegramApi.Incoming(1,-1002669159447L,206056,42,300,"Текст новости",null,null));
+            process.invoke(service,new TelegramApi.Incoming(2,-1002669159447L,206056,42,301,"[Опрос] Выберите вариант",null,null,false,"",false,true,"",null,false,true));
+            verify(moderation).announceNews(false,"https://t.me/c/2669159447/206056/300");
+            verify(moderation).announceNews(true,"https://t.me/c/2669159447/206056/301");
+            process.invoke(service,new TelegramApi.Incoming(3,-1002669159447L,206056,42,302,null,null,null,false,"",false,true));
+            verifyNoMoreInteractions(moderation);
+            verifyNoInteractions(apis.constructed().getFirst());
+        }
+    }
+
     @Test void splitsTelegramMessagesWithoutLosingText() {
         String input="line one\n"+"x".repeat(80)+"\nlast";
         var parts=TelegramApi.split(input,40);

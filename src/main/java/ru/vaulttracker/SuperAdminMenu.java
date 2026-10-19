@@ -18,31 +18,65 @@ final class SuperAdminMenu extends TelegramMenuSection {
     TelegramCommands.View superHome(long user) throws Exception {
         guard.requireSuper(user);
         adminPreview.remove(user);
-        var account=guard.account(user).get();
         List<TelegramCommands.Button> buttons=new ArrayList<>(List.of(
-                b(user,"👮 Администраторы бота","admins","",0,0),
-                b(user,"👥 Список игроков","browse:online","",0,1),
-                b(user,account==null?"👤 Привязать персонажа":"👤 "+account.name(),"selfActions","",0,2),
-                b(user,"⏱ Личный срок админских супер уведомлений","rootSettings","",0,3)));
-        int row=4;
-        if(guard.rootAdmin(user)) buttons.add(b(user,"🔐 Root","rootHome","",0,row++));
+                b(user,"👥 Список игроков","browse:online","",0,0),
+                b(user,"👮 Администраторы бота","admins","",0,1)));
+        int row=2;
+        root.addCoreProtectButton(user,buttons,row++);
+        buttons.add(b(user,"⚙️ Личные настройки","superPreferences","",0,row++));
         buttons.add(b(user,"↩ Назад","adminMenu","",0,row++));buttons.add(homeButton(row));
         return new TelegramCommands.View("👑 Суперадминистратор",List.copyOf(buttons));
     }
+    TelegramCommands.View superPreferences(long user) throws Exception {
+        guard.requireSuper(user);
+        return new TelegramCommands.View("⚙️ Личные настройки\nРежим администраторских уведомлений.",List.of(
+                b(user,"🔔 Срок уведомлений","rootSettings","",0,0),
+                b(user,"↩ Суперадминистратор","superHome","",0,1),homeButton(2)));
+    }
     TelegramCommands.View rootHome(long user) {
         guard.requireRoot(user);
+        return new TelegramCommands.View("🔐 Root",List.of(
+                b(user,"👥 Команда и роли","rootTeam","",0,0),
+                b(user,"📊 Аналитика","rootAnalytics","",0,1),
+                b(user,"💰 Экономика","rootEconomy","",0,2),
+                b(user,"⚙️ Техническое управление","rootServer","",0,3),
+                new TelegramCommands.Button("↩ Личный кабинет","vg:home",4),homeButton(5)));
+    }
+    TelegramCommands.View rootTeam(long user) {
+        guard.requireRoot(user);
         List<TelegramCommands.Button> buttons=new ArrayList<>();int row=0;
-        buttons.add(b(user,"👑 Суперадминистраторы","supers","",0,row++));
         buttons.add(b(user,"👮 Администраторы бота","admins","",0,row++));
+        buttons.add(b(user,"👑 Суперадминистраторы","supers","",0,row++));
         if(guard.primaryRoot(user)) buttons.add(b(user,"👥 Список Root","rootList","",0,row++));
-        buttons.add(b(user,"💝 Управление пожертвованиями","donationAdmin","",0,row++));
-        buttons.add(b(user,"🗳 Управление голосованиями","votingAdmin","",0,row++));
-        buttons.add(b(user,"🧒 Дети","children","",0,row++));
-        buttons.add(b(user,"♻️ Перезагрузить VaultTracker","reloadPlugin","",0,row++));
-        buttons.add(b(user,"📄 Логи","rootLogs","",0,row++));
-        buttons.add(b(user,"🖥 Консоль","rootConsole","",0,row++));
-        buttons.add(b(user,"↩ Назад","superHome","",0,row++));buttons.add(homeButton(row));
-        return new TelegramCommands.View("🔐 Root",List.copyOf(buttons));
+        buttons.add(b(user,"🧒 Детские аккаунты","children","",0,row++));
+        buttons.add(b(user,"↩ Root","rootHome","",0,row++));buttons.add(homeButton(row));
+        return new TelegramCommands.View("👥 Root · Команда и роли\nПрава администраторов и детские аккаунты.",List.copyOf(buttons));
+    }
+    TelegramCommands.View rootAnalytics(long user) {
+        guard.requireRoot(user);
+        List<TelegramCommands.Button> buttons=new ArrayList<>();
+        root.addCoreProtectButton(user,buttons,0);
+        root.addAnalyticsButton(user,buttons,buttons.size());
+        root.addBotAnalyticsButton(user,buttons,buttons.size());
+        String note=buttons.isEmpty()?"\nСейчас нет доступных приложений аналитики.":"\nИстория действий игроков и статистика чатов.";
+        int row=buttons.size();
+        buttons.add(b(user,"↩ Root","rootHome","",0,row++));buttons.add(homeButton(row));
+        return new TelegramCommands.View("📊 Root · Аналитика"+note,List.copyOf(buttons));
+    }
+    TelegramCommands.View rootEconomy(long user) {
+        guard.requireRoot(user);
+        return new TelegramCommands.View("💰 Root · Экономика\nПожертвования, премиум, награды и статистика голосований.",List.of(
+                b(user,"💝 Пожертвования и премиум","donationAdmin","",0,0),
+                b(user,"🗳 Голосования и награды","votingAdmin","",0,1),
+                b(user,"↩ Root","rootHome","",0,2),homeButton(3)));
+    }
+    TelegramCommands.View rootServer(long user) {
+        guard.requireRoot(user);
+        return new TelegramCommands.View("⚙️ Root · Техническое управление\nКонсоль сервера, логи и перезагрузка настроек VaultTracker.",List.of(
+                b(user,"📄 Логи","rootLogs","",0,0),
+                b(user,"🖥 Консоль","rootConsole","",0,1),
+                b(user,"♻️ Перезагрузить VaultTracker","reloadPlugin","",0,2),
+                b(user,"↩ Root","rootHome","",0,3),homeButton(4)));
     }
     TelegramCommands.View rootList(long user,int requested) {
         List<Long> ids=guard.rootIds(user);
@@ -58,7 +92,7 @@ final class SuperAdminMenu extends TelegramMenuSection {
         if(page>0) buttons.add(b(user,"⬅️ Назад","rootList","",page-1,row));
         if(page+1<pages) buttons.add(b(user,"Вперёд ➡️","rootList","",page+1,row));
         buttons.add(b(user,"➕ Добавить Root","rootAdd","",0,++row));
-        buttons.add(b(user,"↩️ Root","rootHome","",0,++row));
+        buttons.add(b(user,"↩ Команда и роли","rootTeam","",0,++row));
         return new TelegramCommands.View("👥 Root · "+(page+1)+"/"+pages+"\nОсновной Root из guard.yml защищён от удаления.",List.copyOf(buttons));
     }
     private TelegramCommands.View rootDetails(long user,long target) {
@@ -75,7 +109,7 @@ final class SuperAdminMenu extends TelegramMenuSection {
         return new TelegramCommands.View("🖥 Консоль",List.of(
                 b(user,"⌨️ Выполнить команду","rootConsoleInput","",0,0),
                 b(user,"🕘 История команд","rootConsoleHistory","",0,1),
-                b(user,"↩️ Назад","rootHome","",0,2)));
+                b(user,"↩ Техническое управление","rootServer","",0,2)));
     }
     TelegramCommands.View consoleHistory(long user) throws Exception {
         guard.requireRoot(user);
@@ -114,7 +148,7 @@ final class SuperAdminMenu extends TelegramMenuSection {
         return new TelegramCommands.View("📄 Логи latest.log",List.of(
                 b(user,"📄 Полный latest.log","rootLogFormat","full",0,0),
                 b(user,"✂️ Последние строки","rootLogLines","",0,1),
-                b(user,"↩️ Назад","rootHome","",0,2)));
+                b(user,"↩ Техническое управление","rootServer","",0,2)));
     }
     private TelegramCommands.View logLines(long user) {
         guard.requireRoot(user);
@@ -155,7 +189,7 @@ final class SuperAdminMenu extends TelegramMenuSection {
         buttons.add(b(user,"➕ Добавить ребёнка","childAdd","",0,0));buttons.add(b(user,"➖ Удалить ребёнка","childDelete","",0,1));
         for(int i=page*PAGE_SIZE;i<Math.min(rows.size(),(page+1)*PAGE_SIZE);i++) buttons.add(b(user,rows.get(i).name(),"childRemoveConfirm",rows.get(i).name(),0,i-page*PAGE_SIZE+2));
         if(page>0) buttons.add(b(user,"⬅ Назад","children",filter,page-1,22));if(page+1<pages) buttons.add(b(user,"Вперёд ➡","children",filter,page+1,22));
-        buttons.add(b(user,"🔎 Поиск","childSearch","",0,23));buttons.add(b(user,"↩ Назад","rootHome","",0,24));buttons.add(homeButton(25));
+        buttons.add(b(user,"🔎 Поиск","childSearch","",0,23));buttons.add(b(user,"↩ Команда и роли","rootTeam","",0,24));buttons.add(homeButton(25));
         return new TelegramCommands.View("🧒 Дети · "+(page+1)+"/"+pages+"\n+2 сердца и защита 20%. Размер доступен в связанном личном кабинете."+(rows.isEmpty()?"\nСписок пуст.":""),List.copyOf(buttons));
     }
     TelegramCommands.View childResult(long user,String result) {var menu=children(user,0,"");return new TelegramCommands.View(result+"\n\n"+menu.text(),menu.buttons());}
@@ -190,16 +224,21 @@ final class SuperAdminMenu extends TelegramMenuSection {
             buttons.add(b(user,"➕ Добавить администратора","addAdmin","",0,PAGE_SIZE+2));
             buttons.add(b(user,"🧩 Возможности администратора","capabilities","",0,PAGE_SIZE+3));
         }
-        buttons.add(b(user,"↩ Назад",supers?"rootHome":"superHome","",0,PAGE_SIZE+4));buttons.add(homeButton(PAGE_SIZE+5));
+        buttons.add(b(user,guard.rootAdmin(user)?"↩ Команда и роли":"↩ Суперадминистратор",guard.rootAdmin(user)?"rootTeam":"superHome","",0,PAGE_SIZE+4));buttons.add(homeButton(PAGE_SIZE+5));
         return new TelegramCommands.View((supers?"👑 Суперадминистраторы":"👮 Администраторы бота")+" · страница "+(page+1)+" · всего "+ids.size()+(filter==null||filter.isBlank()?"":"\nПоиск: "+filter),List.copyOf(buttons));
     }
 
     void registerActions(TelegramActionRegistry registry) {
         var scope=registry.scope("SuperAdminMenu");
-        scope.on("selfActions",TelegramActionRegistry.Arguments.NONE,TelegramActionRegistry.Requirement.SUPER,false, (user,a,data)-> {
-            TelegramCommands.View view;
-            {guard.requireSuper(user);var account=guard.account(user).get();view=account==null?new TelegramCommands.View("Сначала привяжите своего игрового персонажа в личном кабинете.",List.of(b(user,"↩ Назад","superHome","",0,0))):root.playerActions(user,account.uuid(),0);}
-            return view;
+        scope.on("selfActions",TelegramActionRegistry.Arguments.NONE,TelegramActionRegistry.Requirement.ROOT,false, (user,a,data)-> {
+            guard.requireRoot(user);
+            var account=guard.account(user).get();
+            if(account==null) return new TelegramCommands.View("Сначала привяжите своего игрового персонажа в личном кабинете.",List.of(
+                    new TelegramCommands.Button("↩ Личный кабинет","vg:home",0),homeButton(1)));
+            var view=root.playerActions(user,account.uuid(),0);
+            var buttons=view.buttons().stream().map(button->button.text().equals("↩ К игрокам")
+                    ?new TelegramCommands.Button("↩ Личный кабинет","vg:home",button.row()):button).toList();
+            return view.withButtons(buttons);
         });
         scope.on("adminMenu",TelegramActionRegistry.Arguments.NONE,TelegramActionRegistry.Requirement.SUPER,false, (user,a,data)-> {
             TelegramCommands.View view;
@@ -216,6 +255,11 @@ final class SuperAdminMenu extends TelegramMenuSection {
             view=rootHome(user);
             return view;
         });
+        scope.on("superPreferences",TelegramActionRegistry.Arguments.NONE,TelegramActionRegistry.Requirement.SUPER,false,(user,a,data)->superPreferences(user));
+        scope.on("rootTeam",TelegramActionRegistry.Arguments.NONE,TelegramActionRegistry.Requirement.ROOT,false,(user,a,data)->rootTeam(user));
+        scope.on("rootAnalytics",TelegramActionRegistry.Arguments.NONE,TelegramActionRegistry.Requirement.ROOT,false,(user,a,data)->rootAnalytics(user));
+        scope.on("rootEconomy",TelegramActionRegistry.Arguments.NONE,TelegramActionRegistry.Requirement.ROOT,false,(user,a,data)->rootEconomy(user));
+        scope.on("rootServer",TelegramActionRegistry.Arguments.NONE,TelegramActionRegistry.Requirement.ROOT,false,(user,a,data)->rootServer(user));
         scope.on("rootList",TelegramActionRegistry.Arguments.VALUE_AND_PAGE,TelegramActionRegistry.Requirement.ROOT,false,(user,a,data)->rootList(user,a.page()));
         scope.on("rootDetails",TelegramActionRegistry.Arguments.VALUE,TelegramActionRegistry.Requirement.ROOT,false,(user,a,data)->rootDetails(user,Long.parseLong(a.value())));
         scope.on("rootRemoveConfirm",TelegramActionRegistry.Arguments.VALUE,TelegramActionRegistry.Requirement.ROOT,false,(user,a,data)->{

@@ -97,9 +97,12 @@ class TelegramModeration {
     long premiumExpiry(UUID owner) throws Exception {return premium.expiry(owner);}
     void syncDonations() throws Exception {premium.sync();}
     com.google.gson.JsonObject donationChange(long actor,UUID owner,String name,String id,String action,int days,long amount) throws Exception {
+        return donationChange(actor,owner,name,id,action,days,amount,PremiumProduct.PREMIUM);
+    }
+    com.google.gson.JsonObject donationChange(long actor,UUID owner,String name,String id,String action,int days,long amount,PremiumProduct product) throws Exception {
         if(action.equals("buy")) {var account=guard.account(actor).get();if(account==null||!account.uuid().equals(owner)) throw new SecurityException("Нет доступа");}
         else guard.requireRoot(actor);
-        var result=premium.change(owner,name,actor,id,action,days,amount);
+        var result=premium.change(owner,name,actor,id,action,days,amount,product);
         if(!action.equals("buy")) audit(actor,"donation:"+action,owner.toString());
         return result;
     }
@@ -548,6 +551,9 @@ class TelegramModeration {
         for(Player p:plugin.getServer().getOnlinePlayers()) p.getScheduler().run(plugin,t->p.sendMessage(message),null);
         plugin.getServer().getConsoleSender().sendMessage(Component.text("[Консоль] "+text));audit(user,"chat",text);return "Сообщение отправлено в игровой чат.";
     });}
+    private NewsAnnouncements news;
+    void newsAnnouncements(NewsAnnouncements news) {this.news=news;}
+    void announceNews(boolean poll,String url) throws Exception {if(news!=null) news.accept(poll,url);}
     boolean freezeAvailable() {
         try {freezeBridge();return true;} catch(Exception unavailable) {return false;}
     }
@@ -593,7 +599,7 @@ class TelegramModeration {
             });
         });
     }
-    private void audit(long user,String action,String target) {
+    void audit(long user,String action,String target) {
         String safeTarget=target==null?"":target.replace('\n',' ').replace('\r',' ');
         if(action.equals("privateMessage") || action.equals("chat")) safeTarget="[текст скрыт]";
         plugin.getLogger().info("Telegram "+user+": "+action+" → "+safeTarget);

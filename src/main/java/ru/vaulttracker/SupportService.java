@@ -76,6 +76,28 @@ final class SupportService {
             for(var pending:guard.pendingSupport().get()) deliver(pending.ticket(),pending.sources());
         } catch(InterruptedException interrupted) {Thread.currentThread().interrupt();}
         catch(Exception failure) {log.warning("Очередь обращений временно недоступна: "+failure.getClass().getSimpleName());}
+        finally {retryComplaintNotifications();}
+    }
+    private void retryComplaintNotifications() {
+        try {
+            for(var notification:guard.pendingComplaintNotifications().get()) {
+                try {
+                    api.send(notification.telegram(),0,new TelegramCommands.View(notification.text()));
+                    guard.complaintNotificationDelivered(notification.id()).get();
+                } catch(InterruptedException interrupted) {throw interrupted;}
+                catch(Exception failure) {
+                    guard.complaintNotificationRetry(notification.id()).get();
+                    log.fine("Уведомление по жалобе ожидает повторной доставки: "+failure.getClass().getSimpleName());
+                }
+            }
+        } catch(InterruptedException interrupted) {Thread.currentThread().interrupt();}
+        catch(Exception failure) {log.warning("Очередь уведомлений по жалобам временно недоступна: "+failure.getClass().getSimpleName());}
+    }
+    private boolean changeComplaint(SupportTicket ticket,String expected,long actor,String text) throws Exception {
+        String notification=ticket.type()==SupportTicket.Type.COMPLAINT && text!=null
+                ?"🚨 Ваша жалоба на игрока "+ticket.targetName()+" · #"+ticket.id().substring(0,8)+"\n\n"+text.replace("{admin}",actorName(actor)):null;
+        boolean changed=guard.supportChange(ticket,expected,notification).get();
+        if(changed)BotAnalytics.success("admin","support.status");return changed;
     }
     private SupportTicket deliver(SupportTicket pending,List<Integer> sources) throws Exception {
         SupportTicket progress=pending;
@@ -113,11 +135,14 @@ final class SupportService {
         }
     }
     synchronized void callback(TelegramApi.Incoming update,AdminMenu admin) throws Exception {
+        BotAnalytics.event("admin","support.action","button_click");
+        boolean complaint=false;
         try {
             String[] parts=update.callbackData().split(":",3);
             if(parts.length!=3 || !parts[1].matches("[a-f0-9]{32}")) throw new IllegalArgumentException("Кнопка недоступна.");
             SupportTicket ticket=guard.support(parts[1]).get();
             if(ticket==null) throw new IllegalArgumentException("Кнопка недоступна.");
+            complaint=ticket.type()==SupportTicket.Type.COMPLAINT;
             if(ticket.type()==SupportTicket.Type.UNBAN) {
                 unbanCallback(update,ticket,parts[0],parts[2],admin);
                 return;
@@ -131,7 +156,7 @@ final class SupportService {
             if(operation.equals("reopen")) {
                 if(!ticket.status().equals("CLOSED")) throw new IllegalArgumentException("Обращение уже открыто.");
                 var reopened=ticket.withStatus("OPEN").withTakenActor(0).withClosedActor(0);
-                if(!guard.supportChange(reopened,"CLOSED").get()) throw new IllegalArgumentException("Статус обращения уже изменился.");
+                if(!changeComplaint(reopened,"CLOSED",update.userId(),"Администратор {admin} открыл вашу жалобу снова.\nСтатус: повторное рассмотрение.")) throw new IllegalArgumentException("Статус обращения уже изменился.");
                 api.editHtml(ticket.adminChat(),ticket.adminMessage(),html(reopened,ticket.adminMedia().size()),buttons(reopened));
                 api.answerCallback(update.callbackId(),"Обращение открыто снова.",false);return;
             }
@@ -139,7 +164,7 @@ final class SupportService {
             if(operation.equals("take")) {
                 if(ticket.takenActor()>0) throw new IllegalArgumentException("Обращение уже взяли в работу.");
                 var taken=ticket.withStatus(ticket.status().equals("OPEN")?"IN_PROGRESS":ticket.status()).withTakenActor(update.userId());
-                if(!guard.supportChange(taken,ticket.status()).get()) throw new IllegalArgumentException("Статус обращения уже изменился.");
+                if(!changeComplaint(taken,ticket.status(),update.userId(),"За вашу жалобу взялся администратор {admin}.\nСтатус: в работе.")) throw new IllegalArgumentException("Статус обращения уже изменился.");
                 api.editHtml(ticket.adminChat(),ticket.adminMessage(),html(taken,ticket.adminMedia().size()),buttons(taken));
                 api.answerCallback(update.callbackId(),"Обращение закреплено за вами.",false);return;
             }
@@ -161,7 +186,7 @@ final class SupportService {
             }
             if(operation.equals("close")) {
                 var closed=ticket.withStatus("CLOSED").withClosedActor(update.userId());
-                if(!guard.supportChange(closed,ticket.status()).get()) throw new IllegalArgumentException("Обращение уже меняется.");
+                if(!changeComplaint(closed,ticket.status(),update.userId(),"Администратор {admin} завершил рассмотрение вашей жалобы.\nСтатус: рассмотрена, закрыта.")) throw new IllegalArgumentException("Обращение уже меняется.");
                 api.editHtml(ticket.adminChat(),ticket.adminMessage(),html(closed,ticket.adminMedia().size()),buttons(closed));
                 api.answerCallback(update.callbackId(),"Обращение закрыто.",false);return;
             }
@@ -185,15 +210,17 @@ final class SupportService {
                 if(!guard.supportStatus(ticket.id(),ticket.status(),"BUSY").get()) throw new IllegalArgumentException("Обращение уже меняется.");
             }
             var changed=ticket.withStatus(next).withTakenActor(ticket.takenActor()>0?ticket.takenActor():update.userId());
-            if(!guard.supportChange(changed,"BUSY").get()) throw new IllegalArgumentException("Статус обращения уже изменился.");
+            String notification=ticket.takenActor()==0?"За вашу жалобу взялся администратор {admin}.\nСтатус: в работе.":null;
+            if(!changeComplaint(changed,"BUSY",update.userId(),notification)) throw new IllegalArgumentException("Статус обращения уже изменился.");
             api.editHtml(ticket.adminChat(),ticket.adminMessage(),html(changed,ticket.adminMedia().size()),buttons(changed));
             api.answerCallback(update.callbackId(),"Готово.",false);
         } catch(Exception failure) {
+            BotAnalytics.failure("admin","support.action",failure);
             if(!(failure instanceof SecurityException || failure instanceof IllegalArgumentException))
                 log.warning("Действие по обращению не выполнено: "+api.safe(failure));
             api.answerCallback(update.callbackId(),failure instanceof SecurityException?"Нет прав на это действие.":
                     failure instanceof IllegalArgumentException?failure.getMessage():"Действие не выполнено; проверьте права и доступность бота.",true);
-        }
+        } finally {if(complaint) retryComplaintNotifications();}
     }
     private static TelegramModeration.BanSnapshot snapshot(GuardService.UnbanState state) {
         return new TelegramModeration.BanSnapshot(state.banReason(),state.banExpiry(),state.banSource());

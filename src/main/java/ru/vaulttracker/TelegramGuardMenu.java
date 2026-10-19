@@ -14,6 +14,7 @@ final class TelegramGuardMenu {
     final SuperAdminMenu superAdmin;
     final SupportMenu support;
     final VotingMenu voting;
+    final FreeCoinsMenu freeCoins;
     record Input(String kind,long expires) {}
     final TelegramActionRegistry routes;
     final Map<Long,Input> waiting=new java.util.concurrent.ConcurrentHashMap<>();
@@ -26,6 +27,19 @@ final class TelegramGuardMenu {
     final TelegramModeration moderation;
     final TelegramTagManager tags;
     final TelegramApi api;
+    CoreProtectWebServer coreprotectWeb;
+    TelegramAnalyticsWeb analyticsWeb;
+    BotAnalyticsWeb botAnalyticsWeb;
+    void addBotAnalyticsButton(long user,List<TelegramCommands.Button> buttons,int row) {
+        if(botAnalyticsWeb==null)return;var button=botAnalyticsWeb.button(user,row);if(button!=null)buttons.add(button);
+    }
+    void addAnalyticsButton(long user,List<TelegramCommands.Button> buttons,int row) {
+        if(analyticsWeb==null)return;var button=analyticsWeb.button(user,row);if(button!=null)buttons.add(button);
+    }
+    void addCoreProtectButton(long user,List<TelegramCommands.Button> buttons,int row) {
+        if(coreprotectWeb==null) return;
+        var button=coreprotectWeb.button(user,row);if(button!=null) buttons.add(button);
+    }
     TelegramGuardMenu(GuardService guard,TelegramCommands commands) {this(guard,commands,null,null);}
     TelegramGuardMenu(GuardService guard,TelegramCommands commands,TelegramModeration moderation) {this(guard,commands,moderation,null);}
     TelegramGuardMenu(GuardService guard,TelegramCommands commands,TelegramModeration moderation,TelegramTagManager tags) {this(guard,commands,moderation,tags,null);}
@@ -36,10 +50,11 @@ final class TelegramGuardMenu {
         this.guard=guard;this.commands=commands;this.moderation=moderation;this.tags=tags;this.api=api;
         cabinet=new CabinetMenu(this);resources=new ResourceMenu(this);friendsMenu=new FriendsMenu(this);
         messages=new MessagesMenu(this);settingsMenu=new SettingsMenu(this);statisticsMenu=new StatisticsMenu(this);admin=new AdminMenu(this);superAdmin=new SuperAdminMenu(this);
-        support=new SupportMenu(this,supportService);voting=new VotingMenu(this);
+        support=new SupportMenu(this,supportService);voting=new VotingMenu(this);freeCoins=new FreeCoinsMenu(this);
         routes=new TelegramActionRegistry(guard);
         cabinet.registerActions(routes);resources.registerActions(routes);friendsMenu.registerActions(routes);
         messages.registerActions(routes);settingsMenu.registerActions(routes);statisticsMenu.registerActions(routes);admin.registerActions(routes);superAdmin.registerActions(routes);support.registerActions(routes);voting.registerActions(routes);
+        freeCoins.registerActions(routes);
         commands.sharedAccess((user,owner)->{var account=guard.account(user).join();return account!=null&&guard.canSearch(account.uuid(),owner);});
     }
 
@@ -81,6 +96,7 @@ final class TelegramGuardMenu {
         if(kind.startsWith("child")) return new TelegramCommands.View(text+"\nВвод действует 10 минут. Отмена: /cancel.",List.of(b(user,"↩ Дети","children","",0,0),homeButton(1)));
         if(kind.equals("friendAdd")) return new TelegramCommands.View(text+"\nВвод действует 10 минут. Отмена: /cancel.",List.of(b(user,"↩ Друзья","friends","",0,0),homeButton(1)));
         if(kind.startsWith("donationPremiumDays:")) return new TelegramCommands.View(text+"\nВвод действует 10 минут. Отмена: /cancel.",List.of(b(user,"↩ Пожертвования","donationAdmin","",0,0),homeButton(1)));
+        if(kind.equals("linkRewardAmount")) return new TelegramCommands.View(text+"\nВвод действует 10 минут. Отмена: /cancel.",List.of(b(user,"↩ Пожертвования","donationAdmin","",0,0),homeButton(1)));
         if(kind.startsWith("votingReward:")) return new TelegramCommands.View(text+"\nВвод действует 10 минут. Отмена: /cancel.",List.of(
                 b(user,"↩ К ресурсу","votingProvider",kind.substring("votingReward:".length()),0,0),homeButton(1)));
         return withHome(new TelegramCommands.View(text+"\nВвод действует 10 минут. Отмена: /cancel."));
@@ -93,6 +109,8 @@ final class TelegramGuardMenu {
         Input pending=waiting.get(user);
         if((pending==null || !pending.kind().equals("rootConsoleInput")) && text!=null&&text.trim().matches("(?i)[A-F0-9]{32}")) pending=new Input("donationCode",Long.MAX_VALUE);
         if(pending==null) return null;
+        String inputKind=pending.kind().split(":",2)[0];
+        BotAnalytics.event(BotAnalyticsCatalog.feature(inputKind,""),"input."+inputKind,"form_submit");
         TelegramCommands.View view=resources.onInputEarly(user,text,pending);
         if(view==null) view=messages.onInputEarly(user,text,pending);
         if(view==null) view=admin.onInputEarly(user,text,pending);
@@ -101,6 +119,7 @@ final class TelegramGuardMenu {
         if(view!=null) return view;
         if(pending.expires()<System.currentTimeMillis()) {waiting.remove(user);return withHome(new TelegramCommands.View("Время ввода истекло. Откройте настройки снова."));}
         view=cabinet.onInput(user,text,pending);
+        if(view==null) view=freeCoins.onInput(user,text,pending);
         if(view==null) view=voting.onInput(user,text,pending);
         if(view==null) view=friendsMenu.onInput(user,text,pending);
         if(view==null) view=superAdmin.onInput(user,text,pending);

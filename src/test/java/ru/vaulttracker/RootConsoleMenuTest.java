@@ -33,6 +33,8 @@ class RootConsoleMenuTest {
         return menu.callback(user,button(view,label)).view();
     }
     private TelegramCommands.View root() {return menu.rootHome(500);}
+    private TelegramCommands.View team() throws Exception {return click(500,root(),"Команда и роли");}
+    private TelegramCommands.View server() throws Exception {return click(500,root(),"Техническое управление");}
 
     @Test void donationAdminLivesInRootAndOldSuperCallbackCannotOpenIt() throws Exception {
         var superHome=menu.superHome(501);
@@ -40,18 +42,18 @@ class RootConsoleMenuTest {
         var oldSuperButton=menu.routes.button(501,"💝 Пожертвования","donationAdmin","",0,0);
         assertThrows(SecurityException.class,()->menu.callback(501,oldSuperButton.data()));
         assertThrows(Exception.class,()->guard.donationsVisible(501,true).get());
-        var root=root();
-        assertNotNull(button(root,"Управление пожертвованиями"));
-        var donations=click(500,root,"Управление пожертвованиями");
+        var root=click(500,root(),"Экономика");
+        assertNotNull(button(root,"Пожертвования и премиум"));
+        var donations=click(500,root,"Пожертвования и премиум");
         assertTrue(donations.text().contains("Кнопка у связанных игроков"));
-        assertTrue(click(500,donations,"Root").text().equals("🔐 Root"));
-        String oldRootCallback=button(root,"Управление пожертвованиями");
+        assertTrue(click(500,click(500,donations,"Экономика"),"↩ Root").text().equals("🔐 Root"));
+        String oldRootCallback=button(root,"Пожертвования и премиум");
         guard.configure(new GuardConfig(true,120000,0),Set.of(99L));
         assertThrows(SecurityException.class,()->menu.callback(500,oldRootCallback));
     }
 
     @Test void rootOnlyCallbacksAndInputRecheckPermission() throws Exception {
-        var root=root();
+        var root=server();
         assertNotNull(button(root,"📄 Логи"));assertNotNull(button(root,"🖥 Консоль"));
         String console=button(root,"Консоль"),logs=button(root,"Логи");
         assertTrue(menu.callback(501,console).alert());
@@ -67,7 +69,7 @@ class RootConsoleMenuTest {
     }
 
     @Test void rootGrantIsConfirmedPersistedAndHistoryBelongsToEachRoot() throws Exception {
-        var roots=click(500,root(),"Список Root");
+        var roots=click(500,team(),"Список Root");
         assertTrue(roots.buttons().stream().anyMatch(b->b.text().contains("500 · основной Root")));
         assertFalse(click(500,roots,"500 · основной Root").buttons().stream().anyMatch(b->b.text().contains("Удалить Root")));
         var input=click(500,roots,"Добавить Root");
@@ -90,14 +92,14 @@ class RootConsoleMenuTest {
 
     @Test void extraRootCanBeRemovedOnlyByAnotherRootAndOldCallbacksLoseAccess() throws Exception {
         guard.addRoot(500,777).get();
-        var roots=click(500,root(),"Список Root");
+        var roots=click(500,team(),"Список Root");
         var details=click(500,roots,"777");
         var confirm=click(500,details,"Удалить Root");
         assertTrue(guard.rootAdmin(777));
-        assertFalse(menu.rootHome(777).buttons().stream().anyMatch(b->b.text().contains("Список Root")));
+        assertFalse(click(777,menu.rootHome(777),"Команда и роли").buttons().stream().anyMatch(b->b.text().contains("Список Root")));
         assertThrows(SecurityException.class,()->menu.superAdmin.rootList(777,0));
         assertThrows(java.util.concurrent.ExecutionException.class,()->guard.addRoot(777,888).get());
-        String oldConsole=button(menu.rootHome(777),"Консоль");
+        String oldConsole=button(click(777,menu.rootHome(777),"Техническое управление"),"Консоль");
         var result=click(500,confirm,"Удалить");
         assertTrue(result.text().contains("Root 777 удалён"));
         assertFalse(guard.rootAdmin(777));
@@ -123,7 +125,7 @@ class RootConsoleMenuTest {
     }
 
     @Test void inputNormalizesSlashHistoryRepeatsWithoutDuplicatesAndCancelWorks() throws Exception {
-        var console=click(500,root(),"Консоль");
+        var console=click(500,server(),"Консоль");
         click(500,console,"Выполнить команду");
         assertTrue(menu.rootConsolePending(500));
         var result=menu.input(500,"/time set day");
@@ -147,7 +149,7 @@ class RootConsoleMenuTest {
         assertEquals(20,rows.size());assertEquals("say 20",rows.getFirst().command());
         assertEquals("say 1",rows.getLast().command());
         assertNull(guard.rootCommand(500,1).get());
-        var history=click(500,click(500,root(),"Консоль"),"История команд");
+        var history=click(500,click(500,server(),"Консоль"),"История команд");
         String stale=button(history,"say 20");
         click(500,history,"Очистить историю");
         assertTrue(menu.callback(500,stale).view().text().contains("больше не найдена"));
@@ -158,7 +160,7 @@ class RootConsoleMenuTest {
     @Test void historySurvivesRestartAndLongButtonKeepsFullCommandById() throws Exception {
         String longCommand="say "+"x".repeat(100);
         guard.rememberRootCommand(500,longCommand).get();
-        var history=click(500,click(500,root(),"Консоль"),"История команд");
+        var history=click(500,click(500,server(),"Консоль"),"История команд");
         var commandButton=history.buttons().stream().filter(b->b.text().startsWith("say ")).findFirst().orElseThrow();
         assertTrue(commandButton.text().endsWith("…"));
         assertFalse(commandButton.data().contains(longCommand));
@@ -180,7 +182,7 @@ class RootConsoleMenuTest {
             assertTrue(Files.readString(sent).contains("    [12:00:00] server started"));
             assertArrayEquals(before,Files.readAllBytes(latest));return null;
         }).when(api).sendDocument(eq(500L),any(Path.class),eq("latest-100.md"));
-        String logs=button(root(),"Логи");
+        String logs=button(server(),"Логи");
         assertTrue(menu.callback(501,logs).alert());
         assertTrue(menu.callback(77,logs).alert());
         var logMenu=menu.callback(500,logs).view();

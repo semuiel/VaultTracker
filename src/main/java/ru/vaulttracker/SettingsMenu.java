@@ -17,7 +17,7 @@ final class SettingsMenu extends TelegramMenuSection {
         long[] values={-1,0,120,300,900,3600,21600,86400,172800,604800};
         for(long value:values) buttons.add(b(user,duration(value),"rootTime",Long.toString(value),0,row++));
         buttons.add(b(user,"✏️ Своё время","rootCustom","",0,row++));buttons.add(b(user,"Как на сервере","rootTime","-2",0,row++));
-        buttons.add(b(user,"↩ Назад","superHome","",0,row++));buttons.add(homeButton(row));return new TelegramCommands.View(text,List.copyOf(buttons));
+        buttons.add(b(user,"↩ Личные настройки","superPreferences","",0,row++));buttons.add(homeButton(row));return new TelegramCommands.View(text,List.copyOf(buttons));
     }
     TelegramCommands.View playerSettings(long user) throws Exception {
         if(guard.account(user).get()==null) return root.home(user);
@@ -87,7 +87,7 @@ final class SettingsMenu extends TelegramMenuSection {
         if(account==null) return root.home(user);
         if(tags==null) return new TelegramCommands.View("Управление Telegram-тегами сейчас недоступно.",List.of(b(user,"↩️ Назад к тегу","tagMenu","",0,0),homeButton(1)));
         TelegramTagManager.Result result=apply ? tags.apply(user,account.name()) : tags.reset(user);
-        if(result.complete()) guard.setTag(user,apply).get();
+        if(result.complete()){guard.setTag(user,apply).get();BotAnalytics.success("settings",apply?"tagApply":"tagReset");}
         return new TelegramCommands.View(result.text(),List.of(b(user,"↩️ Назад к тегу","tagMenu","",0,0),homeButton(1)));
     }
     static String duration(long seconds) {
@@ -110,7 +110,7 @@ final class SettingsMenu extends TelegramMenuSection {
         });
         scope.on("itemSortMode",TelegramActionRegistry.Arguments.VALUE,TelegramActionRegistry.Requirement.HANDLER,false, (user,a,data)-> {
             TelegramCommands.View view;
-            {guard.itemSortMode(user,ItemSorting.Mode.valueOf(a.value())).get();view=itemSorting(user);}
+            {guard.itemSortMode(user,ItemSorting.Mode.valueOf(a.value())).get();BotAnalytics.success("settings","itemSortMode");view=itemSorting(user);}
             return view;
         });
         scope.on("notifications",TelegramActionRegistry.Arguments.NONE,TelegramActionRegistry.Requirement.HANDLER,false, (user,a,data)-> {
@@ -130,21 +130,21 @@ final class SettingsMenu extends TelegramMenuSection {
         });
         scope.on("own",TelegramActionRegistry.Arguments.NONE,TelegramActionRegistry.Requirement.HANDLER,true, (user,a,data)-> {
             TelegramCommands.View view;
-            {guard.toggleOwn(user).get();view=ownNotifications(user);}
+            {guard.toggleOwn(user).get();BotAnalytics.success("settings","own");view=ownNotifications(user);}
             return view;
         });
         scope.on("friendAlerts",TelegramActionRegistry.Arguments.NONE,TelegramActionRegistry.Requirement.HANDLER,false, (user,a,data)-> {
             TelegramCommands.View view;
-            {guard.toggleFriendAlerts(user).get();view=notifications(user);}
+            {guard.toggleFriendAlerts(user).get();BotAnalytics.success("settings","friendAlerts");view=notifications(user);}
             return view;
         });
         scope.on("gameMessageNotifications",TelegramActionRegistry.Arguments.NONE,TelegramActionRegistry.Requirement.HANDLER,false, (user,a,data)-> {
             TelegramCommands.View view;
-            {guard.toggleGameMessageNotifications(user).get();view=notifications(user);}
+            {guard.toggleGameMessageNotifications(user).get();BotAnalytics.success("settings","gameMessageNotifications");view=notifications(user);}
             return view;
         });
         scope.on("telegramGameChat",TelegramActionRegistry.Arguments.NONE,TelegramActionRegistry.Requirement.HANDLER,false,(user,a,data)->{
-            guard.toggleTelegramGameChat(user).get();return notifications(user);
+            guard.toggleTelegramGameChat(user).get();BotAnalytics.success("settings","telegramGameChat");return notifications(user);
         });
         scope.on("tagApply",TelegramActionRegistry.Arguments.NONE,TelegramActionRegistry.Requirement.HANDLER,true, (user,a,data)-> {
             TelegramCommands.View view;
@@ -158,7 +158,7 @@ final class SettingsMenu extends TelegramMenuSection {
         });
         scope.on("time",TelegramActionRegistry.Arguments.VALUE,TelegramActionRegistry.Requirement.HANDLER,true, (user,a,data)-> {
             TelegramCommands.View view;
-            {long value=Long.parseLong(a.value());guard.offlineSeconds(user,value== -2 ? null : value).get();view=ownNotifications(user);}
+            {long value=Long.parseLong(a.value());guard.offlineSeconds(user,value== -2 ? null : value).get();BotAnalytics.success("settings","time");view=ownNotifications(user);}
             return view;
         });
         scope.on("custom",TelegramActionRegistry.Arguments.NONE,TelegramActionRegistry.Requirement.HANDLER,false, (user,a,data)-> {
@@ -169,6 +169,7 @@ final class SettingsMenu extends TelegramMenuSection {
     }
     TelegramCommands.View timeInput(long user,TelegramGuardMenu.Input pending,long value) throws Exception {
         if(pending.kind().equals("rootTime")) guard.superDelay(user,value).get();else guard.offlineSeconds(user,value).get();
+        BotAnalytics.success(pending.kind().equals("rootTime")?"root":"settings","notificationTime");
         waiting.remove(user);
         return settings(user,pending.kind().equals("rootTime"));
     }

@@ -4,6 +4,8 @@ import sqlite3
 import time
 import json
 from contextlib import contextmanager
+from premium_products import PRODUCTS, product_spec
+from link_rewards import LinkRewards
 
 
 class Ledger:
@@ -28,11 +30,17 @@ class Ledger:
                     delivered INTEGER NOT NULL DEFAULT 0, due INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(alert_id,recipient));
                 CREATE INDEX IF NOT EXISTS alert_deliveries_due ON alert_deliveries(delivered,due);
                 CREATE TABLE IF NOT EXISTS premium(owner TEXT PRIMARY KEY, until INTEGER NOT NULL, version INTEGER NOT NULL, applied INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE IF NOT EXISTS premium_lite(owner TEXT PRIMARY KEY, until INTEGER NOT NULL, version INTEGER NOT NULL, applied INTEGER NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS operations(id TEXT PRIMARY KEY, payload TEXT NOT NULL, result TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS donation_audit(id INTEGER PRIMARY KEY AUTOINCREMENT, actor TEXT NOT NULL, owner TEXT NOT NULL, name TEXT NOT NULL, action TEXT NOT NULL, amount INTEGER NOT NULL, created INTEGER NOT NULL);
+                CREATE INDEX IF NOT EXISTS entries_created ON entries(created);
+                CREATE INDEX IF NOT EXISTS donation_audit_action_time ON donation_audit(action,created);
             ''')
             if not any(row['name'] == 'stars' for row in db.execute('PRAGMA table_info(orders)')):
                 db.execute('ALTER TABLE orders ADD COLUMN stars INTEGER')
+            if not any(row['name'] == 'source' for row in db.execute('PRAGMA table_info(entries)')):
+                db.execute("ALTER TABLE entries ADD COLUMN source TEXT NOT NULL DEFAULT ''")
+        self.link_rewards = LinkRewards(self)
 
     @contextmanager
     def connection(self):
@@ -51,11 +59,11 @@ class Ledger:
             db.close()
 
     @staticmethod
-    def entry(db, key, owner, amount):
+    def entry(db, key, owner, amount, source=''):
         if db.execute('SELECT 1 FROM entries WHERE id=?', (key,)).fetchone():
             return
         db.execute('INSERT OR IGNORE INTO wallets(owner) VALUES(?)', (owner,))
-        db.execute('INSERT INTO entries VALUES(?,?,?,?)', (key, owner, amount, int(time.time())))
+        db.execute('INSERT INTO entries(id,owner,amount,created,source) VALUES(?,?,?,?,?)', (key, owner, amount, int(time.time()), source))
         db.execute('UPDATE wallets SET balance=balance+? WHERE owner=?', (amount, owner))
 
     def sync(self, order_id, buyer, amount, status, reviewed=False, stars=None):
@@ -143,23 +151,31 @@ class Ledger:
         with self.connection() as db:
             row = db.execute('SELECT * FROM wallets WHERE owner=?', (owner,)).fetchone()
             premium = db.execute('SELECT * FROM premium WHERE owner=?', (owner,)).fetchone()
+            lite = db.execute('SELECT * FROM premium_lite WHERE owner=?', (owner,)).fetchone()
+            lite_until = lite['until'] if lite else 0
+            reward_claimed = db.execute('SELECT 1 FROM link_reward_claims WHERE owner=?', (owner,)).fetchone() is not None
             until = premium['until'] if premium else 0
             balance = row['balance'] if row else 0
             pending = self.pending_amount(db, owner)
             return {'balanceMinor': balance, 'availableMinor': max(0, balance - pending),
                     'pendingMinor': pending, 'blocked': bool(row['blocked']) if row else False,
                     'premium': until < 0 or until > time.time(), 'premiumUntil': until,
-                    'premiumPending': bool(premium and premium['version'] != premium['applied'])}
+                    'premiumPending': bool(premium and premium['version'] != premium['applied']),
+                    'premiumLite': lite_until < 0 or lite_until > time.time(), 'premiumLiteUntil': lite_until,
+                    'premiumLitePending': bool(lite and lite['version'] != lite['applied']),
+                    'linkRewardClaimed': reward_claimed}
 
     @staticmethod
     def pending_amount(db, owner):
         return db.execute("SELECT COALESCE(SUM(amount),0) FROM orders WHERE owner=? AND credited=1 AND reversed=0 AND status='PAID'",
                           (owner,)).fetchone()[0]
 
-    def change(self, owner, request_id, action, actor, name, days=0, amount=0, base_until=0):
+    def change(self, owner, request_id, action, actor, name, days=0, amount=0, base_until=0, product='premium'):
+        spec = product_spec(product)
+        table = spec['table']  # Fixed allowlist, never a request-provided SQL identifier.
         if action not in ('buy', 'grant', 'remove', 'add', 'subtract', 'spend', 'unblock'):
             raise ValueError('Unknown operation')
-        if action == 'buy' and (type(days) is not int or days not in (30,60)):
+        if action == 'buy' and (type(days) is not int or days not in spec['prices']):
             raise ValueError('Invalid duration')
         if action == 'grant' and (type(days) is not int or days != -1 and not 1 <= days <= 36500):
             raise ValueError('Invalid duration')
@@ -171,6 +187,9 @@ class Ledger:
             raise ValueError('Invalid actor')
         # Exclude the live LP snapshot from the identity: retries may see the applied expiry.
         payload=json.dumps([owner,action,actor,name,days,amount],ensure_ascii=False)
+        # Preserve the identity of all pre-upgrade Premium operations.
+        if product != 'premium':
+            payload=json.dumps([owner,action,actor,name,days,amount,product],ensure_ascii=False)
         with self.connection() as db:
             previous=db.execute('SELECT * FROM operations WHERE id=?',(request_id,)).fetchone()
             if previous:
@@ -186,7 +205,7 @@ class Ledger:
                 db.execute('UPDATE wallets SET blocked=0 WHERE owner=?',(owner,))
             delta=0
             if action=='buy':
-                cost=60000 if days==30 else 100000
+                cost=spec['prices'][days]
                 if wallet['blocked']: raise ValueError('Покупки заблокированы после возврата. Обратитесь к администратору.')
                 if available<cost:
                     if wallet['balance']>=cost and pending:
@@ -201,28 +220,35 @@ class Ledger:
                     raise ValueError('Средства станут доступны после подтверждения заказа на FunPay.')
             if delta: self.entry(db,request_id+':balance',owner,delta)
             if action in ('buy','grant','remove'):
-                old=db.execute('SELECT * FROM premium WHERE owner=?',(owner,)).fetchone()
+                old=db.execute(f'SELECT * FROM {table} WHERE owner=?',(owner,)).fetchone()
                 previous_until=old['until'] if old else 0
                 if action=='remove': until=0
                 elif days<0: until=-1
                 elif previous_until<0 or base_until<0: raise ValueError('У игрока уже бессрочный премиум.')
                 else: until=max(int(time.time()),previous_until,base_until)+days*86400
                 version=(old['version'] if old else 0)+1
-                db.execute('INSERT INTO premium(owner,until,version) VALUES(?,?,?) ON CONFLICT(owner) DO UPDATE SET until=excluded.until,version=excluded.version', (owner,until,version))
+                db.execute(f'INSERT INTO {table}(owner,until,version) VALUES(?,?,?) ON CONFLICT(owner) DO UPDATE SET until=excluded.until,version=excluded.version', (owner,until,version))
             balance=db.execute('SELECT balance FROM wallets WHERE owner=?',(owner,)).fetchone()[0]
-            result={'balanceMinor':balance,'availableMinor':max(0,balance-pending),'pendingMinor':pending,'action':action}
+            result={'balanceMinor':balance,'availableMinor':max(0,balance-pending),'pendingMinor':pending,'action':action,'product':product}
             db.execute('INSERT INTO operations VALUES(?,?,?)',(request_id,payload,json.dumps(result)))
             db.execute('INSERT INTO donation_audit(actor,owner,name,action,amount,created) VALUES(?,?,?,?,?,?)',
                        (actor,owner,name,action,days if action in ('buy','grant') else delta,int(time.time())))
             return result
 
-    def premium_tasks(self):
+    def premium_tasks(self, include_lite=True):
         with self.connection() as db:
-            return [dict(r) for r in db.execute('SELECT owner,until,version FROM premium WHERE applied!=version LIMIT 100')]
+            tasks=[]
+            for product, spec in PRODUCTS.items():
+                if product=='premiumlite' and not include_lite:
+                    continue
+                tasks.extend(dict(r, product=product) for r in db.execute(
+                    f"SELECT owner,until,version FROM {spec['table']} WHERE applied!=version LIMIT ?", (100-len(tasks),)))
+            return tasks
 
-    def premium_ack(self, owner, version):
+    def premium_ack(self, owner, version, product='premium'):
+        table=product_spec(product)['table']
         with self.connection() as db:
-            db.execute('UPDATE premium SET applied=? WHERE owner=? AND version=?',(version,owner,version))
+            db.execute(f'UPDATE {table} SET applied=? WHERE owner=? AND version=?',(version,owner,version))
 
     def audit(self, page):
         with self.connection() as db:
@@ -230,6 +256,27 @@ class Ledger:
             pages=max(1,(count+19)//20);page=max(0,min(page,pages-1))
             rows=[dict(r) for r in db.execute('SELECT * FROM donation_audit ORDER BY id DESC LIMIT 20 OFFSET ?',(page*20,))]
             return {'rows':rows,'page':page,'pages':pages}
+
+    def statistics(self):
+        now=int(time.time());local=time.localtime(now)
+        today=int(time.mktime((local.tm_year,local.tm_mon,local.tm_mday,0,0,0,0,0,-1)))
+        periods={}
+        with self.connection() as db:
+            for name,start in [('today',today),('week',now-7*86400),('month',now-30*86400),('all',0)]:
+                payments=db.execute('''SELECT COUNT(*) AS count,COALESCE(SUM(e.amount),0) AS amount,
+                    COUNT(DISTINCT e.owner) AS donors,COALESCE(SUM(CASE WHEN o.status='CLOSED' THEN e.amount ELSE 0 END),0) AS confirmed
+                    FROM entries e JOIN orders o ON e.id=o.id||':payment' WHERE e.created>=?''',(start,)).fetchone()
+                refunds=db.execute("SELECT COUNT(*) AS count,COALESCE(-SUM(e.amount),0) AS amount FROM entries e JOIN orders o ON e.id=o.id||':refund' WHERE e.created>=?",(start,)).fetchone()
+                reviews=db.execute("SELECT COUNT(*) AS count,COALESCE(SUM(e.amount),0) AS amount FROM entries e JOIN orders o ON e.id=o.id||':review' WHERE e.created>=?",(start,)).fetchone()
+                premium=db.execute("SELECT COUNT(*) FROM donation_audit WHERE action='buy' AND created>=?",(start,)).fetchone()[0]
+                grants=db.execute("SELECT COUNT(*) FROM donation_audit WHERE action='grant' AND created>=?",(start,)).fetchone()[0]
+                purchases=db.execute("SELECT COALESCE(-SUM(e.amount),0) FROM entries e JOIN operations o ON e.id=o.id||':balance' WHERE json_extract(o.payload,'$[1]')='buy' AND e.created>=?",(start,)).fetchone()[0]
+                manual=db.execute("SELECT COUNT(*) AS count,COALESCE(SUM(amount),0) AS amount FROM donation_audit WHERE actor!='website' AND action IN ('add','subtract') AND created>=?",(start,)).fetchone()
+                periods[name]={'paymentCount':payments['count'],'paymentMinor':payments['amount'],'donors':payments['donors'],
+                    'confirmedMinor':payments['confirmed'],'refundCount':refunds['count'],'refundMinor':refunds['amount'],
+                    'reviewCount':reviews['count'],'reviewMinor':reviews['amount'],'premiumPurchases':premium,'premiumPurchaseMinor':purchases,
+                    'premiumGrants':grants,'manualCount':manual['count'],'manualMinor':manual['amount']}
+        return {'periods':periods}
 
     def pending(self):
         with self.connection() as db:

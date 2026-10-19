@@ -40,6 +40,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
     private SearchCompass searchCompass;
     private BastionTrust bastionTrust;
     private ChildPlayers childPlayers;
+    private NewsAnnouncements news;
     private final Object telegramLock=new Object();
     private final Set<BlockKey> scheduled = ConcurrentHashMap.newKeySet();
     private final ScheduledExecutorService voteDeliveries=Executors.newSingleThreadScheduledExecutor(
@@ -91,6 +92,9 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
         Objects.requireNonNull(getCommand("find")).setTabCompleter(this);
         Objects.requireNonNull(getCommand("tg")).setExecutor(this);
         Objects.requireNonNull(getCommand("tg")).setTabCompleter(this);
+        try {news=new NewsAnnouncements(this,new TelegramModerationRepository(getDataFolder().toPath()));}
+        catch(Exception failure) {throw new IllegalStateException("Не удалось открыть хранилище новостей и модерации Telegram",failure);}
+        Objects.requireNonNull(getCommand("nr")).setExecutor(news);
         storage.start(snapshots-> {
             catalogue.restore(snapshots);guard.restore(snapshots);
             for(UUID owner:snapshots.stream().map(Snapshot::owner).distinct().toList()) {
@@ -130,6 +134,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
             for(var vote:guard.pendingServerVotes(100).get()) {
                 if(stopping) return;
                 try {guard.donations.recordServerVote(vote.nickname(),vote.service(),vote.timestamp());}
+                catch(DonationClient.Rejected rejected) {getLogger().fine("Источник голоса ещё не настроен; голос сохранён, остальные продолжают обрабатываться.");continue;}
                 catch(Exception unavailable) {getLogger().fine("Платёжный сервис недоступен; голос остаётся в локальной очереди.");return;}
                 guard.serverVoteDelivered(vote.id()).get();
             }
@@ -156,7 +161,11 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
             TelegramConfig telegramConfig=TelegramConfig.load(getDataFolder().toPath(),false);
             guard.configure(GuardConfig.load(getDataFolder().toPath()),telegramConfig.adminUserIds());
             if(telegramConfig.enabled()) {
-                if(telegramConfig.token().matches("[0-9]+:[A-Za-z0-9_-]{20,}")) telegram=new TelegramBotService(telegramConfig,catalogue,storage,getLogger(),guard,new TelegramModeration(this,guard,searchCompass,childPlayers));
+                if(telegramConfig.token().matches("[0-9]+:[A-Za-z0-9_-]{20,}")) {
+                    var moderation=new TelegramModeration(this,guard,searchCompass,childPlayers);moderation.newsAnnouncements(news);
+                    telegram=new TelegramBotService(telegramConfig,catalogue,storage,getLogger(),guard,moderation);
+                    telegram.coreprotectViewer(this);
+                }
                 else getLogger().warning("Каталожный Telegram-бот не запущен: заполните token в telegram.yml. Чат-бот с отдельным токеном может работать независимо.");
             }
             String chatStatus="чат выключен";
@@ -165,6 +174,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
                 if(chatConfig.enabled) {
                     telegramChat=new TelegramChatBridge(this,chatConfig,telegramConfig);
                     telegramChat.linkedAccounts(guard);
+                    if(telegram!=null)telegram.analyticsBridge(telegramChat);
                     boolean shared=chatConfig.shared(telegramConfig);
                     if(shared) telegram.chatBridge(telegramChat);
                     telegramChat.start(shared);chatStatus="чат запущен"+(shared?" с общим токеном":" с отдельным токеном");
@@ -527,7 +537,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
     @Override public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         if(command.getName().equalsIgnoreCase("unlink")) {
             if(!(sender instanceof Player player)) {warn(sender,"Отвязка выполняется только игроком в Minecraft.");return true;}
-            if(!player.hasPermission("vaulttracker.link")) {error(sender,"Нет права vaulttracker.link.");return true;}
+            if(!player.isOp()) {error(sender,"Отвязка аккаунта доступна только оператору сервера.");return true;}
             if(args.length!=0) {warn(sender,"Используйте /unlink без аргументов.");return true;}
             guard.unlink(player.getUniqueId()).whenComplete((message,failure)->{
                 if(stopping) return;
@@ -610,7 +620,7 @@ public final class VaultTrackerPlugin extends JavaPlugin implements Listener, Ta
             tell(sender,"Напишите [vault] или [v] на табличке либо вставьте бумагу в рамку на хранилище.");
             tell(sender,"/vtrack mine — ваши хранилища; /topitem diamond или /vtrack find DIAMOND — у кого есть алмазы. Поиск доступен постоянно.");
             tell(sender,"/vtrack link <код> — привязать персонажа к Telegram. Получите код кнопкой в личном чате бота.");
-            tell(sender,"/unlink — отвязать своего персонажа от Telegram.");
+            if(sender.isOp())tell(sender,"/unlink — отвязать своего персонажа от Telegram (только OP).");
             tell(sender,"/tg <ник> <текст> — личное сообщение игроку, привязанному к Telegram.");
             if (sender.hasPermission("vaulttracker.admin")) tell(sender,"/vtrack status | /vtrack rescan | /vtrack reload — управление каталогом.");
         }

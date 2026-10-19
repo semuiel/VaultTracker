@@ -7,10 +7,11 @@ import unittest
 import uuid
 from pathlib import Path
 from urllib.parse import urlencode
+from unittest.mock import patch
 
 from ledger import Ledger
 from service import Service, handler
-from vote_providers import MinecraftRatingProvider, VoteEvent
+from vote_providers import MinecraftRatingProvider, VoteEvent, configured_providers
 from vote_reconcile import MinecraftRatingHistory
 from voting import VoteRepository, VoteService
 
@@ -66,8 +67,11 @@ class VotingTests(unittest.TestCase):
         self.service.callback('minecraft_rating',callback(timestamp='1700000002'))
         self.service.repository.update('minecraft_rating','root',enabled=False)
         self.assertEqual('duplicate',self.service.callback('minecraft_rating',callback(timestamp='1700000002'))['status'])
-        self.assertEqual(1400,self.service.repository.resolve('Player_1',self.owner,'Player_1')['creditedMinor'])
-        self.assertEqual(1400,self.ledger.wallet(self.owner)['balanceMinor'])
+        result=self.service.repository.resolve('Player_1',self.owner,'Player_1')
+        # Both events arrived before resolving: at most one can consume this period.
+        self.assertEqual(1,result['votes'])
+        self.assertEqual(500,result['creditedMinor'])
+        self.assertEqual(result['creditedMinor'],self.ledger.wallet(self.owner)['balanceMinor'])
 
     def test_unknown_is_pending_then_resolved_and_statistics_are_sql_aggregates(self):
         self.service.callback('minecraft_rating',callback())
@@ -76,6 +80,13 @@ class VotingTests(unittest.TestCase):
         self.service.repository.resolve('Player_1',self.owner,'Player_1')
         stats=self.service.repository.statistics()
         self.assertEqual((1,1,1,1,500,0),(stats['total'],stats['today'],stats['week'],stats['month'],stats['rewardedMinor'],stats['pending']))
+        self.assertEqual((1,1,1,1,500,500,500,0),
+                         (stats['uniqueTotal'],stats['uniqueToday'],stats['uniqueWeek'],stats['uniqueMonth'],
+                          stats['rewardedTodayMinor'],stats['rewardedWeekMinor'],stats['rewardedMonthMinor'],stats['pendingPlayers']))
+        self.assertGreater(stats['firstReceived'],0)
+        self.assertEqual(stats['firstReceived'],stats['lastReceived'])
+        self.assertEqual(('Player_1',1,500),(stats['topPlayers'][0]['nickname'],stats['topPlayers'][0]['votes'],stats['topPlayers'][0]['rewarded']))
+        self.assertEqual((1,1,500),(stats['daily'][-1]['votes'],stats['daily'][-1]['unique'],stats['daily'][-1]['rewardedMinor']))
         self.assertEqual('minecraft_rating',stats['providers'][0]['provider'])
 
     def test_provider_isolation(self):
@@ -103,6 +114,55 @@ class VotingTests(unittest.TestCase):
         second=self.service.record_votifier('Player_1','MinecraftRating.ru','1700001234')
         self.assertEqual('pending',first['status'])
         self.assertEqual('duplicate',second['status'])
+
+    def test_votifier_sites_have_separate_rewards_statistics_and_notifications(self):
+        cfg=config()
+        cfg['voting']['providers']['top_minecrafter']={
+            'enabled':True,'reward_minor':300,
+            'vote_url':'https://top-minecrafter.com/server/flexity/',
+            'votifier_services':['top-minecrafter.com']}
+        cfg['voting']['providers']['hotmc']={
+            'enabled':True,'reward_minor':200,
+            'vote_url':'https://hotmc.ru/vote-281777',
+            'votifier_services':['HotMC.RU']}
+        service=VoteService(cfg,self.ledger,configured_providers(cfg))
+        self.assertEqual(['minecraft_rating','top_minecrafter','hotmc'],
+                         [item['id'] for item in service.repository.providers_view(True)])
+        top=service.record_votifier('Player_1','top-minecrafter.com','1700001234')
+        service.record_votifier('Player_1','MinecraftRating.ru','1700001234')
+        hot=service.record_votifier('Player_1','HotMC.RU','1700001234')
+        self.assertEqual('duplicate',service.record_votifier('Player_1','top-minecrafter.com','1700001234')['status'])
+        self.assertEqual('duplicate',service.record_votifier('Player_1','HotMC.RU','1700001234')['status'])
+        self.assertEqual(1000,service.repository.resolve('Player_1',self.owner,'Player_1')['creditedMinor'])
+        self.assertEqual(300,service.repository.statistics('top_minecrafter')['rewardedMinor'])
+        self.assertEqual(500,service.repository.statistics('minecraft_rating')['rewardedMinor'])
+        self.assertEqual(200,service.repository.statistics('hotmc')['rewardedMinor'])
+        self.assertEqual(
+            [('minecraft_rating',1),('top_minecrafter',1),('hotmc',1)],
+            [(row['provider'],row['votes']) for row in service.repository.player_votes(self.owner)])
+        self.assertEqual([0,0,0],[row['votes'] for row in service.repository.player_votes(str(uuid.uuid4()))])
+        all_stats=service.repository.statistics()
+        self.assertEqual(['minecraft_rating','top_minecrafter','hotmc'],[row['provider'] for row in all_stats['providers']])
+        self.assertEqual((3,1,1000),(all_stats['total'],all_stats['uniqueTotal'],all_stats['rewardedMonthMinor']))
+        self.assertEqual(3,len(service.repository.notifications()))
+        notice_ids=[n['id'] for n in service.repository.notifications()]
+        self.assertIn(top['id'],notice_ids)
+        self.assertIn(hot['id'],notice_ids)
+        service.repository.update('top_minecrafter','root',reward=700,enabled=False)
+        with self.assertRaises(ValueError):
+            service.record_votifier('Player_1','top-minecrafter.com','1700001235')
+        self.assertEqual('pending',service.record_votifier('Player_1','MinecraftRating.ru','1700001235')['status'])
+        self.assertEqual('pending',service.record_votifier('Player_1','hotmc.ru','1700001235')['status'])
+
+    def test_unknown_and_ambiguous_votifier_sources_never_credit_minecraft_rating(self):
+        with self.assertRaisesRegex(ValueError,'unknown-votifier-service'):
+            self.service.record_votifier('Player_1','unconfigured-source','1700001234')
+        cfg=config()
+        cfg['voting']['providers']['top_minecrafter']={'votifier_services':['MinecraftRating.ru']}
+        service=VoteService(cfg,self.ledger,configured_providers(cfg))
+        with self.assertRaisesRegex(ValueError,'ambiguous-votifier-service'):
+            service.record_votifier('Player_1','MinecraftRating.ru','1700001234')
+        self.assertEqual([],service.repository.pending())
 
     def test_credit_notification_is_durable_and_contains_current_balance(self):
         self.service.record_votifier('Player_1','MinecraftRating.ru','1700001234')
@@ -145,6 +205,8 @@ class VotingHttpTests(unittest.TestCase):
                 self.assertEqual(200,post('/voting-notification-ack',{'id':notice['id'],'success':True},auth=True)[0])
                 self.assertEqual([],json.loads(post('/voting-notifications',{},auth=True)[1])['notifications'])
                 status,wallet=post('/wallet',{'owner':owner},auth=True);self.assertEqual(500,json.loads(wallet)['balanceMinor'])
+                status,summary=post('/player-summary',{'owner':owner},auth=True);summary=json.loads(summary)
+                self.assertEqual((500,1),(summary['balanceMinor'],summary['votes'][0]['votes']))
                 self.assertEqual(500,post('/voting/minecraft-rating',callback(signature='wrong'),True)[0])
                 self.assertEqual(500,post('/voting/minecraft-rating',{'username':'Player_1'},True)[0])
             finally: server.shutdown();server.server_close();thread.join(5)

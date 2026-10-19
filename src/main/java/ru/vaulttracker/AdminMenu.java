@@ -13,7 +13,8 @@ final class AdminMenu extends TelegramMenuSection {
         buttons.add(b(user,(on ? "🔔 Отключить" : "🔕 Включить")+" уведомления администратора","admin","",0,0));
         buttons.add(b(user,"👥 Список игроков","browse:online","",0,1));
         buttons.add(b(user,"🗂 События администраторов","history","",0,2));
-        buttons.add(guard.superAdmin(user)?b(user,"↩ Назад","adminMenu","",0,3):new TelegramCommands.Button("↩ Назад","vg:home",3));buttons.add(homeButton(4));return new TelegramCommands.View("🛠 Функции администратора\nУведомления администратора: "+(on ? "включены" : "выключены"),List.copyOf(buttons));
+        root.addCoreProtectButton(user,buttons,3);int backRow=buttons.size();
+        buttons.add(guard.superAdmin(user)?b(user,"↩ Назад","adminMenu","",0,backRow):new TelegramCommands.Button("↩ Назад","vg:home",backRow));buttons.add(homeButton(backRow+1));return new TelegramCommands.View("🛠 Функции администратора\nУведомления администратора: "+(on ? "включены" : "выключены"),List.copyOf(buttons));
     }
     TelegramCommands.View banMenu(long user) {
         guard.requireCapability(user,"ban");
@@ -141,14 +142,26 @@ final class AdminMenu extends TelegramMenuSection {
             if(profile.world()!=null) card.append("\n📍 ").append(profile.world()).append(" · ").append(TelegramEmojiMarkup.code(root.coordinateNumbers(profile)));
             if(profile.playtimeSeconds()!=null) card.append("\n⏱ ").append(playtime(profile.playtimeSeconds()));
         }
-        card.append(root.donationDetails(uuid).replace("\n\n","\n"));
         card.append("\nUUID: ").append(id.substring(0,8)).append("…")
                 .append("\nОнлайн: ").append(yesNo(p.online())).append(" · OP: ").append(yesNo(p.op())).append(" · Бан: ").append(yesNo(p.banned()));
         if(p.firstPlayed()>0) card.append("\nПервый: ").append(moscowDate(p.firstPlayed()));
-        if(p.lastLogin()>0) card.append("\nПоследний: ").append(moscowDate(p.lastLogin()));
-        if(p.lastSeen()>0) card.append("\nВыход: ").append(moscowDate(p.lastSeen()));
+        appendDonationSummary(card,uuid);
         card.append("\nДействия · ").append(page+1).append('/').append(Math.max(1,(available.size()+8)/9));
         return new TelegramCommands.View(TelegramEmojiMarkup.bold(card.toString()),List.copyOf(buttons));
+    }
+    void appendDonationSummary(StringBuilder card,UUID uuid) {
+        try {
+            var summary=guard.donations.playerSummary(uuid);long balance=summary.get("balanceMinor").getAsLong();
+            if(balance!=0) card.append("\nБаланс: ").append(DonationClient.money(balance));
+            long until=summary.has("premiumUntil")?summary.get("premiumUntil").getAsLong():0;
+            boolean premium=summary.has("premium")&&summary.get("premium").getAsBoolean();
+            card.append("\nПремиум: ").append(until<0?"бессрочный":premium?"активен":"не активен");
+            if(until>0) card.append("\nОкончание премиума: ").append(moscowSeconds(until)).append(" МСК");
+            if(summary.has("votes")&&summary.get("votes").isJsonArray()) for(var element:summary.getAsJsonArray("votes")) {
+                var vote=element.getAsJsonObject();long count=vote.get("votes").getAsLong();
+                card.append("\n").append(vote.get("name").getAsString()).append(": ").append(count).append(' ').append(voteWord(count));
+            }
+        } catch(Exception ignored) {}
     }
     TelegramCommands.View freezeMenu(long user,UUID uuid) {
         guard.requireCapability(user,"freeze");
@@ -159,6 +172,8 @@ final class AdminMenu extends TelegramMenuSection {
     }
     static String yesNo(boolean value) {return value?"да":"нет";}
     static String moscowDate(long millis) {return millis<=0?"нет данных":java.time.Instant.ofEpochMilli(millis).atZone(java.time.ZoneId.of("Europe/Moscow")).format(java.time.format.DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm"));}
+    static String moscowSeconds(long seconds) {return java.time.Instant.ofEpochSecond(seconds).atZone(java.time.ZoneId.of("Europe/Moscow")).format(java.time.format.DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm"));}
+    static String voteWord(long count) {long value=Math.abs(count)%100;if(value>=11&&value<=14)return "голосов";return switch((int)(value%10)){case 1->"голос";case 2,3,4->"голоса";default->"голосов";};}
     static String playtime(long seconds) {long safe=Math.max(0,seconds),days=safe/86400,hours=safe%86400/3600,minutes=safe%3600/60;return (days>0?days+" дн. ":"")+(hours>0?hours+" ч. ":"")+(minutes>0?minutes+" мин.":days==0&&hours==0?"меньше минуты":"");}
     TelegramCommands.View teleportPlayers(long user,String source,int page,String filter) throws Exception {
         guard.requireCapability(user,"teleport");var people=moderation.players(user,"online").get().stream().filter(p->!p.uuid().toString().equals(source)).toList();

@@ -10,15 +10,33 @@
   "max_units": 100000,
   "poll_seconds": 30,
   "voting": {
+    "calendar_utc_offset_minutes": 420,
+    "monthly_reward_minor": 30000,
+    "monthly_tie_policy": "full",
     "providers": {
       "minecraft_rating": {
         "enabled": false,
         "reward_minor": 500,
+        "vote_interval_minutes": 1440,
         "secret": "",
         "vote_url": "",
         "callback_enabled": false,
         "reconcile_enabled": false,
         "reconcile_seconds": 300
+      },
+      "top_minecrafter": {
+        "enabled": false,
+        "reward_minor": 500,
+        "vote_interval_minutes": 1440,
+        "vote_url": "https://top-minecrafter.com/server/flexity/",
+        "votifier_services": ["top-minecrafter.com"]
+      },
+      "hotmc": {
+        "enabled": false,
+        "reward_minor": 500,
+        "vote_interval_minutes": 1440,
+        "vote_url": "https://hotmc.ru/vote-281777",
+        "votifier_services": ["HotMC.RU"]
       }
     }
   }

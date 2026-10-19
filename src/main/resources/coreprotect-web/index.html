@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>CoreProtect · FLEXITY</title>
+  <link rel="stylesheet" href="./style.css">
+  <script src="https://telegram.org/js/telegram-web-app.js" defer></script>
+  <script src="./rollback.js" defer></script>
+  <script src="./materials.js" defer></script>
+  <script src="./players.js" defer></script>
+  <script src="./app.js" defer></script>
+</head>
+<body>
+<main>
+  <header><span class="brand">FLEXITY</span><h1>CoreProtect</h1><p>История действий на сервере</p><span class="badge">Только просмотр</span></header>
+  <section id="gate" class="panel" role="status"><h2>Откройте CoreProtect через Telegram-бот FLEXITY</h2><p>Вход доступен администраторам через кнопку в боте.</p></section>
+  <section id="viewer" hidden>
+    <nav class="modes" aria-label="Способ поиска"><button type="button" data-mode="player" aria-pressed="true">🔍 По игроку</button><button type="button" data-mode="area" aria-pressed="false">📍 По координатам</button><button type="button" data-mode="container" aria-pressed="false" id="containerMode">📦 Контейнеры</button></nav>
+    <form id="search" class="panel">
+      <div><label class="check"><input type="checkbox" id="usePlayer" checked> По игроку</label><input id="player" name="player" aria-label="Ник / UUID" autocomplete="off" placeholder="Ник игрока или UUID" maxlength="36"></div>
+      <div class="grid">
+        <label>Период<select id="period"><option value="1800">30 минут</option><option value="7200">2 часа</option><option value="43200">12 часов</option><option value="86400" selected>24 часа</option><option value="604800">7 дней</option><option value="2592000">30 дней</option><option value="custom">Свой период</option></select></label>
+        <div><label class="check"><input type="checkbox" id="useWorld"> Только выбранный мир</label><select id="world" aria-label="Мир"><option value="">Выберите мир</option></select></div>
+      </div>
+      <div class="grid" id="customPeriod" hidden><label>С<input id="from" type="datetime-local"></label><label>По<input id="to" type="datetime-local"></label></div>
+      <details id="filters"><summary>Фильтры и координаты</summary>
+        <div class="grid"><div><label class="check"><input type="checkbox" id="useCategory" checked> Тип события</label><select id="category" aria-label="Тип события"><option value="all">Все доступные</option></select></div><div><label class="check"><input type="checkbox" id="useAction"> Конкретное действие</label><select id="action" aria-label="Действие"><option value="">Все действия</option></select></div></div>
+        <div class="grid" id="materials"><div><label class="check"><input type="checkbox" id="useInclude"> Материалы: включить</label><input id="include" aria-label="Включить материалы" placeholder="Алмаз, алмазная руда" maxlength="400" autocomplete="off"><p class="hint">До 8 материалов через запятую. Можно по-русски или по-английски.</p></div><div><label class="check"><input type="checkbox" id="useExclude"> Исключить материалы</label><input id="exclude" aria-label="Исключить материалы" placeholder="Земля, камень" maxlength="400" autocomplete="off"><p class="hint">Выберите из списка или впишите названия.</p></div></div>
+        <div class="grid" id="textFilter" hidden><div><label class="check"><input type="checkbox" id="useText"> По тексту</label><input id="text" aria-label="Текст" maxlength="200" autocomplete="off"></div><label>Совпадение<select id="textMode"><option value="contains">Содержит</option><option value="starts">Начинается с</option></select></label></div>
+        <fieldset><legend><label class="check"><input type="checkbox" id="useCoords"> Координаты и радиус</label></legend><p class="hint">Область — куб. Радиус 0 — один точный блок. Для поиска по игроку координаты не нужны.</p><div class="coords"><label>X<input id="x" type="number" step="1" min="-30000000" max="30000000"></label><label>Y<input id="y" type="number" step="1" min="-2048" max="2048"></label><label>Z<input id="z" type="number" step="1" min="-30000000" max="30000000"></label><label>Радиус<input id="radius" type="number" step="1" min="0" max="32" value="0"></label></div></fieldset>
+        <label>Записей на странице<select id="limit"><option value="50">50</option><option value="100">100</option></select></label>
+      </details>
+      <p class="hint">Укажите игрока или мир и координаты. Чем короче период, тем быстрее поиск.</p><button type="submit" class="primary" id="submit">Найти события</button>
+    </form>
+    <p id="status" role="status" aria-live="polite"></p>
+    <section id="rollback" class="panel commandPanel" hidden><h2>Команда отката по фильтрам поиска</h2><p id="rollbackNote" class="hint"></p><textarea id="rollbackCommand" aria-label="Команда отката" readonly rows="3" hidden></textarea><div class="commandButtons"><button type="button" id="copyRollback" disabled>📋 Скопировать откат</button><button type="button" id="copyPreview" hidden>👁 Скопировать предпросмотр</button></div></section>
+    <section id="results" class="timeline" aria-label="История событий"></section>
+    <nav class="pagination" aria-label="Страницы результатов" hidden id="pages"><button id="previous" type="button">← Назад</button><span id="pageLabel"></span><button id="next" type="button">Далее →</button></nav>
+  </section>
+</main>
+<dialog id="detail"><div id="detailContent"></div><div class="detailActions"><button id="copy" type="button">Копировать координаты</button><button id="byPlayer" type="button">🔍 Действия игрока</button><button id="byContainer" type="button">📦 История этого контейнера</button><button id="nearby" type="button">📍 События рядом</button><button id="closeDetail" type="button">Закрыть</button></div></dialog>
+</body>
+</html>
